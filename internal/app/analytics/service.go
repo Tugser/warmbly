@@ -430,23 +430,28 @@ func (s *analyticsService) assembleAccountStatus(ctx context.Context, email *mod
 	}
 
 	coldRamp := coldRampNotice(email, reads.coldRamp, reads.now)
+	holdReason := ""
+	if held {
+		holdReason = hold.Reason
+	}
 	lifecycle := sendLifecycleNotice(reads.lifecycles, email.ID)
 
 	return &models.EmailAccountStatus{
-		ID:            email.ID,
-		Email:         email.Email,
-		Provider:      email.Provider,
-		Status:        email.Status,
-		LastSyncedAt:  &email.LastSyncedAt,
-		Health:        health,
-		Errors:        errs,
-		DailyUsage:    *usage,
-		WarmupStatus:  warmupStatus,
-		WarmupHealth:  warmupHealth,
-		Placement:     placement,
-		InCampaign:    inCampaign,
-		ColdRamp:      coldRamp,
-		SendLifecycle: lifecycle,
+		ID:                 email.ID,
+		Email:              email.Email,
+		Provider:           email.Provider,
+		Status:             email.Status,
+		LastSyncedAt:       &email.LastSyncedAt,
+		Health:             health,
+		Errors:             errs,
+		DailyUsage:         *usage,
+		WarmupStatus:       warmupStatus,
+		WarmupHealth:       warmupHealth,
+		Placement:          placement,
+		InCampaign:         inCampaign,
+		ColdRamp:           coldRamp,
+		SendLifecycle:      lifecycle,
+		SendRecoveryReason: holdReason,
 	}
 }
 
@@ -458,7 +463,7 @@ func sendRecoveryHoldMessage(hold repository.SendRecoveryHold) string {
 		}
 		return "Sending is paused because the previous send outcome is unconfirmed. Warmbly will not retry it automatically, to avoid duplicate mail. Provider confirmation is required to resolve this hold; a successful inbox sync does not confirm the send."
 	case "authentication":
-		return "Sending is paused after an authentication failure. Repair the sending credentials and confirm outbound recovery before releasing this hold."
+		return "Sending is paused because the mail server refused this mailbox's login when it last sent. Reconnect the mailbox (re-authorize it, or enter its current password or app password); once the server accepts the login, sending resumes unless another send safety hold is still pending."
 	default:
 		return "Sending is paused by a send safety hold. Resolve the held send before this mailbox can send again."
 	}

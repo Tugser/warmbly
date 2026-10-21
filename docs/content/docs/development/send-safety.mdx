@@ -55,7 +55,7 @@ If a modern warmup task becomes dead-lettered after its definitive failure and r
 
 ## Evidence-based repair holds
 
-Authentication, permanent and conflicting-result holds do not clear merely because time passed, a reconnect occurred or an unrelated send succeeded. An organization-authorized operator can use `send_recovery_resolution` in the existing mailbox PATCH after investigating the current held task and reason:
+Authentication, permanent and conflicting-result holds do not clear merely because time passed or an unrelated send succeeded. An authentication hold clears when the mailbox is reconnected: both reconnect flows (OAuth re-authorization and replacement SMTP/IMAP credentials) only complete after the provider accepted the credential, and SMTP/IMAP credentials pass a worker's SMTP AUTH and IMAP login check first. The release is recorded in `send_recovery_resolutions` with evidence type `credentials_reverified`, scoped to the mailbox's organization, and the hold is then recomputed, so an unresolved unknown send or outcome conflict still holds the mailbox. Permanent and conflicting-result holds are not released by a reconnect. An organization-authorized operator can also use `send_recovery_resolution` in the existing mailbox PATCH after investigating the current held task and reason:
 
 ```json
 {

@@ -228,6 +228,8 @@ type EmailAccountStatus struct {
 	// is below the mailbox's own cap. Without it the cap just reads lower than
 	// the number the owner configured.
 	ColdRamp *ColdRampInfo `json:"cold_ramp,omitempty"`
+	// SendRecoveryReason names a send safety hold ("authentication", "permanent", "conflict" or "unknown"); absent when sending is not held.
+	SendRecoveryReason string `json:"send_recovery_reason,omitempty"`
 }
 
 // EmailAccountStatusesResult is one page of account statuses. Data carries the

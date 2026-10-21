@@ -794,6 +794,9 @@ function OverviewTab({ status, loading, mailbox }: { status?: import("@/lib/api/
                         ))}
                     </ul>
                 )}
+                {/* A login refused at send time can hold sending while sync still works, so no credential error carries the button. */}
+                {status?.send_recovery_reason === "authentication" && !firstCredentialErrorId &&
+                    (mailbox.auth_method === "delegated" ? <DelegatedGrantNotice mailbox={mailbox} inError /> : <ReconnectAction mailbox={mailbox} />)}
             </div>
 
             {/* Sync: import progress and fair-use status */}

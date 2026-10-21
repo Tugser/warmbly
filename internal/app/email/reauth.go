@@ -210,6 +210,14 @@ func (s *emailService) reconnectAccount(ctx context.Context, accountID uuid.UUID
 		return nil, xerr
 	}
 	s.resolveCredentialErrors(ctx, account.ID)
+	// Both reconnect flows only get here with a credential the server just accepted, which is what an authentication hold waits for.
+	if releaser, ok := s.emailRepository.(interface {
+		ReleaseAuthenticationHold(context.Context, uuid.UUID, uuid.UUID) (bool, error)
+	}); ok {
+		if _, err := releaser.ReleaseAuthenticationHold(ctx, *account.OrganizationID, account.ID); err != nil {
+			log.Warn().Err(err).Str("account_id", account.ID.String()).Msg("reconnect succeeded but the authentication send hold could not be released")
+		}
+	}
 	return updated, nil
 }
 
