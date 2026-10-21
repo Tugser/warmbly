@@ -46,6 +46,13 @@ x-server-env: &server-env
   AUTH_LOGIN_CODE: ${AUTH_LOGIN_CODE:-off}
   REQUIRE_EMAIL_VERIFICATION: ${REQUIRE_EMAIL_VERIFICATION:-false}
   DISABLE_REGISTRATION: ${DISABLE_REGISTRATION:-invite_only}
+  AI_PROVIDER: ${AI_PROVIDER:-}
+  AI_API_KEY: ${AI_API_KEY:-}
+  AI_MODEL: ${AI_MODEL:-}
+  AI_MODEL_TRIAL: ${AI_MODEL_TRIAL:-}
+  AI_MODEL_PAID: ${AI_MODEL_PAID:-}
+  AI_BASE_URL: ${AI_BASE_URL:-}
+  AI_FREE: ${AI_FREE:-}
 
 x-http-healthcheck: &http-healthcheck
   interval: 10s
