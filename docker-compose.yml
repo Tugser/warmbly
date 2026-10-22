@@ -74,6 +74,7 @@ x-selfhost-env: &selfhost-env
   KMS_LOCAL_MASTER_KEY: ${KMS_LOCAL_MASTER_KEY:-Xr0JA7gqF2POy29a7MRByyqddivTNt8WOyKsOXklazk=}
   KMS_AWS_KEY_ID: ${KMS_AWS_KEY_ID:-}
   CREDENTIALS_ENCRYPTION_KEY: ${CREDENTIALS_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+  CREDENTIALS_ENCRYPTION_READ_KEYS: ${CREDENTIALS_ENCRYPTION_READ_KEYS:-}
 
   # Blob storage. s3 also needs BLOB_BUCKET + the AWS_* values below.
   BLOB_PROVIDER: ${BLOB_PROVIDER:-filesystem}
@@ -192,11 +193,21 @@ x-selfhost-env: &selfhost-env
   PRIMARY_DB: ${PRIMARY_DB:-postgres://warmbly:warmbly@postgres:5432/warmbly_dev?sslmode=disable}
   REDIS: ${REDIS:-redis://redis:6379}
   AUTH_SECRET: ${AUTH_SECRET:-local-dev-auth-secret-minimum-32-characters-long}
+  TWOFA_SECRET: ${TWOFA_SECRET:-}
+  TWOFA_READ_SECRETS: ${TWOFA_READ_SECRETS:-}
+  UNSUBSCRIBE_SIGNING_SECRET: ${UNSUBSCRIBE_SIGNING_SECRET:-}
+  UNSUBSCRIBE_SIGNING_READ_SECRETS: ${UNSUBSCRIBE_SIGNING_READ_SECRETS:-}
+  UNSUBSCRIBE_SIGNING_READ_UNTIL: ${UNSUBSCRIBE_SIGNING_READ_UNTIL:-}
+  DOMAIN_PROOF_SECRET: ${DOMAIN_PROOF_SECRET:-}
   INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-local-dev-internal-token}
+  INTERNAL_API_PREVIOUS_TOKENS: ${INTERNAL_API_PREVIOUS_TOKENS:-}
+  INTERNAL_API_PREVIOUS_UNTIL: ${INTERNAL_API_PREVIOUS_UNTIL:-}
   # The broker routes (open a data key, sign a blob operation, mint a managed
   # mailbox's access token). Optional; empty falls back to the token above, and
   # every service that needs it reads it from here so the two never disagree.
   NODE_BROKER_TOKEN: ${NODE_BROKER_TOKEN:-}
+  NODE_BROKER_PREVIOUS_TOKENS: ${NODE_BROKER_PREVIOUS_TOKENS:-}
+  NODE_BROKER_PREVIOUS_UNTIL: ${NODE_BROKER_PREVIOUS_UNTIL:-}
 
   # AI assistant. Omit AI_PROVIDER to run with AI off (endpoints return 503).
   AI_PROVIDER: ${AI_PROVIDER:-}

@@ -13,7 +13,7 @@ import (
 func TestLiveManagedCloudOperationIsCorrelatedIdempotentAndNeverRevived(t *testing.T) {
 	f := newPoolLinkFixture(t)
 	ctx := context.Background()
-	r := NewPoolLinkRepository(f.pool)
+	r := NewPoolLinkRepository(f.pool, testSessionConnector(f.pool))
 	instance := &models.PoolLinkInstance{ID: uuid.New(), OrganizationID: f.org, CreatedBy: &f.user, URL: "https://instance.test", Name: "Fixture"}
 	if err := r.CreateInstance(ctx, instance, uuid.NewString()); err != nil {
 		t.Fatal(err)
@@ -43,7 +43,7 @@ func TestLiveManagedCloudOperationIsCorrelatedIdempotentAndNeverRevived(t *testi
 		}
 	}
 	// A new repository object has no process-local state to recover.
-	got, err := NewPoolLinkRepository(f.pool).(PoolLinkManagedRepository).GetManagedOperation(ctx, instance.ID, remote)
+	got, err := NewPoolLinkRepository(f.pool, testSessionConnector(f.pool)).(PoolLinkManagedRepository).GetManagedOperation(ctx, instance.ID, remote)
 	if err != nil || got == nil || got.State != "completed" || got.CompletedAt == nil || got.AccountID == nil || *got.AccountID != f.sender {
 		t.Fatalf("result=%+v, err=%v", got, err)
 	}
@@ -82,7 +82,7 @@ func TestLiveManagedCloudOperationIsCorrelatedIdempotentAndNeverRevived(t *testi
 func TestLiveManagedCloudOperationExpiryAndInstanceRevocationFailClosed(t *testing.T) {
 	f := newPoolLinkFixture(t)
 	ctx := context.Background()
-	r := NewPoolLinkRepository(f.pool)
+	r := NewPoolLinkRepository(f.pool, testSessionConnector(f.pool))
 	i := &models.PoolLinkInstance{ID: uuid.New(), OrganizationID: f.org, Name: "Fixture"}
 	if err := r.CreateInstance(ctx, i, uuid.NewString()); err != nil {
 		t.Fatal(err)
@@ -120,12 +120,12 @@ func TestLiveManagedLocalConsentRetainsActorAuthorityAndPortableRestriction(t *t
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _, _ = f.pool.Exec(ctx, `DELETE FROM cloud_link WHERE instance_id = $1`, instance) })
-	r := NewCloudLinkRepository(f.pool, nil).(CloudManagedConsentRepository)
+	r := NewCloudLinkRepository(f.pool, nil, testSessionConnector(f.pool)).(CloudManagedConsentRepository)
 	c := &models.CloudManagedConsent{ID: uuid.New(), OrganizationID: f.org, UserID: &f.user, InstanceID: &instance, RemoteID: &remote, PlannedAccountID: &planned, SessionHash: &hash, Kind: "oauth", Provider: models.InboxProviderGoogle, ExpiresAt: time.Now().Add(time.Minute)}
 	if err := r.CreateManagedConsent(ctx, c); err != nil {
 		t.Fatal(err)
 	}
-	got, err := NewCloudLinkRepository(f.pool, nil).(CloudManagedConsentRepository).GetManagedConsent(ctx, f.org, f.user, hash)
+	got, err := NewCloudLinkRepository(f.pool, nil, testSessionConnector(f.pool)).(CloudManagedConsentRepository).GetManagedConsent(ctx, f.org, f.user, hash)
 	if err != nil || got == nil || got.State != "pending" || got.SessionHash == nil || *got.SessionHash != hash {
 		t.Fatalf("restart=%+v,err=%v", got, err)
 	}
@@ -180,7 +180,7 @@ func TestLiveManagedTokenUsesCurrentConsentAndObservedStanding(t *testing.T) {
 	if _, err := f.pool.Exec(ctx, `UPDATE email_accounts SET provider='gmail',auth_method='oauth' WHERE id=$1`, f.sender); err != nil {
 		t.Fatal(err)
 	}
-	base := NewCloudLinkRepository(f.pool, nil)
+	base := NewCloudLinkRepository(f.pool, nil, testSessionConnector(f.pool))
 	r := base.(CloudManagedConsentRepository)
 	c := &models.CloudManagedConsent{ID: uuid.New(), OrganizationID: f.org, UserID: &f.user, InstanceID: &instance, RemoteID: &remote, SessionHash: &hash, PlannedAccountID: &f.sender, Kind: "oauth", Provider: models.InboxProviderGoogle, ExpiresAt: time.Now().Add(time.Minute)}
 	if err := r.CreateManagedConsent(ctx, c); err != nil {

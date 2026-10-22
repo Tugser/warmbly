@@ -15,6 +15,10 @@ import (
 
 func main() {
 	url := os.Getenv("PRIMARY_DB")
+	url, err := db.DirectEndpoint(url, os.Getenv("PRIMARY_DB_DIRECT"))
+	if err != nil {
+		log.Fatal(err)
+	}
 	if url == "" {
 		log.Fatal("PRIMARY_DB is not set (e.g. postgres://warmbly:warmbly@localhost:15432/warmbly_dev?sslmode=disable)")
 	}

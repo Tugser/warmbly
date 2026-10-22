@@ -15,7 +15,7 @@ import (
 func TestLiveCloudWorkspaceApprovalsAreSerialized(t *testing.T) {
 	f := newPoolLinkFixture(t)
 	ctx := context.Background()
-	repo := NewPoolLinkRepository(f.pool)
+	repo := NewPoolLinkRepository(f.pool, testSessionConnector(f.pool))
 	const count = 12
 	var wg sync.WaitGroup
 	errs := make(chan error, count)
@@ -73,7 +73,7 @@ func TestLiveWorkspaceLinksPreserveLegacyEnrollmentOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo := NewCloudLinkRepository(f.pool, enc)
+	repo := NewCloudLinkRepository(f.pool, enc, testSessionConnector(f.pool))
 	legacy := &models.CloudLink{InstanceID: uuid.New(), CloudURL: "https://cloud.test", Token: "legacy-fixture"}
 	scoped := &models.CloudLink{InstanceID: uuid.New(), OrganizationID: &f.org, CloudURL: "https://cloud.test", Token: "scoped-fixture"}
 	t.Cleanup(func() {

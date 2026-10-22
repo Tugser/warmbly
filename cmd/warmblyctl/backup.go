@@ -58,9 +58,21 @@ const (
 // every worker and websocket connection, which reads as a broken restore.
 var backupKeys = []string{
 	"CREDENTIALS_ENCRYPTION_KEY",
+	"CREDENTIALS_ENCRYPTION_READ_KEYS",
 	"KMS_LOCAL_MASTER_KEY",
 	"AUTH_SECRET",
+	"TWOFA_SECRET",
+	"TWOFA_READ_SECRETS",
+	"UNSUBSCRIBE_SIGNING_SECRET",
+	"UNSUBSCRIBE_SIGNING_READ_SECRETS",
+	"UNSUBSCRIBE_SIGNING_READ_UNTIL",
+	"DOMAIN_PROOF_SECRET",
 	"INTERNAL_API_TOKEN",
+	"INTERNAL_API_PREVIOUS_TOKENS",
+	"INTERNAL_API_PREVIOUS_UNTIL",
+	"NODE_BROKER_TOKEN",
+	"NODE_BROKER_PREVIOUS_TOKENS",
+	"NODE_BROKER_PREVIOUS_UNTIL",
 	"SECRET_KEY_BASE",
 }
 
@@ -116,7 +128,7 @@ func runBackup(ctx context.Context, args []string) error {
 		return fmt.Errorf("%s already exists. Pass --force to overwrite it, or --out with another path.", target)
 	}
 
-	dsn, err := dbEndpoint(ctx)
+	dsn, err := directDBEndpoint(ctx)
 	if err != nil {
 		return err
 	}
@@ -254,7 +266,7 @@ func runRestore(ctx context.Context, args []string) error {
 		return fmt.Errorf("this bundle is layout version %d and this warmblyctl reads version %d. Restore it with the Warmbly it was written by (%s).", m.Version, bundleVersion, m.AppVersion)
 	}
 
-	dsn, err := dbEndpoint(ctx)
+	dsn, err := directDBEndpoint(ctx)
 	if err != nil {
 		return err
 	}

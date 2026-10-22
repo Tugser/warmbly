@@ -325,6 +325,46 @@ var table = []Entry{
 
 	// Authentication and access.
 	{
+		Key: "DOMAIN_PROOF_SECRET", Group: GroupAuth, RuntimeChangeable: ChangeBootOnly,
+		Effect:     "Keys DNS ownership proofs independently of AUTH_SECRET when configured.",
+		DocsAnchor: docsSecrets, WhenUnset: SourceDerived,
+		Resolve: func(*Runtime) string {
+			if value := os.Getenv("DOMAIN_PROOF_SECRET"); value != "" {
+				return value
+			}
+			return os.Getenv("AUTH_SECRET")
+		},
+	},
+	{
+		Key: "UNSUBSCRIBE_SIGNING_READ_UNTIL", Group: GroupAuth, RuntimeChangeable: ChangeBootOnly,
+		Effect:     "RFC3339 cutoff for previous unsubscribe signatures and their maximum expiry.",
+		DocsAnchor: docsSecrets,
+		Resolve:    envValue("UNSUBSCRIBE_SIGNING_READ_UNTIL"),
+	},
+	{
+		Key: "UNSUBSCRIBE_SIGNING_READ_SECRETS", Group: GroupAuth, RuntimeChangeable: ChangeBootOnly,
+		Effect:     "Previous unsubscribe signing secrets as a JSON array, accepted only through the configured cutoff.",
+		DocsAnchor: docsSecrets,
+		Resolve:    envValue("UNSUBSCRIBE_SIGNING_READ_SECRETS"),
+	},
+	{
+		Key: "UNSUBSCRIBE_SIGNING_SECRET", Group: GroupAuth, RuntimeChangeable: ChangeBootOnly,
+		Effect:     "Signs recipient unsubscribe links independently of AUTH_SECRET when configured.",
+		DocsAnchor: docsSecrets, WhenUnset: SourceDerived,
+		Resolve: func(*Runtime) string {
+			if value := os.Getenv("UNSUBSCRIBE_SIGNING_SECRET"); value != "" {
+				return value
+			}
+			return os.Getenv("AUTH_SECRET")
+		},
+	},
+	{
+		Key: "TWOFA_READ_SECRETS", Group: GroupAuth, RuntimeChangeable: ChangeBootOnly,
+		Effect:     "Additional TOTP decryption secrets as a JSON array. New enrollments use TWOFA_SECRET.",
+		DocsAnchor: docsSecrets,
+		Resolve:    envValue("TWOFA_READ_SECRETS"),
+	},
+	{
 		Key: "AUTH_SECRET", Group: GroupAuth, RuntimeChangeable: ChangeBootOnly,
 		Effect:     "Signs every session and JWT. It must be byte-identical to the realtime service's JWT_SECRET; compare the fingerprints.",
 		DocsAnchor: docsSecrets,
@@ -332,7 +372,7 @@ var table = []Entry{
 	},
 	{
 		Key: "TWOFA_SECRET", Group: GroupAuth, RuntimeChangeable: ChangeBootOnly,
-		Effect:     "Seals stored TOTP secrets. Falls back to AUTH_SECRET; rotating it invalidates every enrolled authenticator.",
+		Effect:     "Seals stored TOTP secrets. Falls back to AUTH_SECRET; retain matching read secrets while resealing existing enrollments.",
 		DocsAnchor: docsSecrets, WhenUnset: SourceDerived,
 		Resolve: func(*Runtime) string {
 			if v := trimmed("TWOFA_SECRET"); v != "" {
@@ -565,6 +605,12 @@ var table = []Entry{
 
 	// Encryption.
 	{
+		Key: "CREDENTIALS_ENCRYPTION_READ_KEYS", Group: GroupEncryption, RuntimeChangeable: ChangeBootOnly,
+		Effect:     "Additional credential decryption keys as a JSON array. New ciphertext uses CREDENTIALS_ENCRYPTION_KEY.",
+		DocsAnchor: docsEncryption,
+		Resolve:    envValue("CREDENTIALS_ENCRYPTION_READ_KEYS"),
+	},
+	{
 		Key: "KMS_PROVIDER", Group: GroupEncryption, RuntimeChangeable: ChangeBootOnly,
 		Effect:     "local wraps organization keys with the master key below; aws wraps them with AWS KMS; brokered holds no key material and asks this instance to unwrap, which is what a node off this machine should run.",
 		DocsAnchor: docsEncryption,
@@ -696,6 +742,30 @@ var table = []Entry{
 	},
 
 	// Workers.
+	{
+		Key: "NODE_BROKER_PREVIOUS_UNTIL", Group: GroupWorkers, RuntimeChangeable: ChangeBootOnly,
+		Effect:     "RFC3339 cutoff for previous fleet broker bearer tokens.",
+		DocsAnchor: docsWorkers,
+		Resolve:    envValue("NODE_BROKER_PREVIOUS_UNTIL"),
+	},
+	{
+		Key: "NODE_BROKER_PREVIOUS_TOKENS", Group: GroupWorkers, RuntimeChangeable: ChangeBootOnly,
+		Effect:     "Previous fleet broker bearer tokens as a JSON array, accepted only before the explicit cutoff.",
+		DocsAnchor: docsWorkers,
+		Resolve:    envValue("NODE_BROKER_PREVIOUS_TOKENS"),
+	},
+	{
+		Key: "INTERNAL_API_PREVIOUS_UNTIL", Group: GroupWorkers, RuntimeChangeable: ChangeBootOnly,
+		Effect:     "RFC3339 cutoff for previous tracking and forms bearer tokens.",
+		DocsAnchor: docsWorkers,
+		Resolve:    envValue("INTERNAL_API_PREVIOUS_UNTIL"),
+	},
+	{
+		Key: "INTERNAL_API_PREVIOUS_TOKENS", Group: GroupWorkers, RuntimeChangeable: ChangeBootOnly,
+		Effect:     "Previous tracking and forms bearer tokens as a JSON array, accepted only before the explicit cutoff.",
+		DocsAnchor: docsWorkers,
+		Resolve:    envValue("INTERNAL_API_PREVIOUS_TOKENS"),
+	},
 	{
 		Key: "INTERNAL_API_TOKEN", Group: GroupWorkers, RuntimeChangeable: ChangeBootOnly,
 		Effect:     "The token on the internal routes the tracking and forms services call. Fleet nodes use it too unless NODE_BROKER_TOKEN is set.",

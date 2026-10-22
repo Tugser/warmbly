@@ -38,7 +38,7 @@ func requiredMigrationVersion() (int, error) {
 	return version, nil
 }
 
-// WaitForSchema keeps consumers from starting jobs ahead of the backend's migrations.
+// WaitForSchema keeps services from starting before the required schema is ready.
 func WaitForSchema(ctx context.Context, reader schemaReader) error {
 	required, err := requiredMigrationVersion()
 	if err != nil {
@@ -64,10 +64,10 @@ func waitForSchema(ctx context.Context, reader schemaReader, required int, inter
 			if !dirty && version >= required && ctx.Err() == nil {
 				var visible bool
 				if err := reader.QueryRow(ctx, `SELECT to_regclass('warmup_pending_filings') IS NOT NULL AND to_regclass('warmup_recovery_identifiers') IS NOT NULL`).Scan(&visible); err != nil {
-					return fmt.Errorf("consumer schema visibility check failed: %w", err)
+					return fmt.Errorf("database schema visibility check failed: %w", err)
 				}
 				if !visible {
-					return errors.New("consumer schema version is current but required warmup relations are not visible; check database and search_path")
+					return errors.New("database schema version is current but required warmup relations are not visible; check database and search_path")
 				}
 				if ctx.Err() == nil {
 					return nil
@@ -78,7 +78,7 @@ func waitForSchema(ctx context.Context, reader schemaReader, required int, inter
 			state = "schema_migrations is not initialized"
 		case ctx.Err() != nil && errors.Is(err, ctx.Err()):
 		default:
-			return fmt.Errorf("consumer schema readiness query failed: %w", err)
+			return fmt.Errorf("database schema readiness query failed: %w", err)
 		}
 		timer := time.NewTimer(interval)
 		select {
@@ -87,5 +87,5 @@ func waitForSchema(ctx context.Context, reader schemaReader, required int, inter
 		case <-timer.C:
 		}
 	}
-	return fmt.Errorf("consumer waiting for backend migrations: %s; upgrade the backend and check its migration logs: %w", state, errors.Join(ctx.Err(), queryErr))
+	return fmt.Errorf("waiting for database migrations: %s; upgrade the backend or run the deployment migration job and check its logs: %w", state, errors.Join(ctx.Err(), queryErr))
 }

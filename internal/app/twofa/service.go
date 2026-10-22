@@ -92,18 +92,32 @@ type IdentityLinker interface {
 }
 
 type service struct {
-	repo    repository.TOTPRepository
-	users   repository.UserRepository
-	tokens  token.TokenService
-	cache   *cache.Cache
-	sealKey [32]byte
-	linker  IdentityLinker
+	repo     repository.TOTPRepository
+	users    repository.UserRepository
+	tokens   token.TokenService
+	cache    *cache.Cache
+	sealKey  [32]byte
+	readKeys [][32]byte
+	linker   IdentityLinker
 }
 
 func (s *service) WireIdentityLinker(l IdentityLinker) { s.linker = l }
 
-func NewService(repo repository.TOTPRepository, users repository.UserRepository, tokens token.TokenService, c *cache.Cache, sealKey [32]byte) Service {
-	return &service{repo: repo, users: users, tokens: tokens, cache: c, sealKey: sealKey}
+func NewService(repo repository.TOTPRepository, users repository.UserRepository, tokens token.TokenService, c *cache.Cache, sealKey [32]byte, readKeys ...[32]byte) Service {
+	return &service{repo: repo, users: users, tokens: tokens, cache: c, sealKey: sealKey, readKeys: readKeys}
+}
+
+func (s *service) openSecret(sealed string) (string, error) {
+	secret, err := Open(s.sealKey, sealed)
+	if err == nil {
+		return secret, nil
+	}
+	for _, key := range s.readKeys {
+		if secret, readErr := Open(key, sealed); readErr == nil {
+			return secret, nil
+		}
+	}
+	return "", err
 }
 
 func (s *service) IsEnabled(ctx context.Context, userID uuid.UUID) (bool, error) {
@@ -185,7 +199,7 @@ func (s *service) validCode(ctx context.Context, userID uuid.UUID, row *models.U
 	if isRecoveryFormat(code) {
 		return s.tryConsumeRecoveryCode(ctx, userID, code)
 	}
-	secret, err := Open(s.sealKey, row.SecretSealed)
+	secret, err := s.openSecret(row.SecretSealed)
 	if err != nil {
 		return false
 	}

@@ -56,7 +56,7 @@ func (s *service) EnrollConfirm(ctx context.Context, userID uuid.UUID, code stri
 	if row.Enabled {
 		return nil, errx.New(errx.BadRequest, "2FA is already enabled")
 	}
-	secret, err := Open(s.sealKey, row.SecretSealed)
+	secret, err := s.openSecret(row.SecretSealed)
 	if err != nil {
 		return nil, errx.InternalError()
 	}

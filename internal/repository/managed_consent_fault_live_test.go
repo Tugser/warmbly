@@ -26,7 +26,7 @@ func TestLiveManagedOperationClaimSerializesAcrossReplicasWithOnePoolConnection(
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	r := NewPoolLinkRepository(pool)
+	r := NewPoolLinkRepository(pool, testSessionConnector(pool))
 	mr := r.(PoolLinkManagedRepository)
 	i := &models.PoolLinkInstance{ID: uuid.New(), OrganizationID: f.org}
 	if err := r.CreateInstance(ctx, i, uuid.NewString()); err != nil {
@@ -68,7 +68,7 @@ func TestLiveManagedOperationClaimSerializesAcrossReplicasWithOnePoolConnection(
 func TestLiveManagedHistoryDowngradeRefusesPendingCompletedAndRevokedHistory(t *testing.T) {
 	f := newPoolLinkFixture(t)
 	ctx := context.Background()
-	r := NewPoolLinkRepository(f.pool)
+	r := NewPoolLinkRepository(f.pool, testSessionConnector(f.pool))
 	mr := r.(PoolLinkManagedRepository)
 	i := &models.PoolLinkInstance{ID: uuid.New(), OrganizationID: f.org}
 	if err := r.CreateInstance(ctx, i, uuid.NewString()); err != nil {

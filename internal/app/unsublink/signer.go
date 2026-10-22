@@ -49,17 +49,32 @@ const Path = "/unsubscribe/"
 // key is scoped with a purpose string so an unsubscribe token can never be
 // replayed as any other signed artefact that shares the secret.
 type Signer struct {
-	key     []byte
-	baseURL string
+	key       []byte
+	baseURL   string
+	readKeys  [][]byte
+	readUntil time.Time
 }
 
 // New builds a signer. baseURL is the public origin of the API (the process
 // that serves /unsubscribe); empty means links cannot be minted and Enabled
 // reports false.
 func New(secret, baseURL string) *Signer {
+	return NewWithReadKeys(secret, baseURL, nil, time.Time{})
+}
+
+// NewWithReadKeys preserves issued links through a bounded verification window.
+func NewWithReadKeys(secret, baseURL string, readSecrets []string, readUntil time.Time) *Signer {
+	s := &Signer{key: deriveKey(secret), baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"), readUntil: readUntil}
+	for _, value := range readSecrets {
+		s.readKeys = append(s.readKeys, deriveKey(value))
+	}
+	return s
+}
+
+func deriveKey(secret string) []byte {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte("warmbly:unsubscribe-link:v1"))
-	return &Signer{key: mac.Sum(nil), baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/")}
+	return mac.Sum(nil)
 }
 
 // Enabled reports whether the signer knows a public origin to mint links on.
@@ -130,14 +145,21 @@ func (s *Signer) Verify(token string, now time.Time) (Claims, error) {
 		return Claims{}, ErrInvalid
 	}
 	body, sig := raw[:rawLen], raw[rawLen:]
-	if !hmac.Equal(sig, s.mac(body)) {
+	expiresAt := time.Unix(int64(binary.BigEndian.Uint64(body[48:56])), 0).UTC()
+	valid := hmac.Equal(sig, s.mac(body))
+	if !valid && now.Before(s.readUntil) && !expiresAt.After(s.readUntil) {
+		for _, key := range s.readKeys {
+			valid = hmac.Equal(sig, macWithKey(key, body)) || valid
+		}
+	}
+	if !valid {
 		return Claims{}, ErrInvalid
 	}
 	var c Claims
 	copy(c.OrgID[:], body[0:16])
 	copy(c.CampaignID[:], body[16:32])
 	copy(c.ContactID[:], body[32:48])
-	c.ExpiresAt = time.Unix(int64(binary.BigEndian.Uint64(body[48:56])), 0).UTC()
+	c.ExpiresAt = expiresAt
 	if !now.Before(c.ExpiresAt) {
 		return c, ErrExpired
 	}
@@ -145,7 +167,11 @@ func (s *Signer) Verify(token string, now time.Time) (Claims, error) {
 }
 
 func (s *Signer) mac(body []byte) []byte {
-	m := hmac.New(sha256.New, s.key)
+	return macWithKey(s.key, body)
+}
+
+func macWithKey(key, body []byte) []byte {
+	m := hmac.New(sha256.New, key)
 	m.Write(body)
 	return m.Sum(nil)[:macLen]
 }

@@ -6,6 +6,9 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
+
+	"github.com/warmbly/warmbly/internal/pkg/secretset"
 )
 
 type AuthConfig struct {
@@ -31,9 +34,13 @@ type AuthConfig struct {
 	AppleIOSBundleID  string
 	GoogleIOSClientID string
 
-	AuthSecret      string
-	TurnstileSecret string
-	TurnstileBypass string
+	AuthSecret               string
+	UnsubscribeSigningSecret string
+	UnsubscribeReadSecrets   []string
+	UnsubscribeReadUntil     time.Time
+	DomainProofSecret        string
+	TurnstileSecret          string
+	TurnstileBypass          string
 
 	// AppAttestAppIDs are the "<team id>.<bundle id>" values whose App Attest
 	// proofs stand in for the captcha. Empty turns native app proofs off.
@@ -44,7 +51,8 @@ type AuthConfig struct {
 	// TwoFASecret is the server-wide key the TOTP secret is sealed with (AES-GCM).
 	// Must be set when 2FA is in use; falls back to AuthSecret when unset so a
 	// deployment without the env var still functions (sealed under the auth key).
-	TwoFASecret string
+	TwoFASecret      string
+	TwoFAReadSecrets []string
 
 	// WebAuthn / passkey relying-party configuration.
 	//
@@ -115,6 +123,26 @@ func (c *Config) LoadAuthConfig(ctx context.Context) (*AuthConfig, error) {
 	// 2FA sealing key. Optional: falls back to AUTH_SECRET so existing
 	// deployments keep working; rotating it invalidates enrolled TOTP secrets.
 	twoFASecret := c.GetSecretOptional(ctx, "TWOFA_SECRET", "twofa_secret", authSecret)
+	twoFAReadSecrets, err := secretset.Parse(c.GetSecretOptional(ctx, "TWOFA_READ_SECRETS", "twofa_read_secrets", ""))
+	if err != nil {
+		return nil, fmt.Errorf("TWOFA_READ_SECRETS: %w", err)
+	}
+	unsubscribeSigningSecret := c.GetSecretOptional(ctx, "UNSUBSCRIBE_SIGNING_SECRET", "unsubscribe/signing_secret", authSecret)
+	domainProofSecret := c.GetSecretOptional(ctx, "DOMAIN_PROOF_SECRET", "domain_proof_secret", authSecret)
+	if len(unsubscribeSigningSecret) < MinAuthSecretLength || len(domainProofSecret) < MinAuthSecretLength {
+		return nil, fmt.Errorf("unsubscribe and domain proof signing secrets require at least %d characters", MinAuthSecretLength)
+	}
+	unsubscribeReadSecrets, err := secretset.Parse(c.GetSecretOptional(ctx, "UNSUBSCRIBE_SIGNING_READ_SECRETS", "unsubscribe/signing_read_secrets", ""))
+	if err != nil {
+		return nil, fmt.Errorf("UNSUBSCRIBE_SIGNING_READ_SECRETS: %w", err)
+	}
+	var unsubscribeReadUntil time.Time
+	if len(unsubscribeReadSecrets) > 0 {
+		unsubscribeReadUntil, err = time.Parse(time.RFC3339, c.GetStringOptional(ctx, "UNSUBSCRIBE_SIGNING_READ_UNTIL", "unsubscribe/signing_read_until", ""))
+		if err != nil {
+			return nil, fmt.Errorf("UNSUBSCRIBE_SIGNING_READ_SECRETS requires an RFC3339 UNSUBSCRIBE_SIGNING_READ_UNTIL")
+		}
+	}
 
 	rpDisplayName := c.GetStringOptional(ctx, "WEBAUTHN_RP_DISPLAY_NAME", "webauthn/rp_display_name", "Warmbly")
 	rpIDRaw := c.GetStringOptional(ctx, "WEBAUTHN_RP_ID", "webauthn/rp_id", "")
@@ -135,13 +163,18 @@ func (c *Config) LoadAuthConfig(ctx context.Context) (*AuthConfig, error) {
 		AppleIOSBundleID:  appleIOSBundleID,
 		GoogleIOSClientID: googleIOSClientID,
 
-		AuthSecret:      authSecret,
-		TurnstileSecret: turnstileSecret,
-		TurnstileBypass: turnstileBypass,
+		AuthSecret:               authSecret,
+		UnsubscribeSigningSecret: unsubscribeSigningSecret,
+		UnsubscribeReadSecrets:   unsubscribeReadSecrets,
+		UnsubscribeReadUntil:     unsubscribeReadUntil,
+		DomainProofSecret:        domainProofSecret,
+		TurnstileSecret:          turnstileSecret,
+		TurnstileBypass:          turnstileBypass,
 
 		AppAttestAppIDs:           appAttestAppIDs,
 		AppAttestAllowDevelopment: appAttestAllowDev,
 		TwoFASecret:               twoFASecret,
+		TwoFAReadSecrets:          twoFAReadSecrets,
 
 		WebAuthnRPID:          rpID,
 		WebAuthnRPDisplayName: rpDisplayName,

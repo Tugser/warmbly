@@ -1,0 +1,39 @@
+#!/bin/sh
+set -eu
+hostnamectl set-hostname '${name}'
+retry() {
+  attempts=0
+  while ! "$@"; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 24 ]; then return 1; fi
+    sleep 5
+  done
+  return 0
+}
+retry dnf -y --setopt=retries=20 install docker
+systemctl enable --now docker
+install -d -m 700 /etc/warmbly /var/lib/warmbly /var/lib/warmbly/node
+printf '%s\n' 'WARMBLY_IMAGE_REF=${image}' > /var/lib/warmbly/image-ref
+chmod 600 /var/lib/warmbly/image-ref
+cat > /etc/systemd/system/warmbly-worker.service <<'UNIT'
+[Unit]
+Description=Warmbly worker
+After=docker.service network-online.target
+Requires=docker.service
+ConditionPathExists=/etc/warmbly/node.env
+
+[Service]
+Restart=always
+RestartSec=5
+EnvironmentFile=/var/lib/warmbly/image-ref
+ExecStartPre=-/usr/bin/docker rm -f warmbly-worker
+ExecStart=/usr/bin/docker run --rm --name warmbly-worker --env-file /etc/warmbly/node.env --env AWS_EC2_METADATA_DISABLED=true --network host -v /var/lib/warmbly/node:/var/lib/warmbly/node $${WARMBLY_IMAGE_REF}
+ExecStop=/usr/bin/docker stop -t 120 warmbly-worker
+TimeoutStopSec=150
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+retry docker pull '${image}'
+printf '%s\n' 'Worker host ready; service stays stopped until an operator completes the handover'

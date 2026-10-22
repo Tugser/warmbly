@@ -157,7 +157,7 @@ func (r *poolLinkRepository) ManagedInstanceAuthorized(ctx context.Context, inst
 }
 
 func (r *poolLinkRepository) WithManagedOperationLock(ctx context.Context, instanceID uuid.UUID, fn func() error) error {
-	conn, err := pgx.ConnectConfig(ctx, r.db.Config().ConnConfig)
+	conn, err := r.connectSession(ctx)
 	if err != nil {
 		return err
 	}

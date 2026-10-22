@@ -75,7 +75,7 @@ func TestLiveWarmupAnalyticsAreOrganizationScoped(t *testing.T) {
 			t.Errorf("instance cleanup: %v", err)
 		}
 	})
-	poolRepo := NewPoolLinkRepository(pool)
+	poolRepo := NewPoolLinkRepository(pool, testSessionConnector(pool))
 	linked, err := poolRepo.ListReportMailboxes(ctx, instanceID, []uuid.UUID{remoteID, otherRemoteID})
 	if err != nil || len(linked) != 1 || linked[0].EmailAccountID != accountID {
 		t.Fatalf("instance-scoped reports = %+v, %v", linked, err)

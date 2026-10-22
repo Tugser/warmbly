@@ -57,7 +57,7 @@ Five values protect the whole instance. Compose ships a working default for each
 
 | Variable | Format | What it protects | Restart needed |
 |---|---|---|---|
-| `AUTH_SECRET` | 32 characters or more, enforced at boot | JWT and session signing. The realtime service reads the same value as `JWT_SECRET` and applies the same floor. Both refuse to start below it: a shorter HS256 key can be recovered offline from any token the service has issued. It also keys the `warmbly-verify=` values workspaces publish in `_warmbly` `TXT` records to prove a domain, so changing it changes every one of them: [root redirects](/guides/sending-domains/#root-redirects) stop at their next check until the new value is published | yes |
+| `AUTH_SECRET` | 32 characters or more, enforced at boot | JWT and session signing. The realtime service reads the same value as `JWT_SECRET` and applies the same floor. Both refuse to start below it: a shorter HS256 key can be recovered offline from any token the service has issued. By default it also supplies the MFA sealing, unsubscribe signing and DNS ownership-proof keys. Configure the separate purpose keys below before rotating sessions when those values must remain stable | yes |
 | `INTERNAL_API_TOKEN` | any random string | The backend's `/api/v1/internal/` routes the tracking and forms services call (click tickets, root redirects, page views, hosted forms). Fleet nodes authenticate with it too when `NODE_BROKER_TOKEN` is unset | yes |
 | `NODE_BROKER_TOKEN` | any random string | Every internal route only a fleet node calls: organization data keys (read, store and open), blob signing, provider access tokens for a mailbox Warmbly Cloud manages, the message map and sync lookups, worker config and the node heartbeat. Optional, and falls back to `INTERNAL_API_TOKEN`. The same value has to be set on the control plane and on every node, or those routes answer 401; a node joined after it is set receives it in `node.env` in place of `INTERNAL_API_TOKEN`, and a node joined before has to join again. The installer generates one for a new install; an existing install keeps the shared token until you set one | yes |
 | `NODE_ACCEPT_INTERNAL_TOKEN` | `true` or unset | While `true`, the node-only routes other than the key and blob brokers also accept `INTERNAL_API_TOKEN`. An upgrade does not need it: a heartbeat sent with `INTERNAL_API_TOKEN` is always answered with the node's version and nothing is recorded, so an older node updates itself. Set it only to keep older nodes syncing until they have updated, then remove it: while it is on, the tracking and forms services' token reaches those routes | no |
@@ -99,6 +99,31 @@ The secret check runs in the backend. The consumer and the workers start happily
 <Callout type="warn" title="Back up the two encryption keys">
 `KMS_LOCAL_MASTER_KEY` and `CREDENTIALS_ENCRYPTION_KEY` seal every stored credential and every stored message body. Losing them is unrecoverable, and a database backup without them cannot be decrypted.
 </Callout>
+
+### Rotate instance keys
+
+These settings are optional. An existing self-host keeps its current keys and behavior when they are unset. All list values are JSON arrays with at most four nonempty strings; `[]` means no additional keys. Keep them in your secret store or private `.env`.
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `CREDENTIALS_ENCRYPTION_READ_KEYS` | Additional 64-character hex keys that can decrypt instance credential ciphertext. New writes use only `CREDENTIALS_ENCRYPTION_KEY` | unset |
+| `TWOFA_READ_SECRETS` | Additional secrets that can open existing TOTP enrollments. New enrollments use `TWOFA_SECRET` | unset |
+| `UNSUBSCRIBE_SIGNING_SECRET` | Signs recipient unsubscribe links independently of sessions. At least 32 characters | `AUTH_SECRET` |
+| `UNSUBSCRIBE_SIGNING_READ_SECRETS` | Previous secrets accepted only for unsubscribe signatures, with the cutoff below | unset |
+| `UNSUBSCRIBE_SIGNING_READ_UNTIL` | RFC3339 cutoff required with unsubscribe read secrets. Both the verification time and the signed link expiry must be within this window | unset |
+| `DOMAIN_PROOF_SECRET` | Keys `_warmbly` DNS ownership proofs independently of sessions. At least 32 characters | `AUTH_SECRET` |
+| `INTERNAL_API_PREVIOUS_TOKENS` | Previous bearer tokens for the tracking and forms routes, accepted only before the cutoff below | unset |
+| `INTERNAL_API_PREVIOUS_UNTIL` | RFC3339 cutoff for previous internal tokens. Missing, malformed or elapsed deadlines reject previous tokens | unset |
+| `NODE_BROKER_PREVIOUS_TOKENS` | Previous bearer tokens for fleet broker routes, accepted only before the cutoff below. These retain broker privileges during the window | unset |
+| `NODE_BROKER_PREVIOUS_UNTIL` | RFC3339 cutoff for previous broker tokens. Missing, malformed or elapsed deadlines reject previous tokens | unset |
+
+Changing these settings requires restarting the affected service. Internal-token deadlines are checked on every request, so old tokens stop working at the cutoff without another restart. Tracking and forms overlap does not grant fleet broker access. JWT verification uses only `AUTH_SECRET`; encryption and unsubscribe read keys never authorize sessions.
+
+For encryption rotation, first deploy a compatible release everywhere with the existing primary key and the replacement included in its read-key list. Confirm that all readers use that baseline before a later deployment activates the replacement primary and retains the old key for reads. Then reseal stored values with [`warmblyctl keys reseal`](/development/warmblyctl/#keys): run it once without `--apply` to see the counts, then with `--apply`, and repeat until `warmblyctl keys status` shows nothing left under a read key. It is resumable and never overwrites a value the backend changed meanwhile. `warmblyctl keys generate` prints replacement values in the right format. The supported rollback floor during rotation is that compatible baseline release, using keys that read both generations. A binary rollback keeps the current compatible key configuration; reverting a primary key alone does not migrate data.
+
+Retain old keys until stored ciphertext, retained events, pending jobs and the supported rollback window no longer need them. Keep the keys required by older backups for as long as those backups are retained. Organization DEKs and their KMS wrapping keys have a separate lifecycle; changing the instance credential key does not rotate them.
+
+To rotate sessions while preserving existing MFA enrollments, unsubscribe links and published DNS proofs, first pin `TWOFA_SECRET`, `UNSUBSCRIBE_SIGNING_SECRET` and `DOMAIN_PROOF_SECRET` to their existing resolved values. Then change `AUTH_SECRET` and realtime's matching `JWT_SECRET` together. Users sign in again. Rotate the independent purpose keys separately; issued unsubscribe links remain valid for one year, so their read cutoff must cover the last previously issued link's expiry.
 
 ## Addresses
 
@@ -154,7 +179,7 @@ TRUSTED_PROXIES=10.0.0.0/8,172.16.0.0/12
 | `WARMBLY_BOOTSTRAP_PASSWORD_HASH` | Argon2id PHC string for that owner, as `warmblyctl hash-password` prints it. Preferred over the plaintext form. A malformed hash, or one whose cost parameters are below `m=65536,t=3,p=2` with a 16-byte salt and 32-byte key, is refused and no owner is created | unset | yes |
 | `WARMBLY_BOOTSTRAP_PASSWORD` | Plaintext convenience form. Held to the same rules as any password (length, breached list); one that fails them is refused and no owner is created. Warns at boot, and leaves a password in your process environment | unset | yes |
 | `WARMBLY_BOOTSTRAP_ORG` | Name of the organization created with that owner. A value that breaks the [naming rules](/api/error-codes/#name-refusals) is ignored with a warning | derived from the name | yes |
-| `TWOFA_SECRET` | Key that encrypts stored TOTP secrets. Falls back to `AUTH_SECRET`, so existing deployments keep working; rotating it invalidates every enrolled TOTP secret | `AUTH_SECRET` | yes |
+| `TWOFA_SECRET` | Key that encrypts stored TOTP secrets. Falls back to `AUTH_SECRET`. Keep matching `TWOFA_READ_SECRETS` while existing enrollments are resealed under a replacement key | `AUTH_SECRET` | yes |
 | `WEBAUTHN_RP_ID` | Passkey relying party id. Derived from `APP_URL` when unset. Changing it invalidates every enrolled passkey | derived | yes |
 | `WEBAUTHN_RP_ORIGINS` | Origins accepted for passkey ceremonies | derived from `APP_URL` | yes |
 | `WEBAUTHN_RP_DISPLAY_NAME` | The name the passkey prompt shows | `Warmbly` | yes |
@@ -334,18 +359,36 @@ Go services limit each decoded Avro array or map to 65,536 entries, counted acro
 
 ## Database
 
+Existing self-hosts keep their current database configuration and startup
+migrations. A separate direct connection, transaction pooling and a deployment
+migration job are optional. They do not require cloud services or change the
+one-command installer defaults.
+
 | Variable | What it does | Default | Restart needed |
 |---|---|---|---|
 | `PRIMARY_DB` | PostgreSQL connection string. Carries inline credentials, so it is never returned by any API | the compose postgres | yes |
+| `PRIMARY_DB_DIRECT` | Direct PostgreSQL connection for migrations, backups and session advisory locks. Required when `DB_POOL_MODE=transaction`. It must address the same database as `PRIMARY_DB`; its credentials can be different. With AWS configuration loading, the secret path is `postgres/primary_direct` | falls back to `PRIMARY_DB` in direct mode | yes |
+| `DB_POOL_MODE` | `direct` or `transaction` for the Go services. Transaction mode uses `PRIMARY_DB` for ordinary queries and `PRIMARY_DB_DIRECT` for session operations. It verifies server-side role defaults of nonzero `statement_timeout` at most 60 seconds and `idle_in_transaction_session_timeout` at most 5 minutes on every new pooled client connection. Configure those role defaults before connecting | `direct` | yes |
+| `DB_MIGRATIONS_ON_START` | Whether the backend applies embedded migrations at startup. Set `false` when a deployment job runs `/app/migrate` first. The backend still waits for a clean schema at the version its image requires. AWS configuration path: `postgres/migrations_on_start` | `true` for self-host compatibility; `false` in the AWS runtime root | yes |
 | `PGSSLROOTCERT` | Certificate bundle used to verify the database's TLS certificate, read by the Postgres driver. Amazon RDS chains to a root in no public trust store, so `sslmode=verify-full` against it needs AWS's bundle; the backend and consumer images ship it at `/etc/ssl/rds/global-bundle.pem`. Prefer `sslrootcert=` in the DSN so the setting travels with the connection it applies to | unset (system trust store) | yes |
-| `DB_MAX_CONNS` | Maximum pooled Postgres connections for one Go process (backend, consumer). The ceiling that matters is the database's `max_connections`, and every replica, consumer and `warmblyctl` run takes its own share of it. At boot a process asks the server for that ceiling and lowers its own pool to a quarter of the connections the server leaves unreserved. The quarter assumes four database clients, which is backend and consumer with a rolling deploy running two of each, so it is a per-process guard and not a fleet-wide allocation: more than four clients, or anything else sharing the server, still needs this set deliberately. The clamp only ever lowers the pool, and only when the probe succeeds; a probe that cannot reach the server or read the setting leaves the value below in force. A `pool_max_conns` in the DSN is honoured when this is unset | `25`, lowered to the probed share | yes |
+| `DB_MAX_CONNS` | Maximum client connections for one Go process (backend, consumer). In direct mode, a successful server-capacity probe lowers the pool to a quarter of unreserved server connections, allowing for backend and consumer deployment overlap. Transaction mode keeps the configured client ceiling and relies on separately configured pooler server limits. Size the aggregate server budget across all roles and direct clients. A `pool_max_conns` in the DSN is honoured when this is unset | `25`, lowered to the probed share in direct mode | yes |
 | `DB_MIN_CONNS` | Connections each Go process keeps open while idle. Capped at `DB_MAX_CONNS` | `2` | yes |
 | `DATABASE_URL` | The realtime service's own name for the same database | the compose postgres | yes |
-| `DATABASE_POOL_SIZE` | Maximum pooled connections **for the realtime service only**. The Go services use the driver default and do not read it | `10` | yes |
+| `DATABASE_POOL_SIZE` | Maximum client connections **for the realtime service only**. The Go services use `DB_MAX_CONNS` | `10` | yes |
 | `DATABASE_SSL` | Whether the realtime service connects to Postgres over TLS | `true`, and `false` under compose | yes |
 | `DATABASE_SSL_CA_FILE` | CA bundle the realtime service verifies Postgres against. Unset verifies against the system store, which has no Amazon RDS root in it, so an RDS database needs this set to `/etc/ssl/rds/global-bundle.pem` (shipped in the image) | unset | yes |
 
-Migrations are embedded in the backend binary and applied on boot. There is no separate migration step, and a standalone `/app/migrate` binary ships in the image for the cases where you want one.
+Migrations are embedded in the backend image. Self-hosts apply them on boot by
+default. Hosted deployments run the same image's `/app/migrate` binary once
+before rolling services, with `DB_MIGRATIONS_ON_START=false` on the backend.
+The migration binary uses `PRIMARY_DB_DIRECT` when configured. A failed migration
+blocks deployment; operators inspect its logs and schema state before retrying.
+Services do not automatically reverse a migration during application rollback.
+
+Use additive schema changes that remain usable by the previous release during
+deployment and rollback. Stage renames, removals, data transformations and event
+format changes across releases. Backfill large datasets with a resumable job
+after compatible readers and writers are deployed.
 
 ## Realtime upgrade compatibility
 
@@ -571,7 +614,7 @@ Each customer's authorization is tied to the service account's Client ID, so cre
 A Google grant is recorded only for the workspace that proves it controls the domain, and only when the directory lists the admin address as a super administrator. The proof is one of:
 
 - **The administrator's Google sign-in**, through the dashboard's own sign-in client (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`) and its existing redirect URI (`GOOGLE_REDIRECT_URI`, or `API_PUBLIC_URL` plus `/v1/auth/google/callback`), with the `openid` and `email` scopes only. The callback recognizes the proof and hands it back to the dashboard window rather than signing anyone in, so no new redirect URI needs registering. When that client is not configured, the `BOX_GOOGLE_*` mailbox client is used instead, the same way. Neither depends on `BOX_GOOGLE_OAUTH_CONNECT`.
-- **A `TXT` record** at `_warmbly.<domain>` holding a `warmbly-verify=` value unique to the workspace and domain, always available and the only proof when neither client is set. The value is keyed by `AUTH_SECRET`.
+- **A `TXT` record** at `_warmbly.<domain>` holding a `warmbly-verify=` value unique to the workspace and domain, always available and the only proof when neither client is set. The value is keyed by `DOMAIN_PROOF_SECRET`, which defaults to `AUTH_SECRET`.
 
 Microsoft 365 organizations reuse the Outlook app, `BOX_OUTLOOK_CLIENT_ID` and `BOX_OUTLOOK_CLIENT_SECRET`, and are on whenever those are set. The app registration needs three additions for them:
 

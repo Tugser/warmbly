@@ -241,6 +241,9 @@ The [shared authentication reference](/api/authentication/) remains the backend 
 | [`fleet remove`](#fleet) | Forgets a node; its mailboxes re-place themselves |
 | [`backup`](#backup) | Writes the whole instance to one restorable bundle |
 | [`restore`](#restore) | Restores a bundle onto this instance, replacing everything on it |
+| [`keys status`](#keys) | Counts stored secrets by the key that opens them, and shows open grace windows |
+| [`keys reseal`](#keys) | Rewrites secrets a read key opens under the primary key |
+| [`keys generate`](#keys) | Prints fresh values for the instance-wide keys and tokens |
 | [`org list`](#org-list) | Lists the workspaces on this instance with their id, owner, and size |
 | [`org export`](#org-export) | Writes a whole workspace to a portable archive file |
 | [`org import`](#org-import) | Applies an archive to a workspace on this instance |
@@ -502,6 +505,40 @@ Blobs are unpacked over the blob root additively: files the bundle knows about a
 Once the dump has loaded, the restore runs `ANALYZE`, because a dump carries no planner statistics. If that step fails the restore still completes and prints a warning; run `ANALYZE` in `psql` yourself afterwards.
 
 [Data control](/development/data-control/#moving-an-instance) walks the whole move to a new host.
+
+## keys
+
+```bash
+docker compose -p warmbly exec backend warmblyctl keys status
+docker compose -p warmbly exec backend warmblyctl keys reseal
+docker compose -p warmbly exec backend warmblyctl keys reseal --apply
+docker compose -p warmbly exec backend warmblyctl keys generate CREDENTIALS_ENCRYPTION_KEY
+```
+
+The tooling for [rotating instance keys](/development/configuration/#rotate-instance-keys). It reads `CREDENTIALS_ENCRYPTION_KEY` with `CREDENTIALS_ENCRYPTION_READ_KEYS`, and `TWOFA_SECRET` with `TWOFA_READ_SECRETS`, exactly as the backend does, so run it where the backend runs.
+
+`keys status` reads every column sealed under an instance-wide key (mailbox SMTP and IMAP credentials, OAuth tokens, webhook signing secrets, the Warmbly Cloud link, pending mailbox erasures and TOTP enrolments) and counts each value as one of:
+
+| State | Means |
+|---|---|
+| primary | Opens under the primary key. Nothing to do |
+| read key | Opens only under a read key. `keys reseal --apply` moves it to the primary |
+| unsealed | Stored outside the sealed format, such as a legacy OAuth token or a `whsec_` webhook secret. The backend seals it on its next write |
+| unreadable | Sealed, but opens under no configured key. Left untouched by every command here |
+
+It also lists any `INTERNAL_API_PREVIOUS_UNTIL`, `NODE_BROKER_PREVIOUS_UNTIL` and `UNSUBSCRIBE_SIGNING_READ_UNTIL` window and whether it is still open.
+
+`keys reseal` is a dry run unless you pass `--apply`. With it, every value a read key opens is rewritten under the primary, one row at a time and only if the row still holds the value that was read, so a credential the backend changes meanwhile is never overwritten. It is safe to stop and run again: a later run picks up where values remain, and a run with nothing left to do writes nothing. Values the primary already opens, unsealed values and unreadable values are never written.
+
+| Flag | Does |
+|---|---|
+| `--apply` | Write the resealed values. Without it, `reseal` reports what it would do |
+| `--batch` | Rows read per query, 1 to 10000. Defaults to 500 |
+| `--json` | Print the report as JSON (also on `keys status`) |
+
+Both exit non-zero when any value is unreadable. Restore the key that sealed it as a read key before retiring anything; an unreadable mailbox credential is a mailbox that can no longer sign in.
+
+`keys generate` prints `NAME=value` lines for `CREDENTIALS_ENCRYPTION_KEY`, `AUTH_SECRET`, `TWOFA_SECRET`, `UNSUBSCRIBE_SIGNING_SECRET`, `DOMAIN_PROOF_SECRET`, `INTERNAL_API_TOKEN`, `NODE_BROKER_TOKEN` and `SECRET_KEY_BASE`, or only the names you pass. It changes nothing; where each value goes, and in what order, is the rotation procedure.
 
 ## org list
 

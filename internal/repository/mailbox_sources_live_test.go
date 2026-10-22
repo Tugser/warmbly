@@ -396,7 +396,7 @@ func TestLiveDomainRedirectServing(t *testing.T) {
 		t.Fatalf("racing saves took %d (%d stored) against a limit of 5", taken.Load(), n)
 	}
 
-	if err := NewPoolLinkRepository(pool).RevokeInstance(ctx, instID); err != nil {
+	if err := NewPoolLinkRepository(pool, testSessionConnector(pool)).RevokeInstance(ctx, instID); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := redirects.GetLinked(ctx, instID, linkedDomain); got != nil {

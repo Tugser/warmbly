@@ -6,8 +6,10 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/warmbly/warmbly/internal/pkg/secretset"
 )
 
 // InternalAuthMiddleware protects the internal routes the edge services
@@ -40,7 +42,7 @@ func internalAuth(c *gin.Context) {
 		return
 	}
 	provided := []byte(strings.TrimPrefix(header, "Bearer "))
-	if subtle.ConstantTimeCompare(provided, internalToken) != 1 {
+	if subtle.ConstantTimeCompare(provided, internalToken) != 1 && !previousTokenMatches(provided, "INTERNAL_API") {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid bearer token"})
 		return
 	}
@@ -74,6 +76,22 @@ func loadBrokerToken() {
 func nodeBrokerAuth(c *gin.Context) {
 	brokerTokenOnce.Do(loadBrokerToken)
 	checkNodeToken(c, brokerToken, nil)
+}
+
+func previousTokenMatches(provided []byte, prefix string) bool {
+	until, err := time.Parse(time.RFC3339, os.Getenv(prefix+"_PREVIOUS_UNTIL"))
+	if err != nil || !time.Now().Before(until) {
+		return false
+	}
+	tokens, err := secretset.Parse(os.Getenv(prefix + "_PREVIOUS_TOKENS"))
+	if err != nil {
+		return false
+	}
+	matched := false
+	for _, token := range tokens {
+		matched = subtle.ConstantTimeCompare(provided, []byte(token)) == 1 || matched
+	}
+	return matched
 }
 
 // NodeAuthMiddleware guards node-only routes on NODE_BROKER_TOKEN; NODE_ACCEPT_INTERNAL_TOKEN=true also admits INTERNAL_API_TOKEN while older nodes upgrade.
@@ -138,6 +156,9 @@ func checkNodeToken(c *gin.Context, token, legacy []byte) {
 	ok := subtle.ConstantTimeCompare(provided, token) == 1
 	if !ok && len(legacy) > 0 {
 		ok = subtle.ConstantTimeCompare(provided, legacy) == 1
+	}
+	if !ok {
+		ok = previousTokenMatches(provided, "NODE_BROKER")
 	}
 	if !ok {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid bearer token"})

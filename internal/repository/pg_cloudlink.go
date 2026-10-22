@@ -53,8 +53,9 @@ type CloudLinkRepository interface {
 }
 
 type cloudLinkRepository struct {
-	db      *pgxpool.Pool
-	encrypt *encrypt.Encrypter
+	db             *pgxpool.Pool
+	encrypt        *encrypt.Encrypter
+	connectSession SessionConnector
 }
 
 var errNoLinkEncrypter = errors.New("credential encrypter not configured (set CREDENTIALS_ENCRYPTION_KEY)")
@@ -73,8 +74,8 @@ func (r *cloudLinkRepository) CloudStatuses(ctx context.Context, mailboxes []mod
 }
 
 // NewCloudLinkRepository seals the instance token with the mailbox credential key.
-func NewCloudLinkRepository(db *pgxpool.Pool, enc *encrypt.Encrypter) CloudLinkRepository {
-	return &cloudLinkRepository{db: db, encrypt: enc}
+func NewCloudLinkRepository(db *pgxpool.Pool, enc *encrypt.Encrypter, connector SessionConnector) CloudLinkRepository {
+	return &cloudLinkRepository{db: db, encrypt: enc, connectSession: requireSessionConnector(connector)}
 }
 
 func (r *cloudLinkRepository) CanStore() error {

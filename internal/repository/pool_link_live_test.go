@@ -255,7 +255,7 @@ func TestLivePoolLinkWarmupThreadReplyByAncestry(t *testing.T) {
 func TestLivePoolLinkExpiredCodeLosesItsToken(t *testing.T) {
 	_, pool := liveContactDB(t)
 	ctx := context.Background()
-	repo := NewPoolLinkRepository(pool)
+	repo := NewPoolLinkRepository(pool, testSessionConnector(pool))
 	id := uuid.New()
 	suffix := id.String()[:8]
 

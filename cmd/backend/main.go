@@ -479,19 +479,32 @@ func main() {
 			log.Fatal(err)
 		}
 
-		primaryDB, err := db.New(ctx, primaryDBEndpoint)
+		directDBEndpoint, err := db.DirectEndpoint(primaryDBEndpoint, cfg.LoadPrimaryDBDirectEndpoint(ctx))
 		if err != nil {
 			errs.CaptureFatal(err)
 			log.Fatal(err)
 		}
 
-		// Run database migrations
-		log.Println("Running database migrations...")
-		if err := db.RunMigrations(primaryDBEndpoint); err != nil {
-			errs.CaptureFatal(err)
-			log.Fatal("Failed to run migrations: ", err)
+		migrationsOnStart := cfg.LoadMigrationsOnStart(ctx)
+		if migrationsOnStart {
+			log.Println("Running database migrations...")
+			if err := db.RunMigrations(directDBEndpoint); err != nil {
+				errs.CaptureFatal(err)
+				log.Fatal("Failed to run migrations: ", err)
+			}
+			log.Println("Database migrations completed")
 		}
-		log.Println("Database migrations completed")
+		primaryDB, err := db.NewWithDirect(ctx, primaryDBEndpoint, directDBEndpoint)
+		if err != nil {
+			errs.CaptureFatal(err)
+			log.Fatal(err)
+		}
+		if !migrationsOnStart {
+			if err := db.WaitForSchema(ctx, primaryDB); err != nil {
+				errs.CaptureFatal(err)
+				log.Fatal(err)
+			}
+		}
 		// Once, not per warmup tick: the pools are fixed rows, and their absence
 		// (a data-only restore, a manual delete) otherwise fails every tick quietly.
 		if n, perr := instancecheck.CountSeededWarmupPools(ctx, primaryDB.Pool); perr == nil && n != 2 {
@@ -958,7 +971,11 @@ func main() {
 		// TOTP 2FA: the secret is sealed with a server-wide key (the per-user DEK
 		// is unreachable at login time). Wire the challenger into auth so the login
 		// gate can issue a pending challenge.
-		twofaService = twofa.NewService(repository.NewTOTPRepository(primaryDB.Pool), userRepostory, tokenService, cache, twofa.DeriveKey(authCfg.TwoFASecret))
+		var twoFAReadKeys [][32]byte
+		for _, secret := range authCfg.TwoFAReadSecrets {
+			twoFAReadKeys = append(twoFAReadKeys, twofa.DeriveKey(secret))
+		}
+		twofaService = twofa.NewService(repository.NewTOTPRepository(primaryDB.Pool), userRepostory, tokenService, cache, twofa.DeriveKey(authCfg.TwoFASecret), twoFAReadKeys...)
 		authService.WireTwoFA(twofaService)
 		// The native app proves itself with App Attest where a browser solves Turnstile.
 		appAttestService = appattest.New(repository.NewAppAttestRepository(primaryDB.Pool), cache, appattest.Config{
@@ -1243,9 +1260,8 @@ func main() {
 		// the mailbox-connect redirect_uri from it sends the provider
 		// "0.0.0.0:8080/addresses/google/callback".
 		oauth2Cfg := config.LoadOauth2(oauthPublicBaseURL(apiCfg.Hostname))
-		// Recipient unsubscribe links live on the API origin, signed under the
-		// auth secret; the same base the OAuth callbacks are built on.
-		unsubSigner = unsublink.New(authCfg.AuthSecret, oauthPublicBaseURL(apiCfg.Hostname))
+		// Recipient links use a separate purpose key when one is configured.
+		unsubSigner = unsublink.NewWithReadKeys(authCfg.UnsubscribeSigningSecret, oauthPublicBaseURL(apiCfg.Hostname), authCfg.UnsubscribeReadSecrets, authCfg.UnsubscribeReadUntil)
 		emailService = email.NewServiceWithWorker(
 			emailRepostory,
 			cipherService,
@@ -1303,7 +1319,7 @@ func main() {
 		// Self-hosted warmup pool link, both roles. The cloud side hands out
 		// codes and runs enrolled mailboxes as warmup-only accounts; the
 		// self-hosted side keeps the link and mirrors the cloud's state.
-		poolLinkRepository := repository.NewPoolLinkRepository(primaryDB.Pool)
+		poolLinkRepository := repository.NewPoolLinkRepository(primaryDB.Pool, primaryDB.ConnectSession)
 		poolLinkService = poollink.NewService(poolLinkRepository, emailRepostory, emailService, analyticsService, warmupRepository, featureGateService, organizationService, planRepository)
 		emailService.WirePoolLink(poolLinkRepository)
 		if g, ok := featureGateService.(interface{ WirePoolLink(feature.PoolLinkReader) }); ok {
@@ -1315,7 +1331,7 @@ func main() {
 		if w, ok := poolLinkService.(interface{ WireCampaigns(poollink.CampaignUsage) }); ok {
 			w.WireCampaigns(campaignRepostory)
 		}
-		cloudLinkRepository := repository.NewCloudLinkRepository(primaryDB.Pool, credEncrypter)
+		cloudLinkRepository := repository.NewCloudLinkRepository(primaryDB.Pool, credEncrypter, primaryDB.ConnectSession)
 		emailService.WireCloudLink(cloudLinkRepository)
 		cloudLinkService = cloudlink.NewService(cloudLinkRepository, emailRepostory, emailService)
 		cloudLinkService.OnStandingChange(func(ctx context.Context, change models.CloudLinkStandingChange) {
@@ -1841,7 +1857,7 @@ func main() {
 		// Mailbox imports: files and pasted lists connected in the background,
 		// with each domain's mail host detected from its DNS.
 		// One prover for every DNS ownership proof, keyed by the instance secret.
-		domainProver := domainproof.New(authCfg.AuthSecret)
+		domainProver := domainproof.New(authCfg.DomainProofSecret)
 
 		// Whole-domain connects: Google Workspace delegation to the instance's
 		// service account, Microsoft 365 consent to its Outlook app.

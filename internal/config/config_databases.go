@@ -17,6 +17,14 @@ func (c *Config) LoadPrimaryDBEndpoint(ctx context.Context) (string, error) {
 	return c.GetSecret(ctx, "PRIMARY_DB", "postgres/primary")
 }
 
+func (c *Config) LoadPrimaryDBDirectEndpoint(ctx context.Context) string {
+	return c.GetSecretOptional(ctx, "PRIMARY_DB_DIRECT", "postgres/primary_direct", "")
+}
+
+func (c *Config) LoadMigrationsOnStart(ctx context.Context) bool {
+	return c.GetBoolOptional(ctx, "DB_MIGRATIONS_ON_START", "postgres/migrations_on_start", true)
+}
+
 func (c *Config) LoadPrimaryRedisEndpoint(ctx context.Context) (string, error) {
 	return c.GetSecret(ctx, "REDIS", "redis/primary")
 }

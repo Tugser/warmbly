@@ -6,12 +6,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 // A dedicated connection holds the lock while intents commit independently before network calls.
 func (r *cloudLinkRepository) WithReconciliationLock(ctx context.Context, fn func() error) error {
-	conn, err := pgx.ConnectConfig(ctx, r.db.Config().ConnConfig)
+	conn, err := r.connectSession(ctx)
 	if err != nil {
 		return err
 	}

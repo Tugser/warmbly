@@ -53,6 +53,28 @@ func Open(key [32]byte, ciphertext string) (string, error) {
 	return string(pt), nil
 }
 
+// ErrUnreadableSecret is a sealed TOTP secret that no configured MFA key opens.
+var ErrUnreadableSecret = errors.New("sealed TOTP secret does not open under any configured MFA key")
+
+// Reseal returns sealed under primary when only a read key opens it; changed is false when primary already does.
+func Reseal(primary [32]byte, reads [][32]byte, sealed string) (resealed string, changed bool, err error) {
+	if _, err := Open(primary, sealed); err == nil {
+		return "", false, nil
+	}
+	for _, key := range reads {
+		plain, err := Open(key, sealed)
+		if err != nil {
+			continue
+		}
+		resealed, err := Seal(primary, plain)
+		if err != nil {
+			return "", false, err
+		}
+		return resealed, true, nil
+	}
+	return "", false, ErrUnreadableSecret
+}
+
 func newGCM(key [32]byte) (cipher.AEAD, error) {
 	block, err := aes.NewCipher(key[:])
 	if err != nil {

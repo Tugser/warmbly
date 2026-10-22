@@ -43,6 +43,9 @@ for. Prefer parsing that over reasoning from the prose.
 | Move a workspace in | `warmblyctl org import --org ... --file file.zip --dry-run` first |
 | Back the instance up | `warmblyctl backup --out /data/blobs/warmbly.tar.gz`, then copy it out and delete it |
 | Restore one onto this instance | `warmblyctl restore --file /data/blobs/warmbly.tar.gz` |
+| See which key opens each stored secret | `warmblyctl keys status [--json]` |
+| Move secrets onto a new primary key | `warmblyctl keys reseal` (dry run), then `keys reseal --apply` |
+| Mint replacement keys and tokens | `warmblyctl keys generate [NAME...]` |
 
 ## Mechanics that bite
 
@@ -82,3 +85,13 @@ another host is the `warmbly-install` skill.
 
 Campaigns, contacts, mailboxes, the inbox and settings go through the API
 half of warmblyctl with an API key. That is the `warmbly-api` skill.
+- Rotating `CREDENTIALS_ENCRYPTION_KEY` or `TWOFA_SECRET` is never a swap.
+  Deploy the new value with the old one in `CREDENTIALS_ENCRYPTION_READ_KEYS`
+  / `TWOFA_READ_SECRETS`, run `keys reseal --apply` until `keys status` shows
+  nothing under a read key, and keep the old key while any backup, rollback
+  target or pending job still needs it. Swapping the primary without the old
+  key as a read key makes every stored mailbox credential or MFA enrolment
+  unopenable.
+- `keys status` and `keys reseal` exit non-zero when a value opens under no
+  configured key. That is the signal to restore a key, never to retire one,
+  and `reseal` leaves those values untouched.

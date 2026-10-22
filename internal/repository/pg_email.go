@@ -280,15 +280,19 @@ func (r *emailRepository) sealCredential(plain string) (string, error) {
 // whether the row was still in the pre-sealing plaintext format.
 //
 // Rows written before OAuth tokens were sealed hold the provider token verbatim
-// ("ya29...", "1//0g...", a Graph JWT), none of which is valid hex, so a
-// ParseHex/AEAD failure identifies a legacy row rather than corruption. Callers
-// re-seal on the spot so the plaintext window closes on first read.
+// ("ya29...", "1//0g...", a Graph JWT), none of which is valid hex, so only a
+// value outside the sealed format is legacy. Callers re-seal on the spot so the
+// plaintext window closes on first read.
 func (r *emailRepository) openCredential(stored string) (string, bool, error) {
 	if r.Encrypt == nil {
 		return "", false, errNoCredentialEncrypter
 	}
 	if plain, err := r.Encrypt.Decrypt(stored); err == nil {
 		return plain, false, nil
+	}
+	// Sealed-format values no key opens need their key restored, never a reseal as plaintext.
+	if encrypt.LooksSealed(stored) {
+		return "", false, encrypt.ErrUnreadable
 	}
 	return stored, true, nil
 }
@@ -1308,7 +1312,7 @@ func (r *emailRepository) Search(ctx context.Context, orgID, search string, curs
 func (r *emailRepository) Get(ctx context.Context, orgID, emailAccountID string) (*models.Email, *errx.Error) {
 	query := `
 		SELECT
-		ea.id, ea.email, ea.name, ea.signature_plain, ea.signature_html, ea.signature_sync, ea.signature_code, ea.send_as_email,
+		ea.id, ea.organization_id, ea.email, ea.name, ea.signature_plain, ea.signature_html, ea.signature_sync, ea.signature_code, ea.send_as_email,
 		 ea.provider, ea.mail_host, ea.auth_method, ea.domain_grant_id, ea.vendor_connection_id, COALESCE((SELECT vc.vendor FROM mailbox_vendor_connections vc WHERE vc.id = ea.vendor_connection_id), ''), ea.avatar_url, ea.status, COALESCE(ea.last_synced_at, ea.created_at) AS last_synced_at, ea.last_id, ea.campaign_limit,
 		 ea.min_wait_time, ea.reply_to, ea.tracking_domain, ea.tracking_domain_verified, ea.tracking_domain_verified_at, ea.track_direct_mail,
 		 ea.auth_state, ea.auth_spf, ea.auth_dkim, ea.auth_dmarc, ea.auth_dmarc_policy, ea.auth_reason, ea.auth_checked_at, ea.auth_failing_since,
@@ -1333,7 +1337,7 @@ func (r *emailRepository) Get(ctx context.Context, orgID, emailAccountID string)
 		query,
 		params...,
 	).Scan(
-		&i.ID, &i.Email, &i.Name, &i.SignaturePlain, &i.SignatureHTML, &i.SignatureSync, &i.SignatureCode, &i.SendAsEmail, &i.Provider, &i.MailHost, &i.AuthMethod, &i.DomainGrantID, &i.VendorConnectionID, &i.Vendor, &i.AvatarURL, &i.Status,
+		&i.ID, &i.OrganizationID, &i.Email, &i.Name, &i.SignaturePlain, &i.SignatureHTML, &i.SignatureSync, &i.SignatureCode, &i.SendAsEmail, &i.Provider, &i.MailHost, &i.AuthMethod, &i.DomainGrantID, &i.VendorConnectionID, &i.Vendor, &i.AvatarURL, &i.Status,
 		&i.LastSyncedAt, &i.LastID, &i.CampaignLimit, &i.MinWaitTime, &i.ReplyTo, &i.TrackingDomain, &i.TrackingDomainVerified, &i.TrackingDomainVerifiedAt, &i.TrackDirectMail,
 		&i.AuthState, &i.AuthSPF, &i.AuthDKIM, &i.AuthDMARC, &i.AuthDMARCPolicy, &i.AuthReason, &i.AuthCheckedAt, &i.AuthFailingSince,
 		&i.Warmup, &i.WarmupPausedAt, &i.WarmupBase, &i.WarmupMax, &i.WarmupIncrease, &i.WarmupReplyRate, &i.WarmupTag, &i.WarmupPoolType,
@@ -2697,7 +2701,7 @@ func (r *emailRepository) GetOAuthCredentials(ctx context.Context, emailAccountI
 		return nil, errx.InternalError()
 	}
 	if (accessLegacy || refreshLegacy) && r.transportSnapshot == nil {
-		r.resealOAuthCredentials(ctx, emailAccountID, decryptedAccessToken, decryptedRefreshToken)
+		r.resealOAuthCredentials(ctx, emailAccountID, decryptedAccessToken, decryptedRefreshToken, accessToken, refreshToken)
 	}
 
 	return &OAuthCredentials{
@@ -2712,7 +2716,7 @@ func (r *emailRepository) GetOAuthCredentials(ctx context.Context, emailAccountI
 // SQL-only migration for them because the key lives in the application, so the
 // upgrade happens on first read instead. Best-effort by design, a failure here
 // must not break the read that triggered it; the next read retries.
-func (r *emailRepository) resealOAuthCredentials(ctx context.Context, emailAccountID uuid.UUID, accessToken, refreshToken string) {
+func (r *emailRepository) resealOAuthCredentials(ctx context.Context, emailAccountID uuid.UUID, accessToken, refreshToken, storedAccess, storedRefresh string) {
 	encAccessToken, err := r.sealCredential(accessToken)
 	if err != nil {
 		errs.CaptureException(err)
@@ -2727,9 +2731,10 @@ func (r *emailRepository) resealOAuthCredentials(ctx context.Context, emailAccou
 	query := `
 		UPDATE email_accounts_oauth
 		SET access_token = $1, refresh_token = $2
-		WHERE email_account_id = $3
+		WHERE email_account_id = $3 AND access_token = $4 AND refresh_token = $5
 	`
-	if _, err := r.DB.Exec(ctx, query, encAccessToken, encRefreshToken, emailAccountID); err != nil {
+	// Compare-and-swap, so a token refreshed meanwhile is never overwritten.
+	if _, err := r.DB.Exec(ctx, query, encAccessToken, encRefreshToken, emailAccountID, storedAccess, storedRefresh); err != nil {
 		db.CaptureError(err, query, nil, "reseal-oauth-credentials")
 	}
 }

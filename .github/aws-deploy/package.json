@@ -1,0 +1,8 @@
+{
+  "name": "warmbly-aws-deploy",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "@aws-sdk/client-ecs": "3.1155.0"
+  }
+}

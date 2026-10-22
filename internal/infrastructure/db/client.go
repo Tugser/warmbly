@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 type DB struct {
 	*pgxpool.Pool
+	directConfig *pgx.ConnConfig
 }
 
 const (
@@ -64,7 +66,12 @@ const (
 )
 
 func New(ctx context.Context, endpoint string) (*DB, error) {
-	dbConfig, err := pgxpool.ParseConfig(endpoint)
+	return NewWithDirect(ctx, endpoint, os.Getenv("PRIMARY_DB_DIRECT"))
+}
+
+// NewWithDirect keeps session-scoped operations separate from transaction pooling.
+func NewWithDirect(ctx context.Context, endpoint, directEndpoint string) (*DB, error) {
+	dbConfig, directConfig, pooled, err := connectionConfigs(endpoint, directEndpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +97,7 @@ func New(ctx context.Context, endpoint string) (*DB, error) {
 	// had and every job in that second failed with "remaining connection
 	// slots are reserved". Ask the server instead. The probe costs one
 	// connection at boot and can only lower the pool.
-	if share := serverConnectionShare(ctx, dbConfig.ConnConfig); share > 0 && share < dbConfig.MaxConns {
+	if share := connectionShare(ctx, dbConfig.ConnConfig, pooled); share > 0 && share < dbConfig.MaxConns {
 		log.Warn().
 			Int32("configured_max_conns", dbConfig.MaxConns).
 			Int32("clamped_max_conns", share).
@@ -105,11 +112,6 @@ func New(ctx context.Context, endpoint string) (*DB, error) {
 	dbConfig.HealthCheckPeriod = defaultHealthCheckPeriod
 	dbConfig.ConnConfig.ConnectTimeout = defaultConnectTimeout
 
-	if dbConfig.ConnConfig.RuntimeParams == nil {
-		dbConfig.ConnConfig.RuntimeParams = map[string]string{}
-	}
-	dbConfig.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = idleInTxnTimeoutMs
-	dbConfig.ConnConfig.RuntimeParams["statement_timeout"] = statementTimeoutMs
 	// statement_timeout does not cover the wait for a connection; this reports that wait.
 	if dbConfig.ConnConfig.Tracer == nil {
 		dbConfig.ConnConfig.Tracer = &acquireTracer{}
@@ -119,10 +121,35 @@ func New(ctx context.Context, endpoint string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	if pooled {
+		probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		if err := conn.Ping(probeCtx); err != nil {
+			conn.Close()
+			return nil, errors.New("transaction-pooled database connection failed; verify connectivity, role timeouts and pooler configuration")
+		}
+	}
 
 	return &DB{
-		Pool: conn,
+		Pool:         conn,
+		directConfig: directConfig,
 	}, nil
+}
+
+// ConnectSession opens a direct connection whose close releases session locks.
+func (d *DB) ConnectSession(ctx context.Context) (*pgx.Conn, error) {
+	cfg := d.directConfig
+	if cfg == nil {
+		cfg = d.Config().ConnConfig
+	}
+	return pgx.ConnectConfig(ctx, cfg.Copy())
+}
+
+func connectionShare(ctx context.Context, cfg *pgx.ConnConfig, pooled bool) int32 {
+	if pooled {
+		return 0
+	}
+	return serverConnectionShare(ctx, cfg)
 }
 
 // poolCeiling is the pool size to ask for before the server is consulted.

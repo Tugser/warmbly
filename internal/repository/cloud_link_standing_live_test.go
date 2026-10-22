@@ -25,7 +25,7 @@ func TestLiveCloudReconciliationLockPreservesCommittedIntentWithASingleConnectio
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	r := NewCloudLinkRepository(pool, nil)
+	r := NewCloudLinkRepository(pool, nil, testSessionConnector(pool))
 	entered, release, secondEntered := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	firstDone, secondDone := make(chan error, 1), make(chan error, 1)
 	fault := errors.New("remote unavailable")
@@ -77,7 +77,7 @@ func TestLiveCloudReconciliationLockPreservesCommittedIntentWithASingleConnectio
 func TestLiveCloudStandingFreshnessIsBoundedWithoutInventingAProviderBlock(t *testing.T) {
 	f := newPoolLinkFixture(t)
 	ctx := context.Background()
-	links := NewCloudLinkRepository(f.pool, nil)
+	links := NewCloudLinkRepository(f.pool, nil, testSessionConnector(f.pool))
 	if _, err := links.Enroll(ctx, f.sender, f.sender, liveCloudLink(t, f), false); err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestLiveCloudStandingFreshnessIsBoundedWithoutInventingAProviderBlock(t *te
 func TestLiveCloudUnknownEvidenceDoesNotHideARealHold(t *testing.T) {
 	f := newPoolLinkFixture(t)
 	ctx := context.Background()
-	links := NewCloudLinkRepository(f.pool, nil)
+	links := NewCloudLinkRepository(f.pool, nil, testSessionConnector(f.pool))
 	handle, _ := liveContactDB(t)
 	if _, err := links.Enroll(ctx, f.sender, f.sender, liveCloudLink(t, f), false); err != nil {
 		t.Fatal(err)
@@ -267,7 +267,7 @@ func assertCloudStatus(t *testing.T, f *poolLinkFixture, want models.WarmupHealt
 	if got := many[f.sender]; err != nil || got == nil || got.State != string(want) || got.Reason != reason {
 		t.Fatalf("GetCloudStandings = %+v, %v; want %s (%s)", got, err, want, reason)
 	}
-	links := NewCloudLinkRepository(f.pool, nil)
+	links := NewCloudLinkRepository(f.pool, nil, testSessionConnector(f.pool))
 	m, err := links.GetByAccount(ctx, f.sender)
 	if err != nil || m == nil {
 		t.Fatalf("GetByAccount = %+v, %v", m, err)
@@ -285,7 +285,7 @@ func TestLiveCloudStaleLiveHoldStaysKnown(t *testing.T) {
 		t.Run(string(state), func(t *testing.T) {
 			f := newPoolLinkFixture(t)
 			ctx := context.Background()
-			links := NewCloudLinkRepository(f.pool, nil)
+			links := NewCloudLinkRepository(f.pool, nil, testSessionConnector(f.pool))
 			handle, _ := liveContactDB(t)
 			if _, err := links.Enroll(ctx, f.sender, f.sender, liveCloudLink(t, f), false); err != nil {
 				t.Fatal(err)
@@ -348,7 +348,7 @@ func assertKnownHold(t *testing.T, f *poolLinkFixture, handle *db.DB, want model
 func TestLiveCloudPendingEnrollmentAndDisconnectAreUnknown(t *testing.T) {
 	f := newPoolLinkFixture(t)
 	ctx := context.Background()
-	links := NewCloudLinkRepository(f.pool, nil)
+	links := NewCloudLinkRepository(f.pool, nil, testSessionConnector(f.pool))
 	handle, _ := liveContactDB(t)
 	instance := liveCloudLink(t, f)
 	lifecycle := NewSendLifecycleRepository(handle)
@@ -403,7 +403,7 @@ func TestLiveCloudPositiveObservationCannotClearAHoldFromAnotherLink(t *testing.
 	t.Cleanup(func() {
 		_, _ = f.pool.Exec(ctx, `DELETE FROM cloud_link WHERE instance_id IN ($1, $2)`, oldLink, newLink)
 	})
-	r := NewCloudLinkRepository(f.pool, nil)
+	r := NewCloudLinkRepository(f.pool, nil, testSessionConnector(f.pool))
 	if _, err := r.Enroll(ctx, f.sender, f.sender, oldLink, false); err != nil {
 		t.Fatal(err)
 	}
@@ -449,7 +449,7 @@ func TestLiveCloudPositiveObservationCannotClearAHoldFromAnotherLink(t *testing.
 func TestLiveCloudHoldSurvivesUnlinkLocalHealthReviewAndMembershipChange(t *testing.T) {
 	f := newPoolLinkFixture(t)
 	ctx := context.Background()
-	links := NewCloudLinkRepository(f.pool, nil)
+	links := NewCloudLinkRepository(f.pool, nil, testSessionConnector(f.pool))
 	if err := f.warmup.MoveToPool(ctx, models.WarmupPoolFreeID, f.sender, "sender_receiver"); err != nil {
 		t.Fatal(err)
 	}
@@ -489,7 +489,7 @@ func TestLiveCloudHoldSurvivesUnlinkLocalHealthReviewAndMembershipChange(t *test
 func TestLiveCloudEnrollmentIntentDoesNotReverseAnExplicitOptOut(t *testing.T) {
 	f := newPoolLinkFixture(t)
 	ctx := context.Background()
-	links := NewCloudLinkRepository(f.pool, nil)
+	links := NewCloudLinkRepository(f.pool, nil, testSessionConnector(f.pool))
 	instance := liveCloudLink(t, f)
 	if err := links.BeginEnrollment(ctx, f.sender, f.sender, instance); err != nil {
 		t.Fatal(err)
@@ -527,7 +527,7 @@ func TestLiveCloudEnrollmentIntentDoesNotReverseAnExplicitOptOut(t *testing.T) {
 func TestLiveCloudLinkStandingGatesTheInstance(t *testing.T) {
 	f := newPoolLinkFixture(t)
 	ctx := context.Background()
-	links := NewCloudLinkRepository(f.pool, nil)
+	links := NewCloudLinkRepository(f.pool, nil, testSessionConnector(f.pool))
 	handle, _ := liveContactDB(t)
 	lifecycle := NewSendLifecycleRepository(handle)
 
@@ -607,7 +607,7 @@ func TestLiveCloudLinkStandingGatesTheInstance(t *testing.T) {
 func TestLiveCloudLinkStandingCarriesToTheLocalPool(t *testing.T) {
 	f := newPoolLinkFixture(t)
 	ctx := context.Background()
-	links := NewCloudLinkRepository(f.pool, nil)
+	links := NewCloudLinkRepository(f.pool, nil, testSessionConnector(f.pool))
 	if err := f.warmup.MoveToPool(ctx, models.WarmupPoolFreeID, f.sender, "sender_receiver"); err != nil {
 		t.Fatalf("MoveToPool: %v", err)
 	}
@@ -632,7 +632,7 @@ func TestLiveCloudLinkStandingCarriesToTheLocalPool(t *testing.T) {
 func TestLivePoolLinkListStandingReportsTheHeldStanding(t *testing.T) {
 	f := newPoolLinkFixture(t)
 	ctx := context.Background()
-	repo := NewPoolLinkRepository(f.pool)
+	repo := NewPoolLinkRepository(f.pool, testSessionConnector(f.pool))
 	inst := &models.PoolLinkInstance{ID: uuid.New(), OrganizationID: f.org, Name: "standing"}
 	if err := repo.CreateInstance(ctx, inst, "standing-"+inst.ID.String()); err != nil {
 		t.Fatalf("CreateInstance: %v", err)
@@ -677,7 +677,7 @@ func TestLivePoolLinkListStandingReportsTheHeldStanding(t *testing.T) {
 func TestLiveCloudLinkStandingEdgeCases(t *testing.T) {
 	f := newPoolLinkFixture(t)
 	ctx := context.Background()
-	links := NewCloudLinkRepository(f.pool, nil)
+	links := NewCloudLinkRepository(f.pool, nil, testSessionConnector(f.pool))
 	if err := f.warmup.MoveToPool(ctx, models.WarmupPoolFreeID, f.sender, "sender_receiver"); err != nil {
 		t.Fatal(err)
 	}
@@ -732,7 +732,7 @@ func TestLiveCloudLinkStandingEdgeCases(t *testing.T) {
 func TestLiveCloudLinkStandingExpiredHoldDoesNotMaskALiveOne(t *testing.T) {
 	f := newPoolLinkFixture(t)
 	ctx := context.Background()
-	links := NewCloudLinkRepository(f.pool, nil)
+	links := NewCloudLinkRepository(f.pool, nil, testSessionConnector(f.pool))
 	if err := f.warmup.MoveToPool(ctx, models.WarmupPoolFreeID, f.sender, "sender_receiver"); err != nil {
 		t.Fatal(err)
 	}
@@ -766,7 +766,7 @@ func TestLiveCloudWorkspaceDisconnectDoesNotHoldOrBrokerAnotherWorkspace(t *test
 	f, other := newPoolLinkFixture(t), newPoolLinkFixture(t)
 	ctx := context.Background()
 	a, b := liveCloudLink(t, f), liveCloudLink(t, other)
-	links := NewCloudLinkRepository(f.pool, nil)
+	links := NewCloudLinkRepository(f.pool, nil, testSessionConnector(f.pool))
 	for _, row := range []struct{ account, instance uuid.UUID }{{f.sender, a}, {other.sender, b}} {
 		if _, err := links.Enroll(ctx, row.account, row.account, row.instance, true); err != nil {
 			t.Fatal(err)

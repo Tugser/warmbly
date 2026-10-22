@@ -104,7 +104,11 @@ func main() {
 	// assume migrations are already applied, but running them here makes it
 	// robust standalone: without it, new tables (e.g. crm_task_types) are
 	// missing and the seed aborts partway, which looks like "nothing seeded".
-	if err := db.RunMigrations(dsn); err != nil {
+	directDSN, err := db.DirectEndpoint(dsn, os.Getenv("PRIMARY_DB_DIRECT"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := db.RunMigrations(directDSN); err != nil {
 		log.Fatalf("migrations: %v", err)
 	}
 

@@ -1,0 +1,193 @@
+---
+title: Prepare AWS Fargate
+description: Provision an AWS foundation with Terraform and plan a coordinated control plane cutover.
+---
+
+The configurations in `deploy/terraform/` manage infrastructure through separate
+AWS, PlanetScale and Confluent state files. The AWS root prepares infrastructure
+in `us-east-1`: a network, ECS cluster, repositories, logs, configuration stores,
+Valkey and optional database connectivity and certificates. The separate runtime
+root creates application services, task roles and HTTPS ingress. The worker root
+prepares ARM EC2 hosts with static IPs. Public traffic changes remain a separate
+cutover step.
+
+## Adopt existing resources
+
+The PlanetScale root adopts an existing Postgres branch and reads its database
+metadata. The Confluent root adopts an existing environment, Basic Kafka cluster
+and service account, and reads Schema Registry metadata. Each uses import blocks
+and destruction guards. An adoption plan must show imports with zero resource
+creates, updates, replacements or deletes before it is applied.
+
+Importing configuration does not copy SQL rows, Kafka messages or consumer
+offsets. SQL migrations, schema versions, access rules and runtime worker topics
+retain their current owners. Existing credentials are provisioned separately
+from Terraform.
+
+## Keep existing data services
+
+Warmbly can run its control plane on Fargate while keeping PlanetScale Postgres,
+Confluent Kafka, S3 and AWS KMS. Keep the existing KMS key available so stored
+organization data keys remain readable. Workers continue to use the brokered
+interfaces described in [split deployment](/development/split-deployment/).
+
+PlanetScale Postgres supports an interface VPC endpoint in the database's AWS
+region. Set `planetscale_service_name` from the branch's Private Service Name.
+The foundation creates endpoint interfaces in two availability zones and limits
+database access to the application security group. Use the branch's Private
+Host with certificate verification in application connection strings.
+
+Creating an endpoint does not disable the database's public access. Change public
+access restrictions only after every database client, including operational
+tools, has a working private path.
+
+### Database connection pooling
+
+PlanetScale includes a local PgBouncer with each Postgres database. It uses the
+same hostname and credentials on port `6432`, including through PrivateLink.
+Dedicated PgBouncers are a separate paid option. See
+[PlanetScale's connection pooling documentation](https://planetscale.com/docs/postgres/connecting/pgbouncer).
+
+The local pooler uses transaction pooling. Route migrations and operations that
+hold session advisory locks through a direct connection on port `5432`.
+Set `PRIMARY_DB` to the pooled connection, `PRIMARY_DB_DIRECT` to the direct
+connection and `DB_POOL_MODE=transaction` for the Go services. Cloud reconciliation
+and managed operations open direct sessions for their session locks. Backups and
+the migration binary also use the direct connection. Before enabling transaction
+mode, configure the application database roles with `statement_timeout=60s` and
+`idle_in_transaction_session_timeout=5min`. The Go client verifies those effective
+settings instead of sending timeout startup parameters to PgBouncer. Verify the
+actual realtime client's prepared statements separately before switching it.
+
+Budget Postgres server connections across every database role, direct client and
+deployment replica. PgBouncer's `default_pool_size` applies per user/database
+pair, so separate service roles can each create a server pool. Its client
+connection limit is not additional Postgres server capacity. Preserve headroom
+for migrations and operations throughout the overlap with the old deployment.
+
+Confluent Kafka PrivateLink requires an Enterprise or Dedicated cluster. Keep the current
+Kafka transport, codec, topics and consumer groups during a compute migration.
+Check connectivity for both Kafka and Schema Registry. External workers need
+their own network path if the cluster becomes private.
+
+Keep existing tracking hostnames registered with the edge provider, including
+their TLS certificates and origin configuration. Put those hostnames in
+`tracking_additional_hosts` so the ALB forwards their original Host headers to
+the tracking service. The empty default keeps ordinary single-host deployments
+unchanged. Validate each hostname before moving its traffic.
+
+## Size tasks from measurements
+
+Fargate bills provisioned CPU and memory. Its smallest Linux task has 0.25 vCPU
+and 512 MiB. Use more CPU when measured peaks exceed that allocation and allow
+memory headroom for startup and bursts. ARM64 images can reduce compute cost;
+verify that every pinned image includes that architecture, including Kafka
+variants.
+
+Keep the shared Redis-compatible cache separate from replaceable app tasks. It
+coordinates multiple services and workers, so inspect all callers before
+changing its endpoint. Size the database from its own utilization and query
+metrics rather than from application container memory.
+
+The AWS root provisions one Valkey `cache.t4g.micro` with TLS, encryption at rest,
+password authentication and one-day snapshots. It uses the standalone protocol
+supported by Warmbly's current clients and multi-key scripts. ElastiCache
+Serverless requires cluster-aware clients and different multi-key handling.
+The single-node configuration has no replica failover.
+
+The new cache starts empty. Shared counters, locks and transient state need a
+coordinated transition before clients switch endpoints. Its private endpoint is
+reachable from application tasks in the VPC; external workers and local tools
+need a private route or tunnel.
+
+Budget for load balancing, public IPv4 addresses, cache, interface endpoints,
+logs, secrets and transfer charges in addition to Fargate compute. The foundation
+starts no NAT gateway or load balancer. PrivateLink does not replace internet
+egress for other application dependencies.
+
+The runtime root uses public task IPs for egress and restricts inbound application
+traffic to its load balancer. Start with zero desired tasks until configuration
+and dependency checks pass. A Linux task with 0.5 vCPU requires at least 1 GiB of
+memory; the 512 MiB minimum applies to 0.25 vCPU tasks.
+
+Mail workers can remain on existing hosts or use the separate EC2 worker root.
+Graviton `t4g.small` hosts provide 2 vCPUs and 2 GiB of memory with a static public
+IP per worker. The root uses standard CPU credits to cap burst charges. Bootstrap
+prepares each host without starting its worker, so identity and credentials can
+be checked before a sequential handover. Check mailbox authentication when the
+outbound IP changes, and preserve each worker ID throughout the move.
+
+## Prepare configuration
+
+Use the deployment README to bootstrap encrypted, versioned Terraform state and
+apply the foundation. Installation-specific values and plans belong outside the
+checkout. Use Standard String parameters in Systems Manager Parameter Store for
+approved non-secret values such as public URLs, provider names and feature
+switches. Put passwords, tokens, encryption material and credential-bearing
+connection strings in Secrets Manager. Reference both stores from ECS task
+definitions. Running tasks must be replaced to pick up updated injected values.
+
+The foundation also creates a separate rotation secret for pending key
+replacements. Keep that secret restricted to operators. Generating pending keys
+does not activate them or retire the keys used by the running deployment.
+
+Preserve current configuration before preparing replacements. Keep a dependency
+map of each value's readers, encrypted data and rollback requirements. The
+Valkey password uses an ephemeral Terraform read and a write-only authentication
+argument, so its value is omitted from Terraform state and saved plans.
+
+Use ECS task roles for S3, KMS and SES access. Give the execution role permission
+to retrieve only its service's runtime configuration. Backend and consumer need
+application permissions; worker nodes use brokered operations and carry no cloud
+credentials.
+
+## Coordinate the cutover
+
+1. Verify backups and a restore procedure, including the keys needed to read
+   encrypted data. Pin compatible release images and prepare TLS certificates.
+2. Create separate database roles and Kafka credentials for the new deployment.
+   Verify access before retiring credentials used by the running deployment.
+3. Configure a shared cache and internal service addresses. Verify that workers
+   can reach every dependency they require.
+4. Run the release's migration task and require a successful exit before starting
+   the backend. Set `DB_MIGRATIONS_ON_START=false` in its runtime configuration.
+   The backend and consumer verify schema readiness before starting work. Coordinate
+   scheduler ownership before allowing old and new backends to run scheduled work
+   together. Confirm compatibility before sharing a database across releases.
+5. Start the remaining services. Check API access, forms, tracking, websocket
+   authentication, Kafka processing and worker heartbeats. Set a stop timeout of
+   at least 60 seconds for services that drain work.
+6. Move public traffic to healthy targets, drain the previous deployment and
+   confirm that queued work has completed. DNS changes can leave some clients
+   on the previous address until caches expire.
+7. Retire old credentials after all callers use replacements. If rollback is
+   needed, use the replacement credentials on the rollback deployment too.
+
+Authentication key rotation invalidates existing signed tokens and requires
+users to sign in again. MFA secrets are encrypted with `TWOFA_SECRET`, which
+falls back to `AUTH_SECRET` when unset. Coordinate re-encryption with key changes
+so enrolled MFA remains readable. Mailbox encryption key changes likewise need
+an explicit re-encryption and worker rollout procedure.
+
+Treat database logins and data encryption keys as separate changes. A replacement
+database login connects to the same stored data; it does not require new mailbox
+passwords or OAuth grants. Preserve the existing credential encryption key,
+organization data keys and their KMS decrypt capability during the hosting
+cutover. Keep OAuth application identities and authorized callback URLs
+compatible with existing refresh tokens.
+
+Before activating replacement encryption keys, verify decryption of the stored
+mailbox credentials, OAuth tokens, webhook secrets, integration credentials and
+MFA enrollments without logging their contents. Include instance-level data and
+pending mailbox-erasure tokens in the inventory. Repeat these checks using the
+new tasks' runtime permissions before moving traffic; operator access alone does
+not verify a task role. Re-encryption must preserve the underlying credential
+values and coordinate all readers, writers, queued work and rollback deployments.
+
+`AUTH_SECRET` also derives signing keys for unsubscribe links and domain ownership
+proofs. Plan compatibility for previously issued links and existing DNS proofs
+before changing it. A successful sign-in check alone does not verify these paths.
+
+The infrastructure foundation alone does not provide a zero-outage migration.
+Credential rotation, scheduler ownership, shared state and connection draining
+must all be coordinated before the traffic switch.

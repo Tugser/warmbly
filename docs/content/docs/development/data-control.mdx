@@ -209,7 +209,7 @@ docker compose -p warmbly cp backend:/data/blobs/warmbly.tar.gz ./warmbly.tar.gz
 
 `/data/blobs` is a hand-off, not a destination: it is the one path the container and the host both see. The `&&` matters twice over. `backup` leaves its own output out of the archive, but a bundle left there is swept into the next run, so it has to be deleted; and a `cp` that failed must not be followed by deleting the only copy that exists.
 
-The bundle is written 0600 and holds every mailbox credential on the instance plus the keys that open them. Treat the file as you would the instance itself.
+The bundle is written 0600 and holds every mailbox credential on the instance plus the keys that open them. It includes configured credential and MFA read keys, purpose-specific signing keys and bounded internal-token overlap settings. Preserve those values when restoring a bundle that contains mixed generations of ciphertext. Treat the file as you would the instance itself.
 
 An install from `install.sh --wizard` can schedule this for you: `backup.sh` next to the install, a systemd timer, a retention count, and an optional `aws s3 cp` to somewhere off the host. A backup that only exists on the machine it backs up is not one.
 
@@ -250,7 +250,7 @@ curl -fsSL https://warmbly.com/install.sh | sh -s -- --host <new-hostname>
 
 ### Put the old keys in the new `.env`
 
-Copy `CREDENTIALS_ENCRYPTION_KEY` and `KMS_LOCAL_MASTER_KEY` from the old install, then recreate the containers so they take:
+Copy the saved keys from the old install, including `CREDENTIALS_ENCRYPTION_KEY`, `KMS_LOCAL_MASTER_KEY` and any configured read keys or separate MFA and signing keys. See [key rotation](/development/configuration/#rotate-instance-keys). Then recreate the containers so they take:
 
 ```bash
 docker compose -p warmbly up -d

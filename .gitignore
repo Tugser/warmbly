@@ -58,6 +58,9 @@ go.work.sum
 # Local Go build cache
 .gocache/
 
+# Local cache deployment metadata
+.elasticache/
+
 # Node dependencies (per-tree .gitignores cover admin/site/docs/web; this
 # also catches a stray root-level install / pnpm store)
 node_modules/

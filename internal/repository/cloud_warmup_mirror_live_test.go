@@ -33,7 +33,7 @@ func TestLiveCloudWarmupMirrorWritesOnlyEnrolledMailboxesInOrder(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	repo := NewCloudLinkRepository(pool, nil)
+	repo := NewCloudLinkRepository(pool, nil, testSessionConnector(pool))
 	for _, id := range []uuid.UUID{enrolled, leaving} {
 		if _, err := repo.Enroll(ctx, id, id, instance, false); err != nil {
 			t.Fatal(err)

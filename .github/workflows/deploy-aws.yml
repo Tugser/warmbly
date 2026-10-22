@@ -1,0 +1,65 @@
+name: Deploy AWS control plane
+
+on:
+  workflow_dispatch:
+    inputs:
+      migration_task_definition:
+        description: Terraform migration task definition ARN with an explicit revision
+        required: true
+        type: string
+      backend_task_definition:
+        description: Terraform backend task definition ARN with an explicit revision
+        required: true
+        type: string
+      consumer_task_definition:
+        description: Terraform consumer task definition ARN with an explicit revision
+        required: true
+        type: string
+      backend_desired_count:
+        description: Backend desired count (preserve or 0 through 5)
+        default: preserve
+        type: string
+      consumer_desired_count:
+        description: Consumer desired count (preserve or 0 through 5)
+        default: preserve
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aws-production-control-plane
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: aws-production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install deployment client
+        run: npm ci --prefix .github/aws-deploy --omit=dev --ignore-scripts --no-audit --no-fund
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Migrate, verify and deploy
+        env:
+          NODE_PATH: ${{ github.workspace }}/.github/aws-deploy/node_modules
+          AWS_ECS_CLUSTER: ${{ vars.AWS_ECS_CLUSTER }}
+          AWS_ECS_SERVICE_PREFIX: ${{ vars.AWS_ECS_SERVICE_PREFIX }}
+          AWS_MIGRATION_TASK_DEFINITION: ${{ inputs.migration_task_definition }}
+          AWS_BACKEND_TASK_DEFINITION: ${{ inputs.backend_task_definition }}
+          AWS_CONSUMER_TASK_DEFINITION: ${{ inputs.consumer_task_definition }}
+          AWS_BACKEND_DESIRED_COUNT: ${{ inputs.backend_desired_count }}
+          AWS_CONSUMER_DESIRED_COUNT: ${{ inputs.consumer_desired_count }}
+        run: node .github/scripts/aws-deploy.cjs

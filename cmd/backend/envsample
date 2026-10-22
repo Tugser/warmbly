@@ -1,5 +1,6 @@
 # DATABASES / SERVICES
 PRIMARY_DB="postgresql://username:password@localhost:5433/database"
+# For a transaction pooler, set PRIMARY_DB_DIRECT and DB_POOL_MODE=transaction.
 REDIS="redis://arbitrary_usrname:password@ipaddress:6379/0"
 KAFKA="amqp://username:password@ip:port/vhost"
 GEO_DB_PATH="./database.mmdb"

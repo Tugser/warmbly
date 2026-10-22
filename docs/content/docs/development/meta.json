@@ -6,6 +6,7 @@
     "---Self-hosting---",
     "install",
     "deployment-guide",
+    "aws-fargate",
     "coolify",
     "bare-metal",
     "split-deployment",

@@ -28,6 +28,7 @@ jobs:
     outputs:
       go-services: ${{ steps.filter.outputs.go-services }}
       migrations: ${{ steps.filter.outputs.migrations }}
+      aws-deployment: ${{ steps.filter.outputs.aws-deployment }}
       tracking: ${{ steps.filter.outputs.tracking }}
       realtime: ${{ steps.filter.outputs.realtime }}
       web: ${{ steps.filter.outputs.web }}
@@ -65,6 +66,11 @@ jobs:
             migrations:
               - 'internal/infrastructure/db/migrations/**'
               - 'scripts/check-migrations.sh'
+            aws-deployment:
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/deploy-aws.yml'
+              - '.github/scripts/aws-deploy*.cjs'
+              - '.github/aws-deploy/**'
             tracking:
               - 'tracking/**'
             realtime:
@@ -876,10 +882,27 @@ jobs:
   # The one job to mark required in branch protection. Skipped jobs pass
   # (their tree did not change); anything failed or cancelled fails it.
   # Dependency scanning lives in security.yml, off the PR path on purpose.
+  aws-deployment-ci:
+    name: AWS deployment gates
+    needs: changes
+    if: needs.changes.outputs.aws-deployment == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install deployment client
+        run: npm ci --prefix .github/aws-deploy --omit=dev --ignore-scripts --no-audit --no-fund
+      - name: Check migration and rollback gates
+        env:
+          NODE_PATH: ${{ github.workspace }}/.github/aws-deploy/node_modules
+        run: node --test .github/scripts/aws-deploy.test.cjs
+
   ci-status:
     name: CI Status
     runs-on: ubuntu-latest
-    needs: [changes, migrations-ci, go-ci, web-ci, qa-ci, admin-ci, site-ci, forms-ci, installer-ci, cli-installer-ci, make-ci, rust-ci, elixir-ci, ios-ci, frontend-images, pages-ci]
+    needs: [changes, migrations-ci, go-ci, web-ci, qa-ci, admin-ci, site-ci, forms-ci, installer-ci, cli-installer-ci, make-ci, rust-ci, elixir-ci, ios-ci, frontend-images, pages-ci, aws-deployment-ci]
     if: always()
     steps:
       - name: Check CI status

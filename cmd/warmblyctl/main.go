@@ -88,6 +88,8 @@ func dispatch(ctx context.Context, args []string) error {
 		return runFleet(ctx, args[1:])
 	case "inbox-tag":
 		return runInboxTag(ctx, args[1:])
+	case "keys":
+		return runKeys(ctx, args[1:])
 	}
 	if _, ok := apiFamilies[args[0]]; ok {
 		return runAPIResource(ctx, args[0], args[1:])
@@ -119,6 +121,9 @@ var commands = []command{
 	{"hash-password", "Print an argon2 hash for WARMBLY_BOOTSTRAP_PASSWORD_HASH", "printf '%s' 'your-password' | docker compose -p warmbly exec -T backend warmblyctl hash-password"},
 	{"backup", "Write the whole instance (database, blobs, keys) to one restorable bundle", composeExec + "backup --out /data/blobs/warmbly-backup.tar.gz"},
 	{"restore", "Restore a bundle onto this instance, replacing everything on it", composeExec + "restore --file /data/blobs/warmbly-backup.tar.gz"},
+	{"keys status", "Count stored secrets by the key that opens them, and show open grace windows", composeExec + "keys status"},
+	{"keys reseal", "Rewrite secrets a read key opens under the primary key; a dry run without --apply", composeExec + "keys reseal --apply"},
+	{"keys generate", "Print fresh values for the instance-wide keys and tokens", composeExec + "keys generate CREDENTIALS_ENCRYPTION_KEY"},
 	{"inbox-tag backfill", "Classify mail that arrived before automatic tagging was switched on", composeExec + "inbox-tag backfill --org you@example.com --days 30 --dry-run"},
 	{"inbox-tag follow-ups", "Recompute who owes whom a reply from stored mail and classifications", composeExec + "inbox-tag follow-ups --org you@example.com"},
 	{"org list", "List the workspaces on this instance with their id, owner, and size", composeExec + "org list"},
@@ -197,11 +202,17 @@ Environment:
   settings) and CREDENTIALS_ENCRYPTION_KEY. Run them inside the backend
   container, where those are already set.
 
+  keys status and keys reseal read CREDENTIALS_ENCRYPTION_KEY with
+  CREDENTIALS_ENCRYPTION_READ_KEYS, and TWOFA_SECRET with TWOFA_READ_SECRETS,
+  exactly as the backend does. keys generate needs nothing.
+
 Exit status:
   status exits non-zero when a check is at error severity, so it works as a
   post-deploy gate. Use status --quiet from cron: it prints the checks alone,
   and nothing at all when none fire. status --json always exits 0, because it
   doubles as a liveness probe; read .summary.error there instead.
+  keys status and keys reseal exit non-zero when a stored value opens under no
+  configured key, which is the signal not to retire one.
 
 Run `+"`warmblyctl <command> --help`"+` for one command's flags.
 `)

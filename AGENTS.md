@@ -43,6 +43,60 @@ Migrations are numbered against `main`, not against your branch:
 - run `make check-migrations` (also a prerequisite of `make lint`, and its own CI job) before pushing anything that adds a migration
 - if a duplicate does reach `main`, renumber the migration that has NOT been released yet. The other one is already recorded in deployments' `schema_migrations`, and renumbering it makes them re-apply it
 
+### Deployment and rollback compatibility is required
+
+Every change must support the mixed versions present during a rolling deployment
+and the supported rollback window. This includes database schemas and stored
+data, public and internal APIs, worker protocols, queued events, cache formats
+and credentials. State the supported version window when it changes.
+
+- The previous application release must keep working after the new migration.
+  The new release must accept data and queued messages written by that previous
+  release. A rollback must preserve writes accepted by the new release.
+- Use expand-and-contract changes: add compatible fields or tables first, deploy
+  tolerant readers and any coordinated dual writes, backfill with a resumable
+  job, then switch callers. Remove or rename old representations only in a later
+  release, after every old service and worker has drained and the rollback
+  window has closed. Never combine the expansion and removal in one deployment.
+- A new required field needs a compatible default or a staged nullable period.
+  New event variants and enum values need readers that can handle them before
+  producers emit them. Retained Kafka messages, retries and delayed jobs count
+  as old producers too; preserve codec and schema compatibility.
+- Keep credential and encryption-key overlap until all readers and writers use
+  replacements. Rollback instances must use credentials and keys compatible with
+  the current data. Reverting configuration is not a data migration.
+- Hosted deployments run one migration job before rolling application services,
+  using the release's backend image and a direct database connection. Services
+  verify schema readiness. Migration failure blocks deployment; never force a
+  migration version, clear a dirty flag or run a down migration automatically.
+  Self-host startup migrations remain supported by default.
+- Review schema-lock duration and backfill cost. Keep large backfills out of the
+  deployment transaction. Validate old-code/new-schema behavior, new-code/old-data
+  behavior and rollback with representative fixtures when a change touches a
+  shared contract. Document any intentional breaking change and its transition
+  plan before deploying it.
+
+### Self-hosting remains a first-class deployment
+
+Hosted infrastructure changes must be opt-in and preserve existing self-hosts.
+The hosted service and self-hosts use the same application code and release images.
+
+- An existing self-host's configuration must keep working after an upgrade.
+  New cloud, pooler and CI settings are optional and default to the existing
+  behavior. In particular, direct `PRIMARY_DB` connections and backend startup
+  migrations remain the self-host defaults.
+- A self-host requires no AWS account, hosted control plane, PlanetScale,
+  Confluent, GitHub Actions, paid license or cloud credential. Preserve the
+  supported local database, cache, event bus, blob storage and key providers.
+- Keep the one-command installer, interactive wizard, unattended flags,
+  documented Compose deployments, backup/restore and workspace portability
+  functional. An upgrade must preserve configuration, encryption keys and data.
+- Configure hosted-only deployment policies in infrastructure or explicit
+  settings. Do not infer a cloud dependency from production mode, and do not
+  require a hosted service to install, start, upgrade or recover a self-host.
+- Verify the default self-host path as well as any new hosted path. Update the
+  self-host configuration and upgrade docs when adding an optional setting.
+
 Docs stay in sync:
 
 - the customer docs site lives in `docs/` (Fumadocs, served at docs.warmbly.com); content is MDX under `docs/content/docs/` in three sections: `guides/` (product behavior), `learn/` (fundamentals), `api/` (API reference)
