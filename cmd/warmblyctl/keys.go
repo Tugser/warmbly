@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/warmbly/warmbly/internal/app/mailcred"
 	"github.com/warmbly/warmbly/internal/app/orgtransfer"
 	"github.com/warmbly/warmbly/internal/app/twofa"
 	"github.com/warmbly/warmbly/internal/config"
@@ -46,12 +47,12 @@ var instanceOnlyColumns = []sealedColumn{
 	{Table: "user_totp_settings", Column: "totp_secret_sealed", Domain: domainMFA},
 }
 
-// sealedColumns is every column the instance keys seal: the archive registry's instance-key secrets plus the instance-only ones.
+// sealedColumns is every column the instance keys seal: the archive registry's instance-key and mailbox secrets plus the instance-only ones.
 func sealedColumns() []sealedColumn {
 	var out []sealedColumn
 	for _, t := range orgtransfer.Tables {
 		for _, s := range t.Secrets {
-			if s.Domain == orgtransfer.KeyDomainInstance {
+			if s.Domain == orgtransfer.KeyDomainInstance || s.Domain == orgtransfer.KeyDomainMailbox {
 				out = append(out, sealedColumn{Table: t.Name, Column: s.Column, Domain: domainInstance, guard: s.Guard})
 			}
 		}
@@ -64,6 +65,7 @@ type columnCount struct {
 	sealedColumn
 	Primary    int  `json:"primary"`
 	ReadKey    int  `json:"read_key"`
+	Workspace  int  `json:"workspace"`
 	Unsealed   int  `json:"unsealed"`
 	Unreadable int  `json:"unreadable"`
 	Resealed   int  `json:"resealed,omitempty"`
@@ -288,6 +290,9 @@ func scanColumn(ctx context.Context, c *conn, keys *keyring, col sealedColumn, s
 			case errors.Is(err, errUnsealed):
 				out.Unsealed++
 				continue
+			case errors.Is(err, errWorkspaceSealed):
+				out.Workspace++
+				continue
 			case err != nil:
 				out.Unreadable++
 				continue
@@ -316,11 +321,18 @@ func scanColumn(ctx context.Context, c *conn, keys *keyring, col sealedColumn, s
 	}
 }
 
-var errUnsealed = errors.New("value is stored outside the sealed format")
+var (
+	errUnsealed        = errors.New("value is stored outside the sealed format")
+	errWorkspaceSealed = errors.New("value is sealed under its workspace key")
+)
 
 func resealValue(keys *keyring, col sealedColumn, value string) (string, bool, error) {
 	if col.Domain == domainMFA {
 		return twofa.Reseal(*keys.mfa, keys.mfaRead, value)
+	}
+	// A workspace-sealed value needs no instance key, so a rotation leaves it alone.
+	if mailcred.IsOrgSealed(value) {
+		return "", false, errWorkspaceSealed
 	}
 	if !encrypt.LooksSealed(value) {
 		return "", false, errUnsealed
@@ -357,7 +369,7 @@ func printKeyReport(r keyReport, reseal bool) {
 	} else {
 		fmt.Println("MFA key: not configured here, so TOTP enrollments are not checked.")
 	}
-	fmt.Printf("\n  %-44s %8s %9s %9s %11s\n", "column", "primary", "read key", "unsealed", "unreadable")
+	fmt.Printf("\n  %-44s %8s %9s %10s %9s %11s\n", "column", "primary", "read key", "workspace", "unsealed", "unreadable")
 	var onRead, unreadable, resealed, raced int
 	cols := append([]columnCount(nil), r.Columns...)
 	sort.SliceStable(cols, func(i, j int) bool { return cols[i].Domain < cols[j].Domain })
@@ -367,7 +379,7 @@ func printKeyReport(r keyReport, reseal bool) {
 			fmt.Printf("  %-44s %s\n", label, "table not present")
 			continue
 		}
-		fmt.Printf("  %-44s %8d %9d %9d %11d\n", label, c.Primary, c.ReadKey, c.Unsealed, c.Unreadable)
+		fmt.Printf("  %-44s %8d %9d %10d %9d %11d\n", label, c.Primary, c.ReadKey, c.Workspace, c.Unsealed, c.Unreadable)
 		onRead += c.ReadKey
 		unreadable += c.Unreadable
 		resealed += c.Resealed

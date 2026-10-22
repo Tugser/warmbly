@@ -14,6 +14,7 @@ import (
 
 	"github.com/warmbly/warmbly/internal/app/cipher"
 	"github.com/warmbly/warmbly/internal/app/credits"
+	"github.com/warmbly/warmbly/internal/app/mailcred"
 	"github.com/warmbly/warmbly/internal/app/organization"
 	"github.com/warmbly/warmbly/internal/app/orgtransfer"
 	"github.com/warmbly/warmbly/internal/app/token"
@@ -178,6 +179,9 @@ func (c *conn) orgTransferService(ctx context.Context) (orgtransfer.Service, err
 	}
 	if credEncrypter == nil {
 		warn("CREDENTIALS_ENCRYPTION_KEY is not set, so mailbox credentials cannot be read or written by this command.")
+	}
+	if _, err := mailcred.ModeFromEnv(); err != nil {
+		return nil, err
 	}
 
 	return orgtransfer.NewService(

@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/warmbly/warmbly/internal/app/mailcred"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/infrastructure/db"
 	"github.com/warmbly/warmbly/internal/models"
@@ -17,9 +18,11 @@ func (r *emailRepository) GetSMTPIMAP(ctx context.Context, userID, emailAccountI
 	var imap models.Service
 	var smtp models.Service
 	var ts time.Time
+	var orgID *uuid.UUID
 
 	query := `
 		SELECT
+    	 ea.organization_id,
     	 smtp.smtp_host,
     	 smtp.smtp_port,
     	 smtp.smtp_user,
@@ -50,7 +53,7 @@ func (r *emailRepository) GetSMTPIMAP(ctx context.Context, userID, emailAccountI
 		query,
 		params...,
 	).Scan(
-		&smtp.Host, &smtp.Port, &smtp.Username, &smtp.Password, &smtp.Security,
+		&orgID, &smtp.Host, &smtp.Port, &smtp.Username, &smtp.Password, &smtp.Security,
 		&imap.Host, &imap.Port, &imap.Username, &imap.Password, &imap.Security,
 		&ts,
 	)
@@ -61,33 +64,11 @@ func (r *emailRepository) GetSMTPIMAP(ctx context.Context, userID, emailAccountI
 		db.CaptureError(err, query, params, "queryrow")
 		return nil, errx.InternalError()
 	}
-	imap.Username, err = r.Encrypt.Decrypt(imap.Username)
-	if err != nil {
-		errs.CaptureException(err)
+	if r.Creds == nil {
+		errs.CaptureException(mailcred.ErrNoKey)
 		return nil, errx.InternalError()
 	}
-	imap.Password, err = r.Encrypt.Decrypt(imap.Password)
-	if err != nil {
-		errs.CaptureException(err)
-		return nil, errx.InternalError()
-	}
-	imap.Host, err = r.Encrypt.Decrypt(imap.Host)
-	if err != nil {
-		errs.CaptureException(err)
-		return nil, errx.InternalError()
-	}
-	smtp.Username, err = r.Encrypt.Decrypt(smtp.Username)
-	if err != nil {
-		errs.CaptureException(err)
-		return nil, errx.InternalError()
-	}
-	smtp.Password, err = r.Encrypt.Decrypt(smtp.Password)
-	if err != nil {
-		errs.CaptureException(err)
-		return nil, errx.InternalError()
-	}
-	smtp.Host, err = r.Encrypt.Decrypt(smtp.Host)
-	if err != nil {
+	if err := r.openCredentials(ctx, orgID, &smtp.Host, &smtp.Username, &smtp.Password, &imap.Host, &imap.Username, &imap.Password); err != nil {
 		errs.CaptureException(err)
 		return nil, errx.InternalError()
 	}
@@ -155,16 +136,19 @@ func (r *emailRepository) RefreshBoxToken(ctx context.Context, id uuid.UUID, acc
 	// Refreshed tokens land here from the worker's OnTokenRefresh callback and
 	// must be sealed on the same terms as the ones written at connect time,
 	// otherwise the first refresh silently reverts the row to plaintext.
-	encAccessToken, err := r.sealCredential(accessToken)
+	orgID, err := r.mailboxOrganization(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil // the mailbox is gone, so there is nothing to update
+	}
 	if err != nil {
-		db.CaptureError(err, "", nil, "encrypt-access-token")
 		return err
 	}
-	encRefreshToken, err := r.sealCredential(refreshToken)
+	sealed, err := r.sealCredentials(ctx, orgID, accessToken, refreshToken)
 	if err != nil {
-		db.CaptureError(err, "", nil, "encrypt-refresh-token")
+		db.CaptureError(err, "", nil, "encrypt-oauth-tokens")
 		return err
 	}
+	encAccessToken, encRefreshToken := sealed[0], sealed[1]
 
 	query := `
 		UPDATE email_accounts_oauth
@@ -191,18 +175,46 @@ func (r *emailRepository) RefreshBoxToken(ctx context.Context, id uuid.UUID, acc
 	return nil
 }
 
+func (r *emailRepository) RefreshBoxTokenSealed(ctx context.Context, id uuid.UUID, sealed string, expiresAt time.Time) error {
+	orgID, err := r.mailboxOrganization(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if orgID == nil {
+		return errors.New("sealed token for a mailbox with no organization")
+	}
+	c, err := r.Creds.Cipher(ctx, *orgID)
+	if err != nil {
+		return err
+	}
+	v, err := mailcred.OpenWorkerSecrets(ctx, c, sealed)
+	if err != nil {
+		return err
+	}
+	if v.Token == nil {
+		return errors.New("sealed token update carries no token")
+	}
+	return r.RefreshBoxToken(ctx, id, v.Token.AccessToken, v.Token.RefreshToken, expiresAt)
+}
+
 func (r *emailRepository) ReplaceSMTPIMAPCredentials(ctx context.Context, id uuid.UUID, creds *models.SmtpImap) error {
 	if creds == nil || creds.SMTP == nil || creds.IMAP == nil {
 		return errors.New("smtp and imap credentials are required")
 	}
-	sealed := make([]string, 0, 6)
-	for _, plain := range []string{creds.SMTP.Host, creds.SMTP.Username, creds.SMTP.Password, creds.IMAP.Host, creds.IMAP.Username, creds.IMAP.Password} {
-		v, err := r.sealCredential(plain)
-		if err != nil {
-			db.CaptureError(err, "", nil, "encrypt-smtp-imap")
-			return err
-		}
-		sealed = append(sealed, v)
+	orgID, err := r.mailboxOrganization(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil // the mailbox is gone, so there is nothing to update
+	}
+	if err != nil {
+		return err
+	}
+	sealed, err := r.sealCredentials(ctx, orgID, creds.SMTP.Host, creds.SMTP.Username, creds.SMTP.Password, creds.IMAP.Host, creds.IMAP.Username, creds.IMAP.Password)
+	if err != nil {
+		db.CaptureError(err, "", nil, "encrypt-smtp-imap")
+		return err
 	}
 	query := `
 		UPDATE email_accounts_smtp_imap
@@ -218,4 +230,17 @@ func (r *emailRepository) ReplaceSMTPIMAPCredentials(ctx context.Context, id uui
 		return err
 	}
 	return nil
+}
+
+// mailboxOrganization returns the organization whose key seals a mailbox's credentials; nil for a personal mailbox.
+func (r *emailRepository) mailboxOrganization(ctx context.Context, id uuid.UUID) (*uuid.UUID, error) {
+	var orgID *uuid.UUID
+	const query = `SELECT organization_id FROM email_accounts WHERE id = $1`
+	if err := r.DB.QueryRow(ctx, query, id).Scan(&orgID); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			db.CaptureError(err, query, nil, "queryrow")
+		}
+		return nil, err
+	}
+	return orgID, nil
 }

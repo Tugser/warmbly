@@ -74,7 +74,7 @@ Application-layer secrets are sealed with AES-256-GCM under the DEK and base64-e
 
 Instance-level secrets that are not owned by any organization are encrypted under a platform DEK (key ID = `uuid.Nil`): the same envelope as organization secrets, the same trust boundary, a different identity. See `internal/app/cipher/`.
 
-Mailbox credentials are the one exception to the per-organization DEK. They are sealed with `CREDENTIALS_ENCRYPTION_KEY` (`KeyDomainInstance`) because a worker reads them without an organization context.
+Mailbox credentials (`KeyDomainMailbox`) are sealed under the organization DEK when `MAILBOX_CREDENTIALS_SEALING=organization`, at rest and inside the `ADD_EMAIL` command, so a worker opens them through the same brokered DEK path it uses for message bodies. Values written before that, and mailboxes with no organization, stay under `CREDENTIALS_ENCRYPTION_KEY`; a stored value carries a `dek1:` prefix when it uses the organization key, and readers accept both. The DEK is cached in process for five minutes in front of Redis, and concurrent first uses share one KMS call.
 
 ## Worker model
 

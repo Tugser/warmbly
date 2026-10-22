@@ -523,12 +523,13 @@ The tooling for [rotating instance keys](/development/configuration/#rotate-inst
 |---|---|
 | primary | Opens under the primary key. Nothing to do |
 | read key | Opens only under a read key. `keys reseal --apply` moves it to the primary |
+| workspace | Sealed under its workspace key, as mailbox credentials are with `MAILBOX_CREDENTIALS_SEALING=organization`. An instance key rotation does not touch it |
 | unsealed | Stored outside the sealed format, such as a legacy OAuth token or a `whsec_` webhook secret. The backend seals it on its next write |
 | unreadable | Sealed, but opens under no configured key. Left untouched by every command here |
 
 It also lists any `INTERNAL_API_PREVIOUS_UNTIL`, `NODE_BROKER_PREVIOUS_UNTIL` and `UNSUBSCRIBE_SIGNING_READ_UNTIL` window and whether it is still open.
 
-`keys reseal` is a dry run unless you pass `--apply`. With it, every value a read key opens is rewritten under the primary, one row at a time and only if the row still holds the value that was read, so a credential the backend changes meanwhile is never overwritten. It is safe to stop and run again: a later run picks up where values remain, and a run with nothing left to do writes nothing. Values the primary already opens, unsealed values and unreadable values are never written.
+`keys reseal` is a dry run unless you pass `--apply`. With it, every value a read key opens is rewritten under the primary, one row at a time and only if the row still holds the value that was read, so a credential the backend changes meanwhile is never overwritten. It is safe to stop and run again: a later run picks up where values remain, and a run with nothing left to do writes nothing. Values the primary already opens, workspace-sealed values, unsealed values and unreadable values are never written.
 
 | Flag | Does |
 |---|---|

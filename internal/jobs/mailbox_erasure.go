@@ -9,6 +9,8 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/warmbly/warmbly/internal/app/cipher"
+	"github.com/warmbly/warmbly/internal/app/mailcred"
 	"github.com/warmbly/warmbly/internal/infrastructure/storage"
 	"github.com/warmbly/warmbly/internal/jobrun"
 	"github.com/warmbly/warmbly/internal/models"
@@ -42,10 +44,43 @@ type MailboxErasureJob struct {
 	// tokens cannot be revoked; bodies are still erased, and the erasure stays
 	// outstanding so the failure is visible rather than silent.
 	enc *encrypt.Encrypter
+	// orgs opens a token sealed under its organization's data key, which outlives the organization.
+	orgs cipher.CipherService
 }
 
 func NewMailboxErasureJob(repo repository.MailboxErasureRepository, blobs storage.Store, enc *encrypt.Encrypter) *MailboxErasureJob {
 	return &MailboxErasureJob{repo: repo, blobs: blobs, enc: enc}
+}
+
+// WithOrganizationKeys lets the job open tokens sealed under organization data keys.
+func (j *MailboxErasureJob) WithOrganizationKeys(orgs cipher.CipherService) *MailboxErasureJob {
+	j.orgs = orgs
+	return j
+}
+
+// openToken returns the plaintext refresh token, or false when no configured key opens it.
+func (j *MailboxErasureJob) openToken(ctx context.Context, e *repository.MailboxErasure) (string, bool) {
+	if mailcred.IsOrgSealed(e.RefreshToken) {
+		if j.orgs == nil || e.OrganizationID == nil {
+			return e.RefreshToken, false
+		}
+		c, err := j.orgs.Cipher(ctx, *e.OrganizationID)
+		if err == nil {
+			var plain string
+			if plain, err = mailcred.OpenWith(ctx, c, nil, e.RefreshToken); err == nil {
+				return plain, true
+			}
+		}
+		log.Warn().Err(err).Str("email_account_id", e.EmailAccountID.String()).Str("organization_id", e.OrganizationID.String()).
+			Msg("mailbox erasure: the organization key did not open the refresh token")
+		return e.RefreshToken, false
+	}
+	if j.enc != nil {
+		if plain, err := j.enc.Decrypt(e.RefreshToken); err == nil {
+			return plain, true
+		}
+	}
+	return e.RefreshToken, false
 }
 
 const (
@@ -197,16 +232,11 @@ func (j *MailboxErasureJob) revoke(ctx context.Context, e *repository.MailboxEra
 	}
 
 	// Tokens written before sealing existed are stored verbatim, and an
-	// instance with no CREDENTIALS_ENCRYPTION_KEY set has no encrypter at all,
+	// instance with no key for the value has nothing to open it with,
 	// so a value we cannot open is still a value the provider can reject.
 	// opened says which of the two we sent, because it decides what the
 	// provider's answer is worth.
-	token, opened := e.RefreshToken, false
-	if j.enc != nil {
-		if plain, err := j.enc.Decrypt(e.RefreshToken); err == nil {
-			token, opened = plain, true
-		}
-	}
+	token, opened := j.openToken(ctx, e)
 
 	result, err := oauthrevoke.Revoke(ctx, models.InboxProvider(e.Provider), token)
 	if err != nil {
@@ -226,7 +256,7 @@ func (j *MailboxErasureJob) revoke(ctx context.Context, e *repository.MailboxEra
 	// finished and wrong.
 	if !opened && result == oauthrevoke.AlreadyGone {
 		return fmt.Errorf(
-			"revoke %s grant: the stored refresh token could not be opened, so the provider's rejection is not proof the grant is gone (check CREDENTIALS_ENCRYPTION_KEY)",
+			"revoke %s grant: the stored refresh token could not be opened, so the provider's rejection is not proof the grant is gone (check CREDENTIALS_ENCRYPTION_KEY, or the organization key and KMS for a workspace-sealed token)",
 			e.Provider)
 	}
 

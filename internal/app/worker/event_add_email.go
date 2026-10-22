@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
+	"github.com/warmbly/warmbly/internal/app/mailcred"
 	"github.com/warmbly/warmbly/internal/app/worker/wmail"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
@@ -26,6 +27,10 @@ type mailboxLoad struct {
 func (w *WorkerService) HandleAddEmail(ctx context.Context, e *models.AddWorkerEmail) error {
 	if e == nil {
 		return nil
+	}
+	if err := w.openSealedSecrets(ctx, e); err != nil {
+		log.Error().Err(err).Str("email_id", e.ID.String()).Msg("could not open the mailbox credentials sealed for this worker")
+		return err
 	}
 
 	if _, loading := w.loads.Load(e.ID); !loading {
@@ -161,4 +166,19 @@ func (w *WorkerService) reportLoadFailure(e *models.AddWorkerEmail, err error) {
 // dropMailbox removes a loaded mailbox and stops its work.
 func (w *WorkerService) dropMailbox(id uuid.UUID, mail *wmail.WMail) {
 	w.mailManager.TerminateMailbox(id, mail)
+}
+
+// openSealedSecrets restores credentials sealed under the mailbox's organization key.
+func (w *WorkerService) openSealedSecrets(ctx context.Context, e *models.AddWorkerEmail) error {
+	if e.SealedSecrets == "" {
+		return nil
+	}
+	if w.CipherService == nil || e.OrganizationID == nil {
+		return errors.New("sealed mailbox credentials without an organization key")
+	}
+	c, err := w.CipherService.Cipher(ctx, *e.OrganizationID)
+	if err != nil {
+		return err
+	}
+	return mailcred.OpenAddEmail(ctx, c, e)
 }

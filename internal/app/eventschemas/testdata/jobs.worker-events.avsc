@@ -941,6 +941,11 @@
                 "logicalType": "timestamp-millis",
                 "type": "long"
               }
+            },
+            {
+              "default": "",
+              "name": "sealed_tokens",
+              "type": "string"
             }
           ],
           "name": "warmbly.events.JobEventTokenUpdate",
@@ -991,6 +996,32 @@
             }
           ],
           "name": "warmbly.events.JobEventWarmupRemovalChecked",
+          "type": "record"
+        },
+        {
+          "fields": [
+            {
+              "default": "",
+              "name": "user_id",
+              "type": "string"
+            },
+            {
+              "default": "",
+              "name": "email_id",
+              "type": "string"
+            },
+            {
+              "default": "",
+              "name": "internal_id",
+              "type": "string"
+            },
+            {
+              "default": "",
+              "name": "outcome",
+              "type": "string"
+            }
+          ],
+          "name": "warmbly.events.JobEventWarmupRescued",
           "type": "record"
         },
         {

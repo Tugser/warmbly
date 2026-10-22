@@ -15,46 +15,59 @@ import (
 )
 
 func TestResolveMessageIDRequiresCompleteIdentityLookup(t *testing.T) {
+	const more = `"@odata.nextLink":"https://graph.microsoft.com/v1.0/me/messages?$skiptoken=more"`
 	for _, tc := range []struct {
-		name, body, want string
-		uncertain        bool
+		name      string
+		pages     []string
+		want      string
+		uncertain bool
 	}{
-		{"terminal absence", `{"value":[]}`, "", false},
-		{"terminal absence with whitespace", "{\"value\":[]} \n", "", false},
-		{"terminal identity", `{"value":[{"id":"live-id"}]}`, "live-id", false},
-		{"terminal absence followed by identity", `{"value":[]}{"value":[{"id":"live-id"}]}`, "", true},
-		{"identity followed by another page", `{"value":[{"id":"live-id"}]}{"value":[]}`, "", true},
-		{"terminal absence followed by junk", `{"value":[]}private-marker`, "", true},
-		{"missing collection", `{}`, "", true},
-		{"null collection", `{"value":null}`, "", true},
-		{"null response", `null`, "", true},
-		{"missing identity", `{"value":[{}]}`, "", true},
-		{"null identity", `{"value":[{"id":null}]}`, "", true},
-		{"empty identity", `{"value":[{"id":""}]}`, "", true},
-		{"blank identity", `{"value":[{"id":" \t\n "}]}`, "", true},
-		{"padded identity", `{"value":[{"id":" live-id "}]}`, "", true},
-		{"ambiguous identities", `{"value":[{"id":"one"},{"id":"two"}]}`, "", true},
-		{"empty page continues", `{"value":[],"@odata.nextLink":"https://graph.microsoft.com/v1.0/me/messages?$skiptoken=more"}`, "", true},
-		{"identity page continues", `{"value":[{"id":"live-id"}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/me/messages?$skiptoken=more"}`, "", true},
-		{"foreign continuation", `{"value":[],"@odata.nextLink":"https://other.example.test/collect?token=private-marker"}`, "", true},
-		{"relative continuation", `{"value":[],"@odata.nextLink":"/v1.0/me/messages?$skiptoken=more"}`, "", true},
-		{"http continuation", `{"value":[],"@odata.nextLink":"http://graph.microsoft.com/v1.0/me/messages?$skiptoken=more"}`, "", true},
-		{"empty continuation", `{"value":[],"@odata.nextLink":""}`, "", true},
-		{"blank continuation", `{"value":[],"@odata.nextLink":" "}`, "", true},
-		{"null continuation", `{"value":[],"@odata.nextLink":null}`, "", true},
-		{"wrong continuation type", `{"value":[],"@odata.nextLink":{"token":"private-marker"}}`, "", true},
+		{"terminal absence", []string{`{"value":[]}`}, "", false},
+		{"terminal absence with whitespace", []string{"{\"value\":[]} \n"}, "", false},
+		{"terminal identity", []string{`{"value":[{"id":"live-id"}]}`}, "live-id", false},
+		{"identity page continues to terminal page", []string{`{"value":[{"id":"live-id"}],` + more + `}`, `{"value":[]}`}, "live-id", false},
+		{"empty page continues to identity", []string{`{"value":[],` + more + `}`, `{"value":[{"id":"live-id"}]}`}, "live-id", false},
+		{"same identity on two pages", []string{`{"value":[{"id":"live-id"}],` + more + `}`, `{"value":[{"id":"live-id"}]}`}, "live-id", false},
+		{"identity on a later page conflicts", []string{`{"value":[{"id":"one"}],` + more + `}`, `{"value":[{"id":"two"}]}`}, "", true},
+		{"continuation never ends", []string{`{"value":[],` + more + `}`}, "", true},
+		{"terminal absence followed by identity", []string{`{"value":[]}{"value":[{"id":"live-id"}]}`}, "", true},
+		{"identity followed by another page", []string{`{"value":[{"id":"live-id"}]}{"value":[]}`}, "", true},
+		{"terminal absence followed by junk", []string{`{"value":[]}private-marker`}, "", true},
+		{"missing collection", []string{`{}`}, "", true},
+		{"null collection", []string{`{"value":null}`}, "", true},
+		{"null response", []string{`null`}, "", true},
+		{"missing identity", []string{`{"value":[{}]}`}, "", true},
+		{"null identity", []string{`{"value":[{"id":null}]}`}, "", true},
+		{"empty identity", []string{`{"value":[{"id":""}]}`}, "", true},
+		{"blank identity", []string{`{"value":[{"id":" \t\n "}]}`}, "", true},
+		{"padded identity", []string{`{"value":[{"id":" live-id "}]}`}, "", true},
+		{"ambiguous identities", []string{`{"value":[{"id":"one"},{"id":"two"}]}`}, "", true},
+		{"foreign continuation", []string{`{"value":[],"@odata.nextLink":"https://other.example.test/collect?token=private-marker"}`}, "", true},
+		{"relative continuation", []string{`{"value":[],"@odata.nextLink":"/v1.0/me/messages?$skiptoken=more"}`}, "", true},
+		{"http continuation", []string{`{"value":[],"@odata.nextLink":"http://graph.microsoft.com/v1.0/me/messages?$skiptoken=more"}`}, "", true},
+		{"other version continuation", []string{`{"value":[],"@odata.nextLink":"https://graph.microsoft.com/beta/me/messages?$skiptoken=more"}`}, "", true},
+		{"empty continuation", []string{`{"value":[],"@odata.nextLink":""}`}, "", true},
+		{"blank continuation", []string{`{"value":[],"@odata.nextLink":" "}`}, "", true},
+		{"null continuation", []string{`{"value":[],"@odata.nextLink":null}`}, "", true},
+		{"wrong continuation type", []string{`{"value":[],"@odata.nextLink":{"token":"private-marker"}}`}, "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			requests := 0
 			c := deltaTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 				requests++
-				if r.Method != http.MethodGet || r.URL.Path != "/v1.0/me/messages" || r.URL.Query().Get("$top") != "1" || r.URL.Query().Get("$select") != "id" || r.URL.Query().Get("$filter") != "internetMessageId eq '<warmup@example.test>'" {
-					t.Errorf("lookup changed scope or followed continuation: %s %s", r.Method, r.URL.Path)
+				if r.Method != http.MethodGet || r.URL.Path != "/v1.0/me/messages" {
+					t.Errorf("lookup left the message collection: %s %s", r.Method, r.URL.Path)
 				}
-				fmt.Fprint(w, tc.body)
+				if requests == 1 && (r.URL.Query().Get("$top") != "10" || r.URL.Query().Get("$select") != "id" || r.URL.Query().Get("$filter") != "internetMessageId eq '<warmup@example.test>'") {
+					t.Errorf("lookup changed scope: %s", r.URL.RawQuery)
+				}
+				if requests > 1 && r.URL.Query().Get("$skiptoken") != "more" {
+					t.Errorf("continuation not followed as given: %s", r.URL.RawQuery)
+				}
+				fmt.Fprint(w, tc.pages[min(requests, len(tc.pages))-1])
 			}, nil)
 			id, err := c.ResolveMessageID(t.Context(), "<warmup@example.test>")
-			if id != tc.want || (err != nil) != tc.uncertain || requests != 1 {
+			if id != tc.want || (err != nil) != tc.uncertain || requests > messageLookupMaxPages {
 				t.Fatalf("lookup: id=%q err=%v requests=%d", id, err, requests)
 			}
 			if tc.uncertain {

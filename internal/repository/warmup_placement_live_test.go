@@ -86,6 +86,14 @@ func TestLiveWarmupPlacementRollup(t *testing.T) {
 		t.Fatalf("a missing receipt must not count, got %+v", got)
 	}
 
+	// A rescue outcome counts once, against the receipt's own day and the host it arrived at, even after the host is reclassified.
+	if got, err := repo.RecordRescueOutcome(ctx, recipient, spam, "google", "gmail", models.WarmupRescueMoved); err != nil || got == nil || got.ID != sender {
+		t.Fatalf("a rescue outcome names its sender, got %+v, %v", got, err)
+	}
+	if got, err := repo.RecordRescueOutcome(ctx, recipient, spam, "google", "google_workspace", models.WarmupRescueFailed); err != nil || got != nil {
+		t.Fatalf("a second outcome for one rescue must not count, got %+v, %v", got, err)
+	}
+
 	now := time.Now().UTC()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 
@@ -102,7 +110,7 @@ func TestLiveWarmupPlacementRollup(t *testing.T) {
 			microsoft = r
 		}
 	}
-	if len(rows) != 2 || google.Inbox != 1 || google.Tabs != 1 || google.Spam != 1 || google.Rescued != 1 || microsoft.Inbox != 1 {
+	if len(rows) != 2 || google.Inbox != 1 || google.Tabs != 1 || google.Spam != 1 || google.Rescued != 1 || google.RescueConfirmed != 1 || google.RescueFailed != 0 || microsoft.Inbox != 1 {
 		t.Fatalf("daily rows = %+v, want one google inbox, tab and rescued spam, and one microsoft inbox", rows)
 	}
 
@@ -176,6 +184,18 @@ func TestLiveWarmupPlacementRollup(t *testing.T) {
 		if err != nil || len(data.Daily)+len(data.Hosts)+len(data.Sent)+len(data.Unconfirmed)+len(data.Windows) != 0 {
 			t.Fatalf("unselected placement report = %+v, %v", data, err)
 		}
+	}
+
+	// An outcome that arrives before its placement fixes the host, and the placement then counts under it.
+	early := receipt(recipient)
+	if got, err := repo.RecordRescueOutcome(ctx, recipient, early, "google", "gmail", models.WarmupRescueMoved); err != nil || got == nil {
+		t.Fatalf("an outcome before placement must still count, got %+v, %v", got, err)
+	}
+	record(recipient, early, "google", "google_workspace", models.WarmupLandedSpam, true)
+	var spamAt, rescuedAt, confirmedAt int
+	if err := pool.QueryRow(ctx, `SELECT spam, rescued, rescue_confirmed FROM warmup_placement_daily
+	        WHERE sender_account_id = $1 AND recipient_host = 'gmail'`, sender).Scan(&spamAt, &rescuedAt, &confirmedAt); err != nil || spamAt != 1 || rescuedAt != 1 || confirmedAt != 1 {
+		t.Fatalf("early outcome row = spam %d, rescued %d, confirmed %d, %v; want the request and outcome on one host row", spamAt, rescuedAt, confirmedAt, err)
 	}
 }
 

@@ -156,34 +156,66 @@ func (c *Client) move(ctx context.Context, messageID, destinationID string) (str
 // ResolveMessageID returns the current Graph message id for the message with the
 // given immutable RFC 5322 internetMessageId, searching across folders. Graph
 // ids change on move, so warmup actions re-resolve against this stable key.
-// Only an explicit terminal empty collection establishes absence.
+// Only a terminal page establishes identity or absence; Graph's own
+// continuations are followed, a bounded number of times.
 func (c *Client) ResolveMessageID(ctx context.Context, internetMessageID string) (string, error) {
 	if strings.TrimSpace(internetMessageID) == "" {
 		return "", errMessageLookupIncomplete
 	}
-	u := c.messagesByInternetID(internetMessageID, "id", 1)
-	var resp struct {
-		Value    []GraphMessage  `json:"value"`
-		NextLink json.RawMessage `json:"@odata.nextLink"`
-	}
-	if err := c.doJSON(ctx, "GET", u, nil, &resp); err != nil {
-		if errors.Is(err, errGraphTrailingJSON) {
+	next := c.messagesByInternetID(internetMessageID, "id", messageLookupPageSize)
+	found := ""
+	for range messageLookupMaxPages {
+		var resp struct {
+			Value    []GraphMessage  `json:"value"`
+			NextLink json.RawMessage `json:"@odata.nextLink"`
+		}
+		if err := c.doJSON(ctx, "GET", next, nil, &resp); err != nil {
+			if errors.Is(err, errGraphTrailingJSON) {
+				return "", errMessageLookupIncomplete
+			}
+			return "", err
+		}
+		if resp.Value == nil {
 			return "", errMessageLookupIncomplete
 		}
-		return "", err
+		for _, m := range resp.Value {
+			// Two live copies leave no single message to act on.
+			if m.ID == "" || strings.TrimSpace(m.ID) != m.ID || (found != "" && found != m.ID) {
+				return "", errMessageLookupIncomplete
+			}
+			found = m.ID
+		}
+		if resp.NextLink == nil {
+			return found, nil
+		}
+		link, ok := graphContinuation(resp.NextLink)
+		if !ok {
+			return "", errMessageLookupIncomplete
+		}
+		next = link
 	}
-	// Never follow a continuation or infer absence from an incomplete page.
-	if resp.Value == nil || resp.NextLink != nil || len(resp.Value) > 1 {
-		return "", errMessageLookupIncomplete
+	return "", errMessageLookupIncomplete
+}
+
+// Graph pages a filtered listing even when one message matches, so a full
+// first page usually carries a continuation.
+const (
+	messageLookupPageSize = 10
+	messageLookupMaxPages = 5
+)
+
+// graphContinuation accepts only an absolute https link on Graph's own root,
+// so a continuation can never send the bearer token anywhere else.
+func graphContinuation(raw json.RawMessage) (string, bool) {
+	var link string
+	if json.Unmarshal(raw, &link) != nil || link == "" || strings.TrimSpace(link) != link {
+		return "", false
 	}
-	if len(resp.Value) == 0 {
-		return "", nil
+	u, err := url.Parse(link)
+	if err != nil || u.Scheme != "https" || u.Host != "graph.microsoft.com" || !strings.HasPrefix(link, graphBase+"/") {
+		return "", false
 	}
-	id := resp.Value[0].ID
-	if id == "" || strings.TrimSpace(id) != id {
-		return "", errMessageLookupIncomplete
-	}
-	return id, nil
+	return link, true
 }
 
 var errMessageLookupIncomplete = errx.MError(errx.MailErrorWarning, errx.MailErrorCodeServerUnreachable, "The message lookup could not establish a complete identity or confirmed absence. Retry later.", errx.MailErrorResolveMethodRetry)

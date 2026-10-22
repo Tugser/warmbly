@@ -17,6 +17,7 @@ import (
 	"github.com/warmbly/warmbly/internal/infrastructure/storage"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/repository"
+	"google.golang.org/api/googleapi"
 )
 
 // HandleWarmupAction executes recipient-side warmup actions on the mailbox.
@@ -29,6 +30,26 @@ import (
 // DelaySeconds=0. That makes the dwell survive a worker restart, which the old
 // in-process time.AfterFunc here could not.
 func (w *WorkerService) HandleWarmupAction(ctx context.Context, action models.WarmupEmailAction) error {
+	internalID, perr := uuid.Parse(action.InternalID)
+	if perr != nil || !hasWarmupAction(action.Actions, models.WarmupActionRescueFromSpam) {
+		return w.handleWarmupAction(ctx, action, nil)
+	}
+	outcome := ""
+	if err := w.handleWarmupAction(ctx, action, &outcome); err != nil {
+		return err
+	}
+	// A rescue that never ran reports nothing, so its receipt stays unreported rather than failed.
+	if outcome == "" {
+		return nil
+	}
+	return w.Produce(models.JobEventTypeWarmupRescued, action.EmailID.String(), &models.JobEventWarmupRescued{
+		UserID: action.UserID, EmailID: action.EmailID, InternalID: internalID, Outcome: outcome,
+	})
+}
+
+// handleWarmupAction runs the actions; rescue, when set, receives what a spam
+// rescue among them came to.
+func (w *WorkerService) handleWarmupAction(ctx context.Context, action models.WarmupEmailAction, rescue *string) error {
 	filingPending := false
 	var filingProof *models.WarmupFilingRecoveryProof
 	if gate, ok := w.SyncContextRepository.(repository.WarmupActionAdmission); ok {
@@ -122,11 +143,11 @@ func (w *WorkerService) HandleWarmupAction(ctx context.Context, action models.Wa
 	case hasWarmupAction(action.Actions, models.WarmupActionVerifyRemoval):
 		err = w.verifyWarmupRemoval(ctx, mail, action)
 	case mail.GoogleData != nil && mail.GoogleData.Client != nil:
-		err = w.runGoogleWarmupActions(ctx, mail, action)
+		err = w.runGoogleWarmupActions(ctx, mail, action, rescue)
 	case mail.GraphData != nil && mail.GraphData.Client != nil:
-		err = w.runGraphWarmupActions(ctx, mail, action)
+		err = w.runGraphWarmupActions(ctx, mail, action, rescue)
 	case mail.SmtpImapData != nil && mail.SmtpImapData.ImapClient != nil:
-		err = w.runImapWarmupActions(ctx, mail, action)
+		err = w.runImapWarmupActions(ctx, mail, action, rescue)
 	default:
 		if action.FilingID != "" {
 			err = errors.New("mailbox has no provider client for warmup filing")
@@ -170,6 +191,22 @@ func (w *WorkerService) HandleWarmupAction(ctx context.Context, action models.Wa
 		Strs("actions", action.Actions).
 		Msg("Warmup action gave up")
 	return nil
+}
+
+func setRescue(rescue *string, outcome string) {
+	if rescue != nil {
+		*rescue = outcome
+	}
+}
+
+// rescueFailure tells a message the provider no longer has from a refusal.
+func rescueFailure(err error) string {
+	var mailErr *errx.MailError
+	var gerr *googleapi.Error
+	if (errors.As(err, &mailErr) && mailErr.Code == errx.MailErrorCodeNotFound) || (errors.As(err, &gerr) && gerr.Code == 404) {
+		return models.WarmupRescueGone
+	}
+	return models.WarmupRescueFailed
 }
 
 // warmupDeleteRedeliveries bounds how many times a failed retention delete or
@@ -216,7 +253,7 @@ func (w *WorkerService) deferWarmupFiling(ctx context.Context, request models.Wa
 	return nil
 }
 
-func (w *WorkerService) runGoogleWarmupActions(ctx context.Context, mail *wmail.WMail, action models.WarmupEmailAction) error {
+func (w *WorkerService) runGoogleWarmupActions(ctx context.Context, mail *wmail.WMail, action models.WarmupEmailAction, rescue *string) error {
 	placement, folder := warmupFiling(action)
 	// The archive placement wants the message out of every view without a label
 	// of its own, which on Gmail is "remove INBOX, add nothing".
@@ -263,6 +300,9 @@ func (w *WorkerService) runGoogleWarmupActions(ctx context.Context, mail *wmail.
 			toInbox := placement == models.WarmupPlacementInbox
 			if err := mail.GoogleData.Client.RescueFromSpam(ctx, action.GmailID, label, toInbox); err != nil {
 				log.Error().Err(err).Str("gmail_id", action.GmailID).Msg("Failed to rescue from spam (Gmail)")
+				setRescue(rescue, rescueFailure(err))
+			} else {
+				setRescue(rescue, models.WarmupRescueMoved)
 			}
 		case models.WarmupActionMarkImportant:
 			if err := mail.GoogleData.Client.MarkImportant(ctx, action.GmailID); err != nil {
@@ -283,7 +323,7 @@ func (w *WorkerService) runGoogleWarmupActions(ctx context.Context, mail *wmail.
 // Graph mailbox. action.GmailID carries the Graph message id (the provider id
 // field is provider-agnostic). Star maps to the follow-up flag, the closest
 // Outlook equivalent of a Gmail star.
-func (w *WorkerService) runGraphWarmupActions(ctx context.Context, mail *wmail.WMail, action models.WarmupEmailAction) error {
+func (w *WorkerService) runGraphWarmupActions(ctx context.Context, mail *wmail.WMail, action models.WarmupEmailAction, rescue *string) error {
 	client := mail.GraphData.Client
 
 	// A Graph message id changes whenever the message is moved (copy+delete), so
@@ -297,8 +337,12 @@ func (w *WorkerService) runGraphWarmupActions(ctx context.Context, mail *wmail.W
 			}
 		} else if resolved != "" {
 			msgID = resolved
-		} else if hasWarmupAction(action.Actions, models.WarmupActionFile) {
-			return nil
+		} else {
+			// A complete lookup found no copy anywhere in the mailbox.
+			setRescue(rescue, models.WarmupRescueGone)
+			if hasWarmupAction(action.Actions, models.WarmupActionFile) {
+				return nil
+			}
 		}
 	}
 
@@ -341,15 +385,22 @@ func (w *WorkerService) runGraphWarmupActions(ctx context.Context, mail *wmail.W
 				log.Error().Err(err).Str("graph_id", msgID).Msg("Failed to mark as read (Graph)")
 			}
 		case models.WarmupActionRescueFromSpam:
+			if rescue != nil && *rescue == models.WarmupRescueGone {
+				continue
+			}
 			newID, err := client.RemoveFromSpam(ctx, msgID)
 			if err != nil {
 				log.Error().Err(err).Str("graph_id", msgID).Msg("Failed to rescue from junk (Graph)")
+				setRescue(rescue, rescueFailure(err))
 				continue
 			}
-			if newID != "" {
-				w.remapProviderID(ctx, mail, msgID, newID)
-				msgID = newID
+			if newID == "" {
+				setRescue(rescue, models.WarmupRescueAlreadyOut)
+				continue
 			}
+			setRescue(rescue, models.WarmupRescueMoved)
+			w.remapProviderID(ctx, mail, msgID, newID)
+			msgID = newID
 		case models.WarmupActionMarkImportant:
 			if err := client.MarkImportant(ctx, msgID); err != nil {
 				log.Error().Err(err).Str("graph_id", msgID).Msg("Failed to mark important (Graph)")
@@ -397,7 +448,7 @@ func (w *WorkerService) remapProviderID(ctx context.Context, mail *wmail.WMail, 
 	}
 }
 
-func (w *WorkerService) runImapWarmupActions(ctx context.Context, mail *wmail.WMail, action models.WarmupEmailAction) error {
+func (w *WorkerService) runImapWarmupActions(ctx context.Context, mail *wmail.WMail, action models.WarmupEmailAction, rescue *string) error {
 	boxes := mail.SmtpImapData.Mailboxes
 	imapClient := mail.SmtpImapData.ImapClient
 	sourceBox := lookupWarmupSourceFolder(boxes, action)
@@ -438,6 +489,11 @@ func (w *WorkerService) runImapWarmupActions(ctx context.Context, mail *wmail.WM
 	deletes := hasWarmupAction(action.Actions, models.WarmupActionDelete)
 	boxName, uid, searchErr := w.locateWarmupMessage(ctx, imapClient, action, sourceBox, files, dst, inboxName, sentName)
 	if boxName == "" {
+		if searchErr != nil {
+			setRescue(rescue, models.WarmupRescueFailed)
+		} else {
+			setRescue(rescue, models.WarmupRescueGone)
+		}
 		if (deletes || files) && searchErr != nil {
 			// A folder could not be searched, so absence is not established;
 			// deleting the body now would leave the message with nothing to
@@ -479,6 +535,10 @@ func (w *WorkerService) runImapWarmupActions(ctx context.Context, mail *wmail.WM
 	}
 	for _, act := range action.Actions {
 		if moved {
+			if act == models.WarmupActionRescueFromSpam {
+				// Filing already took it out of Junk.
+				setRescue(rescue, models.WarmupRescueAlreadyOut)
+			}
 			continue
 		}
 		switch act {
@@ -503,13 +563,16 @@ func (w *WorkerService) runImapWarmupActions(ctx context.Context, mail *wmail.WM
 			// placement but "inbox" the filing move above already took it out of
 			// Junk, which is itself the not-spam signal the server learns from.
 			if !inJunk {
+				setRescue(rescue, models.WarmupRescueAlreadyOut)
 				continue
 			}
 			unjunk()
 			if err := imapClient.RemoveFromSpam(ctx, boxName, inboxName, uid); err != nil {
 				log.Error().Err(err).Uint32("uid", uid).Msg("Failed to remove from spam (IMAP)")
+				setRescue(rescue, models.WarmupRescueFailed)
 				continue
 			}
+			setRescue(rescue, models.WarmupRescueMoved)
 			moved = true
 		case models.WarmupActionMarkImportant:
 			if err := imapClient.MarkImportant(ctx, boxName, uid); err != nil {

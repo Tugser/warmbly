@@ -58,6 +58,7 @@ func (w *JobsService) InitEvents() {
 	Register(w, models.JobEventTypeTokenUpdate, w.HandleTokenUpdate)
 	Register(w, models.JobEventTypeWarmupRemovalChecked, w.HandleWarmupRemovalChecked)
 	Register(w, models.JobEventTypeWarmupFiled, w.HandleWarmupFiled)
+	Register(w, models.JobEventTypeWarmupRescued, w.HandleWarmupRescued)
 
 	// Send outcomes. A worker reports every send it was handed; a failure
 	// walks back what the control plane stamped at hand-off.

@@ -562,7 +562,7 @@ func (s *JobsService) acceptWarmupEmail(ctx context.Context, e *models.JobEventN
 	}
 
 	// Perform warmup actions
-	rescued := s.performWarmupActions(ctx, e, recipient, recovering)
+	rescued := s.performWarmupActions(ctx, e, recipient, recovering, landed == models.WarmupLandedSpam)
 
 	s.recordWarmupPlacement(ctx, e, recipient, landed, rescued)
 	return nil
@@ -574,13 +574,7 @@ func (s *JobsService) recordWarmupPlacement(ctx context.Context, e *models.JobEv
 	if s.WarmupPlacementRepo == nil || e.Message == nil {
 		return
 	}
-	group, host := models.WarmupRecipientOther, ""
-	if recipient != nil {
-		// Resolved, not stored: a mailbox connected before host detection
-		// still counts under the host partner selection keys it by.
-		host = string(mailhost.ForMailbox(recipient.MailHost, recipient.Provider, recipient.Email))
-		group = models.WarmupRecipientGroup(host, recipient.Provider)
-	}
+	group, host := placementRecipient(recipient)
 	sender, err := s.WarmupPlacementRepo.RecordPlacement(ctx, e.Message.EmailID, e.Message.ID, group, host, landed, rescued)
 	if err != nil {
 		log.Warn().Err(err).Str("email_id", e.Message.EmailID.String()).Msg("Failed to record warmup placement")
@@ -593,12 +587,24 @@ func (s *JobsService) recordWarmupPlacement(ctx context.Context, e *models.JobEv
 	s.StreamingPublisher.PublishWarmupPlacement(ctx, sender.OrgID.String(), sender.UserID, sender.ID.String(), sender.Email, landed)
 }
 
+// placementRecipient is the group and host a receipt is counted under.
+func placementRecipient(recipient *models.Email) (group, host string) {
+	if recipient == nil {
+		return models.WarmupRecipientOther, ""
+	}
+	// Resolved, not stored: a mailbox connected before host detection still
+	// counts under the host partner selection keys it by.
+	host = string(mailhost.ForMailbox(recipient.MailHost, recipient.Provider, recipient.Email))
+	return models.WarmupRecipientGroup(host, recipient.Provider), host
+}
+
 // performWarmupActions publishes warmup action events to the worker. Action
 // selection is probabilistic and per-mailbox (see engagementPlan) so the pool
 // doesn't behave in detectable lockstep, with a randomised recipient-side
 // dwell before the actions run. recipient is the receiving mailbox when the
-// caller has it. Reports whether a spam rescue was handed to the worker.
-func (s *JobsService) performWarmupActions(ctx context.Context, e *models.JobEventNewEmail, recipient *models.Email, senderRecovering bool) (rescueQueued bool) {
+// caller has it. Only mail that arrived in spam is rescued. Reports whether a
+// spam rescue was handed to the worker.
+func (s *JobsService) performWarmupActions(ctx context.Context, e *models.JobEventNewEmail, recipient *models.Email, senderRecovering, landedSpam bool) (rescueQueued bool) {
 	if s.Publisher == nil {
 		return false
 	}
@@ -609,6 +615,9 @@ func (s *JobsService) performWarmupActions(ctx context.Context, e *models.JobEve
 		engagement = recoveryEngagement(engagement)
 	}
 	actions, delaySeconds := engagementPlan(e.Message.EmailID, engagement)
+	if !landedSpam {
+		actions = slices.DeleteFunc(actions, func(a string) bool { return a == models.WarmupActionRescueFromSpam })
+	}
 
 	base := models.WarmupEmailAction{
 		UserID:             e.UserID,
@@ -666,8 +675,12 @@ func (s *JobsService) performWarmupActions(ctx context.Context, e *models.JobEve
 		if hasAction(immediate, models.WarmupActionFile) || hasAction(immediate, models.WarmupActionRescueFromSpam) {
 			s.markSelfMove(ctx, e.Message.EmailID, e.Message.MessageID)
 		}
-		s.Publisher.PublishWarmupAction(ctx, *workerID, &act)
 		rescueQueued = hasAction(immediate, models.WarmupActionRescueFromSpam)
+		if rescueQueued {
+			// Asks the worker to report what the rescue came to.
+			act.InternalID = e.Message.ID.String()
+		}
+		s.Publisher.PublishWarmupAction(ctx, *workerID, &act)
 	}
 
 	if len(delayed) == 0 {

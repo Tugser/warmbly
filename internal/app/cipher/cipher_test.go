@@ -57,7 +57,7 @@ func (k *fakeKMS) Name() string { return "fake" }
 func TestCipherAdoptsDEKStoredByConcurrentCreator(t *testing.T) {
 	winner := bytes.Repeat([]byte{1}, 32)
 	store := &raceStore{blob: "winner-blob"}
-	svc := &cipherService{encryptedKeys: store, kms: &fakeKMS{keys: map[string][]byte{"winner-blob": winner}}}
+	svc := &cipherService{encryptedKeys: store, kms: &fakeKMS{keys: map[string][]byte{"winner-blob": winner}}, memory: newMemoryKeys()}
 
 	c, err := svc.Cipher(context.Background(), uuid.New())
 	if err != nil {

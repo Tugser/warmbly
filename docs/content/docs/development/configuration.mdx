@@ -125,6 +125,19 @@ Retain old keys until stored ciphertext, retained events, pending jobs and the s
 
 To rotate sessions while preserving existing MFA enrollments, unsubscribe links and published DNS proofs, first pin `TWOFA_SECRET`, `UNSUBSCRIBE_SIGNING_SECRET` and `DOMAIN_PROOF_SECRET` to their existing resolved values. Then change `AUTH_SECRET` and realtime's matching `JWT_SECRET` together. Users sign in again. Rotate the independent purpose keys separately; issued unsubscribe links remain valid for one year, so their read cutoff must cover the last previously issued link's expiry.
 
+### Seal mailbox credentials under workspace keys
+
+`MAILBOX_CREDENTIALS_SEALING` chooses the key that seals newly stored mailbox credentials: SMTP and IMAP hosts, usernames and passwords, and OAuth access and refresh tokens.
+
+| Value | Stored credentials | Credentials sent to workers |
+|---|---|---|
+| `instance` (default) | Sealed with `CREDENTIALS_ENCRYPTION_KEY` | In the worker command, protected by the event bus |
+| `organization` | Sealed with the workspace's KMS-protected data key | Sealed with the same workspace key, opened only on the worker that runs the mailbox |
+
+Every release that reads this setting opens both formats, so the setting only decides what new writes use. With `organization`, the consumer also moves credentials already stored under the instance key onto workspace keys, in small resumable batches, and skips a mailbox whose stored value no key opens. Workspace keys are cached in each process for five minutes and in Redis for fifteen, so a busy workspace costs one KMS decrypt per cache period, not one per mailbox.
+
+Set it on the backend and the consumer, and only after every backend, consumer and worker runs a release that reads it. That release becomes the rollback floor: an older release cannot open a workspace-sealed credential. Keep `CREDENTIALS_ENCRYPTION_KEY` configured, because personal mailboxes with no workspace, mailboxes not yet moved and older backups still use it.
+
 ## Addresses
 
 Every emailed link (password reset, invitation, the first-run claim link) is built from `APP_URL`. Leave it unset and a self-hosted instance guesses the origin from `CORS_ALLOW_ORIGINS` or `PUBLIC_HOST` instead, and never falls back to the hosted service: a link nobody can open is a support ticket, while a working link to somebody else's dashboard carries a live reset token out of your deployment. Set it.

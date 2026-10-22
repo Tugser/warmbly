@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/warmbly/warmbly/internal/app/cipher"
+	"github.com/warmbly/warmbly/internal/app/mailcred"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/repository"
 )
@@ -335,6 +336,8 @@ func (s *service) openSecret(ctx context.Context, sc SecretColumn, stored string
 			return "", errors.New("organization key unavailable")
 		}
 		return orgCipher.Decrypt(ctx, stored)
+	case KeyDomainMailbox:
+		return mailcred.OpenWith(ctx, orgCipher, s.creds, stored)
 	}
 	return "", fmt.Errorf("column %s has no key domain", sc.Column)
 }
@@ -507,11 +510,11 @@ func columnNames(cols []repository.ColumnInfo) []string {
 	return out
 }
 
-// needsOrgDEK reports whether any selected table has a DEK-sealed column.
+// needsOrgDEK reports whether any selected table has a column that is or may be DEK-sealed.
 func needsOrgDEK(tables []*Table) bool {
 	for _, t := range tables {
 		for _, sc := range t.Secrets {
-			if sc.Domain == KeyDomainOrgDEK {
+			if sc.Domain == KeyDomainOrgDEK || sc.Domain == KeyDomainMailbox {
 				return true
 			}
 		}

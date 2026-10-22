@@ -164,7 +164,7 @@ export function PlacementColumns({ days, height = 140 }: { days: DayView[]; heig
                         <>
                             {shortDate(d.date)}: <span className="text-emerald-600">{d.inbox} inbox</span>
                             {d.tabs > 0 && <> · <span className="text-violet-600">{d.tabs} tabs</span></>} · <span className="text-rose-600">{d.spam} spam</span>
-                            {d.rescued > 0 && <> ({d.rescued} rescue requests)</>} · {fmtPct(d.delivered > 0 ? ((d.inbox + d.tabs) / d.delivered) * 100 : null)} non-spam
+                            {d.rescued > 0 && <> ({d.rescueConfirmed} of {d.rescued} confirmed out of spam)</>} · {fmtPct(d.delivered > 0 ? ((d.inbox + d.tabs) / d.delivered) * 100 : null)} non-spam
                             {d.unknown != null && <> · {d.unknown} unknown · {d.archived} archive · {d.custom} custom</>}
                         </>
                     ) : (

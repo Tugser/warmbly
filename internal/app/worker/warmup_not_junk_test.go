@@ -50,7 +50,7 @@ func runImap(t *testing.T, arrived string, placement string, actions ...string) 
 		EmailID: uuid.New(), UID: 41, MailboxFolder: arrived, MailboxUIDValidity: validity,
 		Placement: placement, TargetFolder: "Warmbly", Actions: actions,
 	}
-	if err := (&WorkerService{}).runImapWarmupActions(context.Background(), mail, action); err != nil {
+	if err := (&WorkerService{}).runImapWarmupActions(context.Background(), mail, action, nil); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	return conn.calls

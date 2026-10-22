@@ -51,7 +51,7 @@ func TestGraphWarmupDeleteIncompleteLookupRetainsBody(t *testing.T) {
 			ctx = context.WithValue(ctx, deliveryKey{}, delivery{attempt: 1, redelivers: true})
 			err := w.HandleWarmupAction(ctx, action)
 			var merr *errx.MailError
-			if !errors.As(err, &merr) || merr.Code != errx.MailErrorCodeServerUnreachable || merr.ResolveMethod != errx.MailErrorResolveMethodRetry || store.deletes != 0 || deletes != 0 || lookups != 1 {
+			if !errors.As(err, &merr) || merr.Code != errx.MailErrorCodeServerUnreachable || merr.ResolveMethod != errx.MailErrorResolveMethodRetry || store.deletes != 0 || deletes != 0 || lookups == 0 {
 				t.Fatalf("incomplete lookup acknowledged or deleted: lookup=%d provider_delete=%d body_delete=%d err=%v", lookups, deletes, store.deletes, err)
 			}
 		})

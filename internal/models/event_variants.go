@@ -62,4 +62,5 @@ var JobEventBodies = map[JobEventType]any{
 
 	JobEventTypeWarmupRemovalChecked: (*JobEventWarmupRemovalChecked)(nil),
 	JobEventTypeWarmupFiled:          (*JobEventWarmupFiled)(nil),
+	JobEventTypeWarmupRescued:        (*JobEventWarmupRescued)(nil),
 }

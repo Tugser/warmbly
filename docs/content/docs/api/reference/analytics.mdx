@@ -268,7 +268,7 @@ Results are scoped to the selected workspace, so every member with access sees t
 
 Returns where warmup mail landed in partners' mailboxes over a date range: the primary inbox, a Gmail category tab (Promotions, Updates, Social or Forums), or spam. Counts are per UTC day, per recipient provider, and, on the workspace report, per mailbox. Requires an organization context. Auth: **Scope** `READ_ANALYTICS` · **Org permission** `view_analytics`.
 
-Every figure is measured, not estimated: a delivery is counted when the recipient's own sync finds the warmup email and records the folder it arrived in. `rescued` counts spam placements the recipient's mailbox was told to move back to the inbox; the move itself is not confirmed back, so it is the rescues requested, not a verified count. `unconfirmed` counts completed sends more than 24 hours old that no recipient has reported seeing, bucketed on the day they were sent; a provider filter cannot split it, so it is only reported unfiltered.
+Every figure is measured, not estimated: a delivery is counted when the recipient's own sync finds the warmup email and records the folder it arrived in. `rescued` counts spam placements the recipient's mailbox was told to move back to the inbox. What each rescue came to is reported back by that mailbox: `rescue_confirmed` is rescues that left the message out of spam (moved, or already out when the rescue ran), `rescue_missing` is rescues whose message was no longer in the mailbox, `rescue_failed` is rescues the provider refused, and `rescue_unreported` is requested rescues with no outcome yet, which includes every rescue from before outcomes were recorded. The three outcome counters also appear on each `groups` entry. `unconfirmed` counts completed sends more than 24 hours old that no recipient has reported seeing, bucketed on the day they were sent; a provider filter cannot split it, so it is only reported unfiltered.
 
 `rate` is the headline deliverability figure the dashboard shows next to each mailbox: `inbox_rate` is inbox plus tabs over what was delivered in the trailing 7 UTC days, and stays `null` until `min_sample` (`20`) deliveries are in. `scope` is always `major`: the rate is taken over Google, Microsoft and Yahoo recipients only, the providers that filter on sender reputation. A mailbox whose warmup mail reached only other hosts has no rate (`delivered` `0`, `band` `none`). Other hosts are always in `summary`, `daily` and `providers`, and `other_delivered` and `other_inbox_rate` give their share of the same window (`0` and `null` with none). `band` is `good` at `90` or above, `fair` from `80`, `poor` below `80`, `collecting` below the sample floor and `none` with no deliveries. Each day's `rolling_inbox_rate` is the trailing 7-day figure at the same three providers ending on that day; the day's counts cover every host, so filter by provider to read one. Rates are percentages with two decimals.
 
@@ -290,7 +290,7 @@ A range longer than 366 days, `from` after `to`, a malformed date or an invalid 
   "date_range": { "from": "2026-06-01T00:00:00Z", "to": "2026-06-30T00:00:00Z" },
   "summary": {
     "sent": 820, "delivered": 791, "inbox": 702, "tabs": 41, "spam": 48,
-    "rescued": 44, "unconfirmed": 12, "inbox_rate": 93.93, "spam_rate": 6.07
+    "rescued": 44, "rescue_confirmed": 41, "rescue_missing": 1, "rescue_failed": 0, "rescue_unreported": 2, "unconfirmed": 12, "inbox_rate": 93.93, "spam_rate": 6.07
   },
   "rate": {
     "window_days": 7, "min_sample": 20, "scope": "major", "delivered": 196, "inbox": 180, "tabs": 9, "spam": 7,
@@ -302,8 +302,8 @@ A range longer than 366 days, `from` after `to`, a malformed date or an invalid 
       "sent": 30, "delivered": 29, "inbox": 27, "tabs": 1, "spam": 1, "rescued": 1, "unconfirmed": 0,
       "inbox_rate": 96.55, "spam_rate": 3.45, "rolling_inbox_rate": 96.43,
       "groups": [
-        { "group": "google", "inbox": 15, "tabs": 1, "spam": 0, "rescued": 0 },
-        { "group": "microsoft", "inbox": 12, "tabs": 0, "spam": 1, "rescued": 1 }
+        { "group": "google", "inbox": 15, "tabs": 1, "spam": 0, "rescued": 0, "rescue_confirmed": 0, "rescue_missing": 0, "rescue_failed": 0 },
+        { "group": "microsoft", "inbox": 12, "tabs": 0, "spam": 1, "rescued": 1, "rescue_confirmed": 1, "rescue_missing": 0, "rescue_failed": 0 }
       ]
     }
   ],

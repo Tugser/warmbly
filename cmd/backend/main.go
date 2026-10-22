@@ -80,6 +80,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/leadsync"
 	"github.com/warmbly/warmbly/internal/app/mailboxavatar"
 	"github.com/warmbly/warmbly/internal/app/mailboximport"
+	"github.com/warmbly/warmbly/internal/app/mailcred"
 	"github.com/warmbly/warmbly/internal/app/mcp"
 	"github.com/warmbly/warmbly/internal/app/monitoring"
 	"github.com/warmbly/warmbly/internal/app/nativeactions"
@@ -682,7 +683,6 @@ func main() {
 			errs.CaptureFatal(cerr)
 			log.Fatal("Invalid CREDENTIALS_ENCRYPTION_KEY: ", cerr)
 		}
-		emailRepostory := repository.NewEmailRepostory(primaryDB, credEncrypter)
 		campaignRepostory := repository.NewCampaignRepostory(primaryDB)
 		sequenceRepostory := repository.NewSequenceRepostory(primaryDB)
 		contactRepostory := repository.NewContactRepostory(primaryDB)
@@ -709,6 +709,13 @@ func main() {
 			errs.CaptureFatal(err)
 			log.Fatal(err)
 		}
+		cipherService = cipher.NewService(kms, cache, encryptedKeys)
+		mailboxCredentials, merr := mailcred.FromEnv(credEncrypter, cipherService)
+		if merr != nil {
+			errs.CaptureFatal(merr)
+			log.Fatal(merr)
+		}
+		emailRepostory := repository.NewEmailRepositoryWithSealer(primaryDB, mailboxCredentials)
 
 		folderRepostory := repository.NewGroupRepostory(primaryDB, models.Folders)
 		tagRepostory := repository.NewGroupRepostory(primaryDB, models.Tags)
@@ -1172,7 +1179,6 @@ func main() {
 			log.Printf("Warning: bootstrap failed: %v", berr)
 		}
 
-		cipherService = cipher.NewService(kms, cache, encryptedKeys)
 		emailMessageMapForHandler = repository.NewDurableEmailMessageMapRepository(primaryDB, cipherService)
 
 		// Third-party integrations: OAuth connect flows + encrypted token
@@ -1278,6 +1284,7 @@ func main() {
 		// Every connect path checks the workspace's mailbox allowance
 		// (fair use for paid plans, the free cap otherwise).
 		emailService.WireMailboxAllowance(organizationService)
+		emailService.WireMailboxCredentials(mailboxCredentials)
 		// Seed Graph delta cursors when the reconciler reloads mailboxes.
 		emailService.WireGraphDelta(repository.NewEmailGraphDeltaRepository(primaryDB))
 		// The Gmail equivalent: without it a reloaded mailbox re-bootstraps its
@@ -2085,7 +2092,7 @@ func main() {
 			repository.NewMailboxErasureRepository(primaryDB),
 			s3,
 			credEncrypter,
-		).Start(ctx, 1*time.Minute)
+		).WithOrganizationKeys(cipherService).Start(ctx, 1*time.Minute)
 
 		// Workspace archives: export a whole organization to a portable file
 		// and import one back, so a workspace can move between instances.

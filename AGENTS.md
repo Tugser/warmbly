@@ -137,7 +137,7 @@ When you add one, work through:
 - **Scope.** The `WHERE` fragment selecting that table's rows for one organization, with `$1` as the org id. Use a subquery against a parent when the table has no `organization_id` of its own.
 - **Order.** `Tables` is applied top to bottom on import, so a table must sit below everything it references.
 - **Group.** Which `models.OrgDataGroup` it belongs to. If a NOT NULL foreign key crosses a group boundary, add the dependency to `Requires` in `models.OrgDataGroupCatalog` — otherwise a user who deselects the target group gets an import that aborts on a constraint. Nullable crossings need nothing; the importer blanks them.
-- **Secrets.** Any column holding ciphertext needs a `SecretColumn` with the right `KeyDomain`. Warmbly has two and they are not interchangeable: `KeyDomainInstance` is `CREDENTIALS_ENCRYPTION_KEY` (mailbox credentials, which the worker reads without an org context), `KeyDomainOrgDEK` is the per-organization DEK (everything else). Getting this wrong produces mailboxes that authenticate against nothing.
+- **Secrets.** Any column holding ciphertext needs a `SecretColumn` with the right `KeyDomain`. Warmbly has three and they are not interchangeable: `KeyDomainInstance` is `CREDENTIALS_ENCRYPTION_KEY`, `KeyDomainOrgDEK` is the per-organization DEK, and `KeyDomainMailbox` is mailbox credentials, which hold either (a `dek1:` prefix marks the org DEK, chosen by `MAILBOX_CREDENTIALS_SEALING`; see `internal/app/mailcred`). Getting this wrong produces mailboxes that authenticate against nothing.
 - **Instance-local columns.** Anything naming a worker, a queue handle, a Stripe object, or a sync checkpoint belongs in `ResetOnImport`, or the whole table in `ImportSkip` when it only means something on the instance that wrote it.
 - **Blobs.** A column holding an object-storage key needs a `BlobColumn` so the bytes travel with the rows.
 
@@ -314,7 +314,7 @@ Anything one person types that Warmbly later shows to someone else is content in
 
 - a server-class (`Internal`) error answers the caller with one fixed sentence and a request id. The real message is logged against that id. `errx.NewPublic` is the narrow exception, for a message an operator can act on, and never for one built from an underlying error
 - no secret, credential, token or full DSN may reach a log line, an error message or an analytics event. Errors sent to PostHog go through `internal/observability/errs`, and the database wrapper strips parameter values
-- ciphertext columns carry the right key domain. `KeyDomainInstance` is `CREDENTIALS_ENCRYPTION_KEY`, `KeyDomainOrgDEK` is the per-organization DEK. They are not interchangeable
+- ciphertext columns carry the right key domain. `KeyDomainInstance` is `CREDENTIALS_ENCRYPTION_KEY`, `KeyDomainOrgDEK` is the per-organization DEK, `KeyDomainMailbox` opens either per value. They are not interchangeable, and mailbox credentials go through `mailcred.Sealer`, never an encrypter directly
 
 ### Dependencies and configuration
 

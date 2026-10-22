@@ -71,6 +71,8 @@ const (
 	// JobEventTypeWarmupRemovalChecked answers a verify_removal warmup action.
 	JobEventTypeWarmupRemovalChecked JobEventType = "WARMUP_REMOVAL_CHECKED"
 	JobEventTypeWarmupFiled          JobEventType = "WARMUP_FILED"
+	// JobEventTypeWarmupRescued answers a spam rescue the control plane asked to hear back about.
+	JobEventTypeWarmupRescued JobEventType = "WARMUP_RESCUED"
 )
 
 type JobEvent struct {

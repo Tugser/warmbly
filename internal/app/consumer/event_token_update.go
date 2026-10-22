@@ -7,15 +7,14 @@ import (
 )
 
 func (s *JobsService) HandleTokenUpdate(ctx context.Context, e *models.JobEventTokenUpdate) error {
-	if err := s.EmailRepository.RefreshBoxToken(
+	if e.SealedTokens != "" {
+		return s.EmailRepository.RefreshBoxTokenSealed(ctx, e.EmailID, e.SealedTokens, e.ExpiresAt)
+	}
+	return s.EmailRepository.RefreshBoxToken(
 		ctx,
 		e.EmailID,
 		e.AccessToken,
 		e.RefreshToken,
 		e.ExpiresAt,
-	); err != nil {
-		return err
-	}
-
-	return nil
+	)
 }

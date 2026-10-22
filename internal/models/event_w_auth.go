@@ -19,4 +19,7 @@ type JobEventTokenUpdate struct {
 	AccessToken  string    `json:"access_token" avro:"access_token"`
 	RefreshToken string    `json:"refresh_token" avro:"refresh_token"`
 	ExpiresAt    time.Time `json:"expires_at" avro:"expires_at"`
+	// SealedTokens holds the refreshed token sealed under the organization's
+	// data key, and the plaintext fields are then empty.
+	SealedTokens string `json:"sealed_tokens,omitempty" avro:"sealed_tokens"`
 }

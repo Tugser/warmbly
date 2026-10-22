@@ -553,6 +553,11 @@
               "default": false,
               "name": "brokered",
               "type": "boolean"
+            },
+            {
+              "default": "",
+              "name": "sealed_secrets",
+              "type": "string"
             }
           ],
           "name": "warmbly.events.AddWorkerEmail",

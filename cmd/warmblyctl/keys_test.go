@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/warmbly/warmbly/internal/app/mailcred"
 	"github.com/warmbly/warmbly/internal/app/orgtransfer"
 	"github.com/warmbly/warmbly/internal/app/twofa"
 	"github.com/warmbly/warmbly/internal/pkg/encrypt"
@@ -68,6 +69,9 @@ func TestResealValueClassifiesEveryShape(t *testing.T) {
 	}
 	if _, changed, err := resealValue(keys, col, resealed); err != nil || changed {
 		t.Fatal("a resealed value must open under the primary")
+	}
+	if _, _, err := resealValue(keys, col, mailcred.OrgPrefix+"c2VhbGVk"); !errors.Is(err, errWorkspaceSealed) {
+		t.Fatal("a workspace-sealed value must be counted apart and never touched by an instance rotation")
 	}
 	if _, _, err := resealValue(keys, col, "ya29.a0Af-legacy-token"); !errors.Is(err, errUnsealed) {
 		t.Fatal("a value outside the sealed format must be reported unsealed, never rewritten")

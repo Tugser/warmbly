@@ -7,6 +7,7 @@ import (
 	"github.com/warmbly/warmbly/internal/infrastructure/cache"
 	"github.com/warmbly/warmbly/internal/infrastructure/encryptedkeys"
 	"github.com/warmbly/warmbly/internal/infrastructure/kms"
+	"golang.org/x/sync/singleflight"
 )
 
 type CipherService interface {
@@ -17,6 +18,8 @@ type cipherService struct {
 	encryptedKeys encryptedkeys.Store
 	cache         *cache.Cache
 	kms           kms.Provider
+	memory        *memoryKeys
+	flight        singleflight.Group
 }
 
 func NewService(kms kms.Provider, cache *cache.Cache, encryptedKeys encryptedkeys.Store) CipherService {
@@ -24,5 +27,6 @@ func NewService(kms kms.Provider, cache *cache.Cache, encryptedKeys encryptedkey
 		kms:           kms,
 		cache:         cache,
 		encryptedKeys: encryptedKeys,
+		memory:        newMemoryKeys(),
 	}
 }

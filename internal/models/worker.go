@@ -181,6 +181,9 @@ type AddWorkerEmail struct {
 	Sync *AddWorkerEmailSyncData `json:"sync" avro:"sync"`
 	// Brokered: no credential travels; the worker fetches access tokens from the backend.
 	Brokered bool `json:"brokered" avro:"brokered"`
+	// SealedSecrets carries the token or SMTP/IMAP login sealed under the
+	// organization's data key; when set, no credential travels in the clear.
+	SealedSecrets string `json:"sealed_secrets,omitempty" avro:"sealed_secrets"`
 
 	Cfg oauth2.Config `json:"-" avro:"-"`
 	// TokenSource is set by the worker for brokered mailboxes.

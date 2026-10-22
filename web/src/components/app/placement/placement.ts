@@ -99,6 +99,9 @@ export interface DayView {
     archived?: number;
     custom?: number;
     rescued: number;
+    rescueConfirmed: number;
+    rescueMissing: number;
+    rescueFailed: number;
     delivered: number;
     /** Only meaningful unfiltered; a provider filter has no send-side split. */
     sent: number;
@@ -120,6 +123,9 @@ export function viewDays(days: PlacementDay[], group: GroupFilter, minSample: nu
                 archived: d.archived,
                 custom: d.custom,
                 rescued: d.rescued,
+                rescueConfirmed: d.rescue_confirmed ?? 0,
+                rescueMissing: d.rescue_missing ?? 0,
+                rescueFailed: d.rescue_failed ?? 0,
                 delivered: d.delivered,
                 sent: d.sent,
                 unconfirmed: d.unconfirmed,
@@ -130,7 +136,7 @@ export function viewDays(days: PlacementDay[], group: GroupFilter, minSample: nu
         const inbox = g?.inbox ?? 0;
         const tabs = g?.tabs ?? 0;
         const spam = g?.spam ?? 0;
-        return { date: d.date, inbox, tabs, spam, unknown: g?.unknown, archived: g?.archived, custom: g?.custom, rescued: g?.rescued ?? 0, delivered: inbox + tabs + spam, sent: 0, unconfirmed: 0, rolling: null };
+        return { date: d.date, inbox, tabs, spam, unknown: g?.unknown, archived: g?.archived, custom: g?.custom, rescued: g?.rescued ?? 0, rescueConfirmed: g?.rescue_confirmed ?? 0, rescueMissing: g?.rescue_missing ?? 0, rescueFailed: g?.rescue_failed ?? 0, delivered: inbox + tabs + spam, sent: 0, unconfirmed: 0, rolling: null };
     });
     if (group === "all") return base;
     // Trailing rate inside the range, with the same floor the server applies.
@@ -152,11 +158,14 @@ export function totals(days: DayView[]) {
             acc.tabs += d.tabs;
             acc.spam += d.spam;
             acc.rescued += d.rescued;
+            acc.rescueConfirmed += d.rescueConfirmed;
+            acc.rescueMissing += d.rescueMissing;
+            acc.rescueFailed += d.rescueFailed;
             acc.sent += d.sent;
             acc.unconfirmed += d.unconfirmed;
             return acc;
         },
-        { inbox: 0, tabs: 0, spam: 0, rescued: 0, sent: 0, unconfirmed: 0 },
+        { inbox: 0, tabs: 0, spam: 0, rescued: 0, rescueConfirmed: 0, rescueMissing: 0, rescueFailed: 0, sent: 0, unconfirmed: 0 },
     );
     const delivered = t.inbox + t.tabs + t.spam;
     return {
@@ -165,6 +174,17 @@ export function totals(days: DayView[]) {
         inboxRate: delivered > 0 ? Math.round(((t.inbox + t.tabs) / delivered) * 10000) / 100 : null,
         spamRate: delivered > 0 ? Math.round((t.spam / delivered) * 10000) / 100 : null,
     };
+}
+
+/** What the window's spam rescues came to, as the recipients' mailboxes reported it. */
+export function rescueSummary(t: { rescued: number; rescueConfirmed: number; rescueMissing: number; rescueFailed: number }): string {
+    if (t.rescued === 0) return "nothing needed rescuing";
+    const parts = [`of ${fmtNum(t.rescued)} requested`];
+    if (t.rescueMissing > 0) parts.push(`${fmtNum(t.rescueMissing)} no longer there`);
+    if (t.rescueFailed > 0) parts.push(`${fmtNum(t.rescueFailed)} refused`);
+    const unreported = Math.max(0, t.rescued - t.rescueConfirmed - t.rescueMissing - t.rescueFailed);
+    if (unreported > 0) parts.push(`${fmtNum(unreported)} no outcome reported`);
+    return parts.join(" · ");
 }
 
 export function observedCount(counts: { delivered: number; unknown?: number; archived?: number; custom?: number }) {

@@ -34,31 +34,37 @@ func (r PoolLinkWarmupReportRequest) Range() (time.Time, time.Time, error) {
 }
 
 type WarmupPlacementDayRow struct {
-	SenderID     uuid.UUID `json:"sender_id"`
-	Email        string    `json:"email"`
-	Date         string    `json:"date"`
-	Group        string    `json:"group"`
-	Inbox        int       `json:"inbox"`
-	Tabs         int       `json:"tabs"`
-	Spam         int       `json:"spam"`
-	Rescued      int       `json:"rescued"`
-	Unknown      int       `json:"unknown"`
-	Archived     int       `json:"archived"`
-	Custom       int       `json:"custom"`
-	Instrumented int       `json:"instrumented_receipts"`
+	SenderID        uuid.UUID `json:"sender_id"`
+	Email           string    `json:"email"`
+	Date            string    `json:"date"`
+	Group           string    `json:"group"`
+	Inbox           int       `json:"inbox"`
+	Tabs            int       `json:"tabs"`
+	Spam            int       `json:"spam"`
+	Rescued         int       `json:"rescued"`
+	RescueConfirmed int       `json:"rescue_confirmed"`
+	RescueMissing   int       `json:"rescue_missing"`
+	RescueFailed    int       `json:"rescue_failed"`
+	Unknown         int       `json:"unknown"`
+	Archived        int       `json:"archived"`
+	Custom          int       `json:"custom"`
+	Instrumented    int       `json:"instrumented_receipts"`
 }
 
 type WarmupPlacementHostRow struct {
-	Group        string `json:"group"`
-	Host         string `json:"host"`
-	Inbox        int    `json:"inbox"`
-	Tabs         int    `json:"tabs"`
-	Spam         int    `json:"spam"`
-	Rescued      int    `json:"rescued"`
-	Unknown      int    `json:"unknown"`
-	Archived     int    `json:"archived"`
-	Custom       int    `json:"custom"`
-	Instrumented int    `json:"instrumented_receipts"`
+	Group           string `json:"group"`
+	Host            string `json:"host"`
+	Inbox           int    `json:"inbox"`
+	Tabs            int    `json:"tabs"`
+	Spam            int    `json:"spam"`
+	Rescued         int    `json:"rescued"`
+	RescueConfirmed int    `json:"rescue_confirmed"`
+	RescueMissing   int    `json:"rescue_missing"`
+	RescueFailed    int    `json:"rescue_failed"`
+	Unknown         int    `json:"unknown"`
+	Archived        int    `json:"archived"`
+	Custom          int    `json:"custom"`
+	Instrumented    int    `json:"instrumented_receipts"`
 }
 
 type WarmupSenderDayCount struct {

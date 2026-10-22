@@ -68,6 +68,29 @@ const (
 	WarmupActionVerifyRemoval = "verify_removal"
 )
 
+// What a spam rescue came to, as WARMUP_RESCUED reports it. Moved and
+// AlreadyOut both leave the message out of spam; Gone and Failed do not.
+const (
+	WarmupRescueMoved      = "moved"
+	WarmupRescueAlreadyOut = "already_out"
+	WarmupRescueGone       = "gone"
+	WarmupRescueFailed     = "failed"
+)
+
+// WarmupRescueConfirmed reports whether an outcome left the message out of spam.
+func WarmupRescueConfirmed(outcome string) bool {
+	return outcome == WarmupRescueMoved || outcome == WarmupRescueAlreadyOut
+}
+
+// ValidWarmupRescueOutcome reports whether a worker's answer is one this build knows.
+func ValidWarmupRescueOutcome(outcome string) bool {
+	switch outcome {
+	case WarmupRescueMoved, WarmupRescueAlreadyOut, WarmupRescueGone, WarmupRescueFailed:
+		return true
+	}
+	return false
+}
+
 // Where a verify_removal found the message. Present means it is still in the
 // mailbox outside the trash, whatever folder it was moved to.
 const (
@@ -154,7 +177,8 @@ type WarmupEmailAction struct {
 	// InternalID is the platform's id for the message, which keys the stored
 	// body the delete action drops. Empty when the control plane does not
 	// know it (the sender's own copy of a send), in which case the worker
-	// resolves it from the provider id it acted on.
+	// resolves it from the provider id it acted on. On a spam rescue it asks
+	// the worker to answer with WARMUP_RESCUED.
 	InternalID string `json:"internal_id,omitempty" avro:"internal_id"`
 	FilingID   string `json:"filing_id,omitempty" avro:"filing_id"`
 

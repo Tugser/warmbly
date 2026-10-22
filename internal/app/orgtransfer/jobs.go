@@ -48,7 +48,7 @@ func (s *service) RequestExport(
 		if err := ValidatePassphrase(req.Passphrase); err != nil {
 			return nil, errx.New(errx.BadRequest, err.Error())
 		}
-		if s.creds == nil {
+		if !s.carriesMailboxCredentials() {
 			return nil, errx.New(errx.BadRequest,
 				"This instance has no CREDENTIALS_ENCRYPTION_KEY, so there are no mailbox credentials to carry. Export without credentials instead.")
 		}
@@ -243,7 +243,7 @@ func (s *service) Preflight(
 		out.Warnings = append(out.Warnings, "This archive was exported without credentials, so every mailbox and integration will need reconnecting.")
 	case !out.SecretsUnsealed:
 		out.Warnings = append(out.Warnings, "Enter the export passphrase to bring mailbox credentials across; without it every mailbox will need reconnecting.")
-	case s.creds == nil:
+	case !s.carriesMailboxCredentials():
 		out.Warnings = append(out.Warnings, "This instance has no CREDENTIALS_ENCRYPTION_KEY, so mailbox credentials cannot be stored here.")
 	}
 

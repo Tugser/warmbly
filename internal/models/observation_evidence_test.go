@@ -81,7 +81,7 @@ func TestReceivedMetadataSurvivesExistingJSONAndAvroEvents(t *testing.T) {
 func TestReceiptAndSubmissionMetricsStaySeparate(t *testing.T) {
 	w := WarmupPlacementCounts{Sent: 10, Inbox: 1, Spam: 1, Unknown: 2, Archived: 1, Custom: 1, Instrumented: 6, Rescued: 1, Unconfirmed: 4}
 	w.Finish()
-	if w.Delivered != 2 || w.Observed != 6 || w.NonSpamMetric.Denominator != 2 || *w.InboxRate != 50 || w.RescueRequested != 1 || w.RescueConfirmed != nil {
+	if w.Delivered != 2 || w.Observed != 6 || w.NonSpamMetric.Denominator != 2 || *w.InboxRate != 50 || w.RescueRequested != 1 || w.RescueConfirmed != 0 || w.RescueUnreported != 1 {
 		t.Fatalf("warmup evidence mixed: %+v", w)
 	}
 	var seed PlacementCounts

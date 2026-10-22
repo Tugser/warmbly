@@ -32,7 +32,7 @@ export interface PlacementCounts {
     /** Gmail category tabs (Promotions, Updates, Social, Forums). */
     tabs: number;
     spam: number;
-    /** Spam placements for which a rescue action was requested, not confirmed. */
+    /** Spam placements the recipient's mailbox was asked to move out of spam. */
     rescued: number;
 	unknown?: number;
 	archived?: number;
@@ -41,7 +41,14 @@ export interface PlacementCounts {
     legacy_uninstrumented_receipts?: number;
 	instrumented_receipts?: number;
     rescue_requested?: number;
+    /** Rescues the recipient's mailbox reported out of spam (moved, or already out). */
     rescue_confirmed?: number | null;
+    /** Rescues whose message was no longer in the mailbox. */
+    rescue_missing?: number;
+    /** Rescues the provider refused. */
+    rescue_failed?: number;
+    /** Rescues with no outcome reported. */
+    rescue_unreported?: number;
     non_spam_metric?: ObservationMetric;
     /** Sent over a day ago and never seen by the recipient. */
     unconfirmed: number;
@@ -76,6 +83,9 @@ export interface PlacementGroupCounts {
 	unknown?: number;
 	archived?: number;
 	custom?: number;
+    rescue_confirmed?: number;
+    rescue_missing?: number;
+    rescue_failed?: number;
 }
 
 export interface PlacementDay extends PlacementCounts {

@@ -35,6 +35,9 @@ type WarmupPlacementRepository interface {
 	// RecordPlacement counts one verified receipt exactly once and returns its
 	// sender; nil when the receipt was already counted or does not exist.
 	RecordPlacement(ctx context.Context, recipientID, internalID uuid.UUID, group, host, landed string, rescued bool) (*WarmupPlacementSender, error)
+	// RecordRescueOutcome counts what one receipt's spam rescue came to exactly
+	// once and returns its sender; nil when already counted or not on file.
+	RecordRescueOutcome(ctx context.Context, recipientID, internalID uuid.UUID, group, host, outcome string) (*WarmupPlacementSender, error)
 	// SweepUnplaced counts up to limit receipts written before cutoff that no
 	// live arrival counted, reading spam from the spam reports. It returns how
 	// many it claimed.
@@ -62,12 +65,14 @@ func NewWarmupPlacementRepository(d *db.DB) WarmupPlacementRepository {
 func (r *warmupPlacementRepository) RecordPlacement(ctx context.Context, recipientID, internalID uuid.UUID, group, host, landed string, rescued bool) (*WarmupPlacementSender, error) {
 	const query = `
 		WITH claimed AS (
-			UPDATE warmup_received SET placed = true
+			-- Whichever of placement and rescue outcome runs first fixes the keys; the other reuses them.
+			UPDATE warmup_received SET placed = true,
+				placement_group = COALESCE(placement_group, $3), placement_host = COALESCE(placement_host, $4)
 			WHERE email_account_id = $1 AND internal_id = $2 AND NOT placed
-			RETURNING sender_account_id, created_at, first_landing
+			RETURNING sender_account_id, created_at, first_landing, placement_group, placement_host
 		), counted AS (
 			INSERT INTO warmup_placement_daily (sender_account_id, date, recipient_group, recipient_host, inbox, tabs, spam, rescued, unknown, archived, custom, instrumented)
-			SELECT sender_account_id, (created_at AT TIME ZONE 'UTC')::date, $3, $4,
+			SELECT sender_account_id, (created_at AT TIME ZONE 'UTC')::date, placement_group, placement_host,
 				(COALESCE(first_landing,$5) = 'inbox')::int,
 				(COALESCE(first_landing,$5) = 'tabs')::int,
 				(COALESCE(first_landing,$5) = 'spam')::int,
@@ -91,6 +96,40 @@ func (r *warmupPlacementRepository) RecordPlacement(ctx context.Context, recipie
 		FROM counted JOIN email_accounts ea ON ea.id = counted.sender_account_id
 	`
 	params := []any{recipientID, internalID, group, host, landed, rescued}
+	var sender WarmupPlacementSender
+	err := r.db.QueryRow(ctx, query, params...).Scan(&sender.ID, &sender.OrgID, &sender.UserID, &sender.Email)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		db.CaptureError(err, query, params, "query")
+		return nil, err
+	}
+	return &sender, nil
+}
+
+func (r *warmupPlacementRepository) RecordRescueOutcome(ctx context.Context, recipientID, internalID uuid.UUID, group, host, outcome string) (*WarmupPlacementSender, error) {
+	const query = `
+		WITH claimed AS (
+			UPDATE warmup_received SET rescue_outcome = $5, rescue_reported_at = now(),
+				placement_group = COALESCE(placement_group, $3), placement_host = COALESCE(placement_host, $4)
+			WHERE email_account_id = $1 AND internal_id = $2 AND rescue_outcome IS NULL
+			RETURNING sender_account_id, created_at, placement_group, placement_host
+		), counted AS (
+			INSERT INTO warmup_placement_daily (sender_account_id, date, recipient_group, recipient_host, rescue_confirmed, rescue_missing, rescue_failed)
+			SELECT sender_account_id, (created_at AT TIME ZONE 'UTC')::date, placement_group, placement_host,
+				($5 IN ('moved','already_out'))::int, ($5 = 'gone')::int, ($5 = 'failed')::int
+			FROM claimed
+			ON CONFLICT (sender_account_id, date, recipient_group, recipient_host) DO UPDATE SET
+				rescue_confirmed = warmup_placement_daily.rescue_confirmed + EXCLUDED.rescue_confirmed,
+				rescue_missing = warmup_placement_daily.rescue_missing + EXCLUDED.rescue_missing,
+				rescue_failed = warmup_placement_daily.rescue_failed + EXCLUDED.rescue_failed
+			RETURNING sender_account_id
+		)
+		SELECT ea.id, ea.organization_id, ea.user_id::text, ea.email
+		FROM counted JOIN email_accounts ea ON ea.id = counted.sender_account_id
+	`
+	params := []any{recipientID, internalID, group, host, outcome}
 	var sender WarmupPlacementSender
 	err := r.db.QueryRow(ctx, query, params...).Scan(&sender.ID, &sender.OrgID, &sender.UserID, &sender.Email)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -181,6 +220,7 @@ func (r *warmupPlacementRepository) daily(ctx context.Context, orgID uuid.UUID, 
 	const query = `
 		SELECT p.sender_account_id, ea.email, p.date::text, p.recipient_group,
 			SUM(p.inbox)::int, SUM(p.tabs)::int, SUM(p.spam)::int, SUM(p.rescued)::int,
+			SUM(p.rescue_confirmed)::int, SUM(p.rescue_missing)::int, SUM(p.rescue_failed)::int,
 			SUM(p.unknown)::int, SUM(p.archived)::int, SUM(p.custom)::int, SUM(p.instrumented)::int
 		FROM warmup_placement_daily p
 		JOIN email_accounts ea ON ea.id = p.sender_account_id
@@ -199,7 +239,7 @@ func (r *warmupPlacementRepository) daily(ctx context.Context, orgID uuid.UUID, 
 	out := make([]WarmupPlacementDayRow, 0)
 	for rows.Next() {
 		var d WarmupPlacementDayRow
-		if err := rows.Scan(&d.SenderID, &d.Email, &d.Date, &d.Group, &d.Inbox, &d.Tabs, &d.Spam, &d.Rescued, &d.Unknown, &d.Archived, &d.Custom, &d.Instrumented); err != nil {
+		if err := rows.Scan(&d.SenderID, &d.Email, &d.Date, &d.Group, &d.Inbox, &d.Tabs, &d.Spam, &d.Rescued, &d.RescueConfirmed, &d.RescueMissing, &d.RescueFailed, &d.Unknown, &d.Archived, &d.Custom, &d.Instrumented); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -215,6 +255,7 @@ func (r *warmupPlacementRepository) hosts(ctx context.Context, orgID uuid.UUID, 
 	const query = `
 		SELECT p.recipient_group, p.recipient_host,
 			SUM(p.inbox)::int, SUM(p.tabs)::int, SUM(p.spam)::int, SUM(p.rescued)::int,
+			SUM(p.rescue_confirmed)::int, SUM(p.rescue_missing)::int, SUM(p.rescue_failed)::int,
 			SUM(p.unknown)::int, SUM(p.archived)::int, SUM(p.custom)::int, SUM(p.instrumented)::int
 		FROM warmup_placement_daily p
 		JOIN email_accounts ea ON ea.id = p.sender_account_id
@@ -233,7 +274,7 @@ func (r *warmupPlacementRepository) hosts(ctx context.Context, orgID uuid.UUID, 
 	out := make([]WarmupPlacementHostRow, 0)
 	for rows.Next() {
 		var h WarmupPlacementHostRow
-		if err := rows.Scan(&h.Group, &h.Host, &h.Inbox, &h.Tabs, &h.Spam, &h.Rescued, &h.Unknown, &h.Archived, &h.Custom, &h.Instrumented); err != nil {
+		if err := rows.Scan(&h.Group, &h.Host, &h.Inbox, &h.Tabs, &h.Spam, &h.Rescued, &h.RescueConfirmed, &h.RescueMissing, &h.RescueFailed, &h.Unknown, &h.Archived, &h.Custom, &h.Instrumented); err != nil {
 			return nil, err
 		}
 		out = append(out, h)

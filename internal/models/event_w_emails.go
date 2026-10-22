@@ -7,6 +7,15 @@ type JobEventWarmupFiled struct {
 	FilingID uuid.UUID `json:"filing_id" avro:"filing_id"`
 }
 
+// JobEventWarmupRescued is what became of a spam rescue on the receiving
+// mailbox. InternalID is the received message the rescue was for.
+type JobEventWarmupRescued struct {
+	UserID     uuid.UUID `json:"user_id" avro:"user_id"`
+	EmailID    uuid.UUID `json:"email_id" avro:"email_id"`
+	InternalID uuid.UUID `json:"internal_id" avro:"internal_id"`
+	Outcome    string    `json:"outcome" avro:"outcome"`
+}
+
 type JobEventNewEmail struct {
 	UserID  uuid.UUID              `json:"user_id" avro:"user_id"`
 	Message *EmailMessageStoreData `json:"message" avro:"message"`

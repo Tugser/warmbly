@@ -94,7 +94,7 @@ export default function WarmupPlacementSection({ days }: { days: number }) {
                 <Stat
                     label="Spam"
                     value={<span className={t.spam > 0 ? "text-rose-600" : undefined}>{fmtNum(t.spam)}</span>}
-                    sub={`${fmtPct(t.spamRate)} · ${fmtNum(t.rescued)} rescue requests`}
+                    sub={`${fmtPct(t.spamRate)} · ${fmtNum(t.rescueConfirmed)} of ${fmtNum(t.rescued)} confirmed out of spam`}
                 />
                 <Stat label="Unconfirmed" value={filtered ? "—" : t.unconfirmed} sub="sent 24h+ ago, not seen yet" last />
             </StatStrip>

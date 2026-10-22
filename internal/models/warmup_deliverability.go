@@ -180,11 +180,15 @@ type WarmupPlacementCounts struct {
 	Observed         int                `json:"observed_receipts"`
 	LegacyClassified int                `json:"legacy_uninstrumented_receipts"`
 	RescueRequested  int                `json:"rescue_requested"`
-	RescueConfirmed  *int               `json:"rescue_confirmed"`
 	NonSpamMetric    *ObservationMetric `json:"non_spam_metric"`
 	// Rescued is spam placements the recipient's mailbox was told to move
-	// back to the inbox; the move itself is not confirmed back.
-	Rescued int `json:"rescued"`
+	// back to the inbox; the outcome counters are what its worker reported.
+	Rescued         int `json:"rescued"`
+	RescueConfirmed int `json:"rescue_confirmed"`
+	RescueMissing   int `json:"rescue_missing"`
+	RescueFailed    int `json:"rescue_failed"`
+	// RescueUnreported is requested rescues no worker has answered yet.
+	RescueUnreported int `json:"rescue_unreported"`
 	// Unconfirmed is mail sent more than WarmupUnconfirmedAfterHours ago that
 	// no recipient has reported seeing.
 	Unconfirmed int      `json:"unconfirmed"`
@@ -198,6 +202,7 @@ func (c *WarmupPlacementCounts) Finish() {
 	c.Observed = c.Delivered + c.Unknown + c.Archived + c.Custom
 	c.LegacyClassified = max(0, c.Observed-c.Instrumented)
 	c.RescueRequested = c.Rescued
+	c.RescueUnreported = max(0, c.Rescued-c.RescueConfirmed-c.RescueMissing-c.RescueFailed)
 	c.NonSpamMetric = NewObservationMetric("warmup_pool", "classified_observed_receipts", "percent", c.Inbox+c.Tabs, c.Delivered, c.Unknown+c.Archived+c.Custom)
 	c.InboxRate, c.SpamRate = nil, nil
 	if c.Delivered > 0 {
@@ -218,6 +223,9 @@ func (c *WarmupPlacementCounts) Add(o WarmupPlacementCounts) {
 	c.Custom += o.Custom
 	c.Instrumented += o.Instrumented
 	c.Rescued += o.Rescued
+	c.RescueConfirmed += o.RescueConfirmed
+	c.RescueMissing += o.RescueMissing
+	c.RescueFailed += o.RescueFailed
 	c.Unconfirmed += o.Unconfirmed
 }
 
@@ -311,6 +319,10 @@ type WarmupPlacementGroupCounts struct {
 	Unknown  int    `json:"unknown"`
 	Archived int    `json:"archived"`
 	Custom   int    `json:"custom"`
+
+	RescueConfirmed int `json:"rescue_confirmed"`
+	RescueMissing   int `json:"rescue_missing"`
+	RescueFailed    int `json:"rescue_failed"`
 }
 
 // WarmupPlacementDay is one UTC day of placement.

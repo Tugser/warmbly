@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PlacementDay } from "@/lib/api/models/app/analytics/WarmupPlacement";
-import { observedCount, totals, viewDays } from "./placement";
+import { observedCount, rescueSummary, totals, viewDays } from "./placement";
 
 const legacy: PlacementDay = {
     date: "2026-10-01", inbox: 1, tabs: 0, spam: 1, rescued: 0,
@@ -30,5 +30,20 @@ describe("placement observation scope", () => {
         expect(day.rolling).toBeNull();
         expect(totals([day]).inboxRate).toBeNull();
         expect(day.sent).toBe(0);
+    });
+});
+
+describe("spam rescue outcomes", () => {
+    it("reports what the recipients' mailboxes said each rescue came to", () => {
+        const day = { ...legacy, spam: 7, rescued: 7, rescue_confirmed: 4, rescue_missing: 1, rescue_failed: 1 };
+        const t = totals(viewDays([day], "all", 1, 7));
+        expect(t.rescueConfirmed).toBe(4);
+        expect(rescueSummary(t)).toBe("of 7 requested · 1 no longer there · 1 refused · 1 no outcome reported");
+    });
+
+    it("treats an older API's missing outcomes as unreported", () => {
+        const t = totals(viewDays([{ ...legacy, rescued: 2 }], "all", 1, 7));
+        expect(t.rescueConfirmed).toBe(0);
+        expect(rescueSummary(t)).toBe("of 2 requested · 2 no outcome reported");
     });
 });

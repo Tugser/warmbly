@@ -236,6 +236,9 @@ func (b *placementBuilder) addDelivery(r repository.WarmupPlacementDayRow) {
 		c.Tabs += r.Tabs
 		c.Spam += r.Spam
 		c.Rescued += r.Rescued
+		c.RescueConfirmed += r.RescueConfirmed
+		c.RescueMissing += r.RescueMissing
+		c.RescueFailed += r.RescueFailed
 		c.Unknown += r.Unknown
 		c.Archived += r.Archived
 		c.Custom += r.Custom
@@ -258,6 +261,9 @@ func (b *placementBuilder) addDelivery(r repository.WarmupPlacementDayRow) {
 	g.Tabs += r.Tabs
 	g.Spam += r.Spam
 	g.Rescued += r.Rescued
+	g.RescueConfirmed += r.RescueConfirmed
+	g.RescueMissing += r.RescueMissing
+	g.RescueFailed += r.RescueFailed
 	g.Unknown += r.Unknown
 	g.Archived += r.Archived
 	g.Custom += r.Custom
@@ -364,6 +370,9 @@ func placementProviders(rows []repository.WarmupPlacementHostRow) []models.Warmu
 		host.Tabs += row.Tabs
 		host.Spam += row.Spam
 		host.Rescued += row.Rescued
+		host.RescueConfirmed += row.RescueConfirmed
+		host.RescueMissing += row.RescueMissing
+		host.RescueFailed += row.RescueFailed
 		host.Unknown += row.Unknown
 		host.Archived += row.Archived
 		host.Custom += row.Custom
@@ -377,7 +386,7 @@ func placementProviders(rows []repository.WarmupPlacementHostRow) []models.Warmu
 			p = &models.WarmupPlacementProvider{Group: r.Group, Hosts: make([]models.WarmupPlacementHost, 0)}
 			byGroup[r.Group] = p
 		}
-		c := models.WarmupPlacementCounts{Inbox: r.Inbox, Tabs: r.Tabs, Spam: r.Spam, Rescued: r.Rescued, Unknown: r.Unknown, Archived: r.Archived, Custom: r.Custom, Instrumented: r.Instrumented}
+		c := models.WarmupPlacementCounts{Inbox: r.Inbox, Tabs: r.Tabs, Spam: r.Spam, Rescued: r.Rescued, RescueConfirmed: r.RescueConfirmed, RescueMissing: r.RescueMissing, RescueFailed: r.RescueFailed, Unknown: r.Unknown, Archived: r.Archived, Custom: r.Custom, Instrumented: r.Instrumented}
 		p.Add(c)
 		c.Finish()
 		p.Hosts = append(p.Hosts, models.WarmupPlacementHost{Host: r.Host, WarmupPlacementCounts: c})

@@ -22,6 +22,7 @@ import {
     fmtPct,
     otherHostsNote,
     rateSentence,
+    rescueSummary,
     totals,
     utcWindow,
     viewDays,
@@ -151,7 +152,7 @@ export default function MailboxPlacementTab({ mailboxId, poolHealth }: { mailbox
                         <Cell label="Non-spam share" value={fmtPct(t.inboxRate)} sub={`${fmtNum(t.inbox)} primary inbox`} tone={BAND[bandForRate(t.inboxRate)].text} />
                         <Cell label="Spam" value={fmtNum(t.spam)} sub={t.spamRate != null ? `${fmtPct(t.spamRate)} of classified receipts` : "no classified receipts"} tone={t.spam > 0 ? "text-rose-600" : undefined} />
                         <Cell label="Other tabs" value={fmtNum(t.tabs)} sub="Promotions, Updates…" />
-                        <Cell label="Rescue requests" value={fmtNum(t.rescued)} sub="movement is not confirmed" />
+                        <Cell label="Confirmed out of spam" value={fmtNum(t.rescueConfirmed)} sub={rescueSummary(t)} wrap tone={t.rescueConfirmed > 0 ? "text-emerald-600" : undefined} />
                         <Cell
                             label="Unconfirmed"
                             value={filtered ? "—" : fmtNum(t.unconfirmed)}
@@ -188,7 +189,7 @@ export default function MailboxPlacementTab({ mailboxId, poolHealth }: { mailbox
                 <ul className="mt-2 space-y-1.5 text-[11.5px] text-slate-500 leading-relaxed">
                     <li>These are controlled partner observations, not real-recipient inbox probabilities or evidence that artificial activity improves reputation.</li>
                     <li>The non-spam share includes inbox and category tabs among classified receipts, over {rate.window_days} days, shown after {rate.min_sample} observations. The headline combines Google, Microsoft and Yahoo families; inspect individual hosts to distinguish consumer and business providers.</li>
-                    <li>Rescue requests do not prove movement or reputation recovery. Unconfirmed means no receipt was reported a day after connector submission, not confirmed loss.</li>
+                    <li>Confirmed out of spam counts rescues the recipient's mailbox reported done, including mail that was already out of spam when the rescue ran. A rescue does not prove reputation recovery. Unconfirmed means no receipt was reported a day after connector submission, not confirmed loss.</li>
                     <li>Unclassified receipts: {report.summary.unknown == null ? "unavailable on this API version" : `${fmtNum(report.summary.unknown)} unknown, ${fmtNum(report.summary.archived)} archive, ${fmtNum(report.summary.custom)} custom folder`}. Historical classifications are retained, not reconstructed as new first observations.</li>
                     <li>
                         The mailbox's standing is judged at the same three providers. Other mail hosts run their own filters, so what lands in their
@@ -206,12 +207,12 @@ function Eyebrow({ children }: { children: ReactNode }) {
     return <span className="text-[10px] uppercase tracking-[0.14em] text-slate-400 font-medium">{children}</span>;
 }
 
-function Cell({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: string }) {
+function Cell({ label, value, sub, tone, wrap }: { label: string; value: string; sub?: string; tone?: string; wrap?: boolean }) {
     return (
         <div className="px-4 py-3.5 min-w-0">
             <Eyebrow>{label}</Eyebrow>
             <div className={cn("mt-1 text-[22px] font-light leading-none tabular-nums", tone ?? "text-slate-900")}>{value}</div>
-            {sub && <div className="mt-1.5 text-[10.5px] text-slate-400 font-mono truncate" title={sub}>{sub}</div>}
+            {sub && <div className={cn("mt-1.5 text-[10.5px] text-slate-400 font-mono", wrap ? "break-words" : "truncate")} title={wrap ? undefined : sub}>{sub}</div>}
         </div>
     );
 }

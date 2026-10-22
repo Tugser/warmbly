@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/warmbly/warmbly/internal/app/cipher"
+	"github.com/warmbly/warmbly/internal/app/mailcred"
 	"github.com/warmbly/warmbly/internal/infrastructure/storage"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/pkg/displayname"
@@ -521,6 +522,14 @@ func (s *service) sealSecret(ctx context.Context, sc SecretColumn, plain string,
 			return "", errors.New("destination organization key unavailable")
 		}
 		return orgCipher.Encrypt(ctx, plain)
+	case KeyDomainMailbox:
+		if s.mailSealing == mailcred.ModeOrganization {
+			return mailcred.SealOrg(ctx, orgCipher, plain)
+		}
+		if s.creds == nil {
+			return "", errors.New("this instance has no CREDENTIALS_ENCRYPTION_KEY, so mailbox credentials cannot be stored")
+		}
+		return s.creds.Encrypt(plain)
 	}
 	return "", fmt.Errorf("column %s has no key domain", sc.Column)
 }

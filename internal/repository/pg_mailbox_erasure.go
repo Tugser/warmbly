@@ -25,8 +25,8 @@ type MailboxErasure struct {
 	UserID         uuid.UUID
 	Email          string
 	Provider       string
-	// RefreshToken is still sealed under CREDENTIALS_ENCRYPTION_KEY, exactly as
-	// it was stored. Empty when the mailbox had no grant.
+	// RefreshToken is still sealed exactly as it was stored, under the instance
+	// or the organization key. Empty when the mailbox had no grant.
 	RefreshToken   string
 	BlobPrefix     string
 	TokenRevokedAt *time.Time

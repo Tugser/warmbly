@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/warmbly/warmbly/internal/app/cipher"
 	"github.com/warmbly/warmbly/internal/app/feature"
+	"github.com/warmbly/warmbly/internal/app/mailcred"
 	warmupapp "github.com/warmbly/warmbly/internal/app/warmup"
 	"github.com/warmbly/warmbly/internal/app/webhook"
 	"github.com/warmbly/warmbly/internal/app/worker"
@@ -105,6 +106,8 @@ type EmailService interface {
 	// WireMailboxAllowance attaches the allowance resolver every connect path
 	// checks. Without it the feature gate's free-or-paid split stands in.
 	WireMailboxAllowance(src MailboxAllowanceSource)
+	// WireMailboxCredentials decides whether ADD_EMAIL carries credentials sealed under the organization key.
+	WireMailboxCredentials(creds *mailcred.Sealer)
 	// WireGraphDelta attaches the Graph delta-cursor repository so the worker
 	// reconciler can seed a mailbox's saved cursors when loading it.
 	WireGraphDelta(repo repository.EmailGraphDeltaRepository)
@@ -180,6 +183,7 @@ type EmailService interface {
 type emailService struct {
 	emailRepository    repository.EmailRepository
 	cipherService      cipher.CipherService
+	mailCreds          *mailcred.Sealer
 	featureGate        feature.FeatureGateService
 	warmupService      warmupapp.Service
 	publisher          events.Publisher
@@ -331,6 +335,10 @@ type MailboxAllowanceSource interface {
 
 func (s *emailService) WireMailboxAllowance(src MailboxAllowanceSource) {
 	s.allowance = src
+}
+
+func (s *emailService) WireMailboxCredentials(creds *mailcred.Sealer) {
+	s.mailCreds = creds
 }
 
 // WireWebhooks attaches the webhook dispatcher after construction. Done
