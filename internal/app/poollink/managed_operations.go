@@ -179,7 +179,8 @@ func (s *service) adoptManaged(ctx context.Context, inst *models.PoolLinkInstanc
 	if xerr != nil {
 		return nil, xerr
 	}
-	if acc == nil || acc.OrganizationID == nil || *acc.OrganizationID != inst.OrganizationID || acc.Status != "active" || acc.AuthMethod == models.MailAuthDelegated ||
+	if acc == nil || acc.OrganizationID == nil || *acc.OrganizationID != inst.OrganizationID || acc.Status != "active" ||
+		(acc.AuthMethod == models.MailAuthDelegated && acc.Provider != string(models.InboxProviderGoogle)) ||
 		(acc.Provider != string(models.InboxProviderGoogle) && acc.Provider != string(models.InboxProviderOutlook)) {
 		return nil, ErrNotAdoptable
 	}

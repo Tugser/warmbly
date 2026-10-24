@@ -92,8 +92,8 @@ func newPartnerRoutingFixture(t *testing.T) *partnerRoutingFixture {
 		{f.atSmallHost, "shop.test", "hostinger"},
 	} {
 		exec(`INSERT INTO email_accounts (id, user_id, organization_id, email, name, signature_plain,
-		          signature_html, provider, status, campaign_limit, min_wait_time, timezone, mail_host, test_mode, test_send_enabled, test_receive_enabled)
-		      VALUES ($1, $2, $3, $4, 'Pick', '', '', 'smtp_imap', 'active', 50, 600, 'UTC', $5, 'diagnostic', true, true)`,
+		          signature_html, provider, status, campaign_limit, min_wait_time, timezone, mail_host, test_mode, test_send_enabled, test_receive_enabled, warmup)
+		      VALUES ($1, $2, $3, $4, 'Pick', '', '', 'smtp_imap', 'active', 50, 600, 'UTC', $5, 'diagnostic', true, true, NOW())`,
 			m.id, f.user, f.org, "pick-"+m.id.String()[:8]+"@"+m.domain, m.host)
 	}
 	for _, id := range []uuid.UUID{senderID, f.atWorkspace, f.atSmallHost} {

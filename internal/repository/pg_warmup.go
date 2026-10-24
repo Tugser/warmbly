@@ -1310,9 +1310,15 @@ const poolAuthoritySQL = `
               AND (l.cloud_blocked_until IS NULL OR l.cloud_blocked_until > NOW()))`
 
 const testSenderSQL = `(ea.test_mode IS NULL OR ea.test_mode='legacy' OR ea.test_mode='diagnostic' AND ea.test_send_enabled)`
-const testRecipientSQL = `(ea.test_mode IS NULL OR ea.test_mode='legacy' OR ea.test_mode='diagnostic' AND ea.test_receive_enabled)`
+const testReceiveFlagsSQL = `(ea.test_mode IS NULL OR ea.test_mode='legacy' OR ea.test_mode='diagnostic' AND ea.test_receive_enabled)`
+
+// testRecipientSQL is models.Email.WarmupReceivingAllowed: a mailbox whose warmup is off receives no warmup mail.
+const testRecipientSQL = `(` + testReceiveFlagsSQL + ` AND ea.warmup IS NOT NULL AND ea.warmup_paused_at IS NULL)`
 
 var partnerEligibleSQL = poolEligibleSQL + ` AND ` + testRecipientSQL
+
+// arrivedRecipientSQL vouches for mail already delivered, so it reads the receive flags alone.
+var arrivedRecipientSQL = poolEligibleSQL + ` AND ` + testReceiveFlagsSQL
 
 var poolEligibleSQL = poolAuthoritySQL + ` AND
 		  wpp.participant_role IN ('sender_receiver', 'recipient_only')

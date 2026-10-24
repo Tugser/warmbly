@@ -38,7 +38,7 @@ var (
 	ErrInstanceRevoked   = errx.NewWithIdentifier(errx.Unauthorized, "pool_link_revoked", "This instance's link has been revoked. Reconnect from the instance settings.")
 	ErrMailboxLimit      = errx.NewWithIdentifier(errx.PaymentRequired, "pool_link_mailbox_limit", "This workspace has reached the free allowance of linked mailboxes. Upgrade to the pool plan for unlimited mailboxes.")
 	ErrMailboxNotFound   = errx.NewWithIdentifier(errx.NotFound, "pool_link_mailbox_not_found", "That mailbox is not enrolled.")
-	ErrMailboxConflict   = errx.NewWithIdentifier(errx.Conflict, "pool_link_mailbox_conflict", "This address already exists in the linked Cloud workspace, but is not enrolled for this local mailbox. Contact Warmbly support to check the association. Do not delete or re-enroll the mailbox.")
+	ErrMailboxConflict   = errx.NewWithIdentifier(errx.Conflict, "pool_link_mailbox_conflict", "This address already exists in the linked Cloud workspace. An instance administrator can connect the existing mailbox from Add account > In your Warmbly Cloud workspace when it is available there. Otherwise, contact Warmbly support to check the association. Do not delete or re-enroll the Cloud mailbox.")
 	ErrWarmupNotEntitled = errx.NewWithIdentifier(errx.Forbidden, "pool_link_warmup_unavailable", "Warmup is not available on this workspace.")
 	ErrBadCredential     = errx.NewWithIdentifier(errx.BadRequest, "pool_link_credential", "A credential matching the provider is required.")
 	ErrBadRequest        = errx.NewWithIdentifier(errx.BadRequest, "pool_link_request", "Instance name is required.")
@@ -74,10 +74,11 @@ type Service interface {
 	AuthenticateInstance(ctx context.Context, token, version string) (*models.PoolLinkInstance, *errx.Error)
 	InstanceInfo(ctx context.Context, inst *models.PoolLinkInstance) (*models.PoolLinkInstanceInfo, *errx.Error)
 	ListInstances(ctx context.Context, orgID uuid.UUID) ([]models.PoolLinkInstance, *errx.Error)
-	// RevokeInstance ends a link and removes every mailbox it enrolled.
+	// RevokeInstance stops and releases every mailbox the link enrolled, then ends the link.
 	RevokeInstance(ctx context.Context, orgID, instanceID uuid.UUID) *errx.Error
 
 	Enroll(ctx context.Context, inst *models.PoolLinkInstance, req models.PoolLinkEnrollRequest) (*models.PoolLinkMailboxState, *errx.Error)
+	AssociateSMTPIMAP(ctx context.Context, inst *models.PoolLinkInstance, req models.PoolLinkSMTPAssociationRequest) (*models.PoolLinkMailboxState, *errx.Error)
 	ListMailboxes(ctx context.Context, inst *models.PoolLinkInstance) ([]models.PoolLinkMailboxState, *errx.Error)
 	WarmupStats(ctx context.Context, inst *models.PoolLinkInstance, req models.PoolLinkWarmupReportRequest) ([]models.WarmupDailyStats, *errx.Error)
 	WarmupPlacementData(ctx context.Context, inst *models.PoolLinkInstance, req models.PoolLinkWarmupReportRequest) (*models.WarmupPlacementData, *errx.Error)
@@ -98,7 +99,7 @@ type Service interface {
 	FinishOAuth(ctx context.Context, inst *models.PoolLinkInstance, session string) (*models.PoolLinkMailboxState, *errx.Error)
 	FinishManagedOAuth(ctx context.Context, inst *models.PoolLinkInstance, req models.PoolLinkOAuthFinishRequest) (*models.PoolLinkMailboxState, *errx.Error)
 	AccessToken(ctx context.Context, inst *models.PoolLinkInstance, remoteID uuid.UUID) (*models.PoolLinkAccessToken, *errx.Error)
-	ListWorkspaceMailboxes(ctx context.Context, inst *models.PoolLinkInstance) ([]models.PoolLinkWorkspaceMailbox, *errx.Error)
+	ListWorkspaceMailboxes(ctx context.Context, inst *models.PoolLinkInstance, includeSMTPIMAP bool) ([]models.PoolLinkWorkspaceMailbox, *errx.Error)
 	Adopt(ctx context.Context, inst *models.PoolLinkInstance, req models.PoolLinkAdoptRequest) (*models.PoolLinkMailboxState, *errx.Error)
 	VerifyWarmupToken(ctx context.Context, inst *models.PoolLinkInstance, remoteID, token uuid.UUID) (bool, *errx.Error)
 	// VerifyWarmupDelivery is the same answer for warmup mail that arrived without its verify header.
@@ -111,18 +112,26 @@ type Service interface {
 }
 
 type service struct {
-	repo      repository.PoolLinkRepository
-	emails    repository.EmailRepository
-	emailSvc  email.EmailService
-	analytics analytics.AnalyticsService
-	warmup    repository.WarmupRepository
-	gate      feature.FeatureGateService
-	orgs      organization.OrganizationService
-	scheduler WarmupScheduler
-	planRepo  repository.PlanRepository
-	cache     *cache.Cache
-	campaigns CampaignUsage
+	repo       repository.PoolLinkRepository
+	emails     repository.EmailRepository
+	emailSvc   email.EmailService
+	analytics  analytics.AnalyticsService
+	warmup     repository.WarmupRepository
+	gate       feature.FeatureGateService
+	orgs       organization.OrganizationService
+	scheduler  WarmupScheduler
+	planRepo   repository.PlanRepository
+	cache      *cache.Cache
+	campaigns  CampaignUsage
+	delegation DelegatedTokenBroker
 }
+
+// DelegatedTokenBroker mints tokens without moving the administrator's grant to an instance.
+type DelegatedTokenBroker interface {
+	AccessToken(context.Context, uuid.UUID) (*models.PoolLinkAccessToken, bool, *errx.Error)
+}
+
+func (s *service) WireDelegation(b DelegatedTokenBroker) { s.delegation = b }
 
 // CampaignUsage says whether Cloud campaigns send from a mailbox.
 type CampaignUsage interface {
@@ -392,10 +401,11 @@ func (s *service) InstanceInfo(ctx context.Context, inst *models.PoolLinkInstanc
 	}
 	inst.MailboxCount = len(mailboxes)
 	return &models.PoolLinkInstanceInfo{
-		ManagedConsentProtocol: models.ManagedConsentProtocol,
-		Instance:               *inst,
-		Organization:           models.PoolLinkOrgInfo{ID: org.ID, Name: org.Name},
-		Plan:                   plan,
+		SMTPAssociationProtocol: models.SMTPAssociationProtocol,
+		ManagedConsentProtocol:  models.ManagedConsentProtocol,
+		Instance:                *inst,
+		Organization:            models.PoolLinkOrgInfo{ID: org.ID, Name: org.Name},
+		Plan:                    plan,
 	}, nil
 }
 
@@ -423,17 +433,36 @@ func (s *service) RevokeInstance(ctx context.Context, orgID, instanceID uuid.UUI
 			return errx.InternalError()
 		}
 	}
-	if err := s.repo.RevokeInstance(ctx, inst.ID); err != nil {
-		return errx.InternalError()
-	}
 	mailboxes, err := s.repo.ListMailboxes(ctx, inst.ID)
 	if err != nil {
 		return errx.InternalError()
 	}
+	// Stopped while the link still authenticates, so a failure leaves the instance's disconnect retryable.
 	for _, m := range mailboxes {
-		if xerr := s.unenroll(ctx, inst, m.RemoteID, false); xerr != nil {
+		if xerr := s.stopParticipation(ctx, inst, m); xerr != nil {
+			return xerr
+		}
+	}
+	if err := s.repo.RevokeInstance(ctx, inst.ID); err != nil {
+		return errx.InternalError()
+	}
+	// Enrollment commits under this lock and refuses a revoked link, so every mailbox listed here is already stopped.
+	mailboxes, err = s.repo.ListMailboxes(ctx, inst.ID)
+	if err != nil {
+		return errx.InternalError()
+	}
+	for _, m := range mailboxes {
+		if xerr := s.unenroll(ctx, inst, m.RemoteID); xerr != nil {
 			log.Warn().Str("account_id", m.EmailAccountID.String()).Msg("pool link: mailbox removal failed during revoke; continuing")
 		}
+	}
+	return nil
+}
+
+// stopParticipation ends a linked mailbox's Cloud warmup in both directions and retires its unstarted sends.
+func (s *service) stopParticipation(ctx context.Context, inst *models.PoolLinkInstance, m models.PoolLinkMailbox) *errx.Error {
+	if _, xerr := s.emailSvc.SetWarmupLifecycle(ctx, inst.OrganizationID.String(), m.EmailAccountID.String(), "stop"); xerr != nil && xerr != errx.ErrNotFound {
+		return xerr
 	}
 	return nil
 }
@@ -526,11 +555,40 @@ func (s *service) Enroll(ctx context.Context, inst *models.PoolLinkInstance, req
 		return nil, xerr
 	}
 
-	if err := s.repo.EnrollMailbox(ctx, &models.PoolLinkMailbox{InstanceID: inst.ID, RemoteID: req.RemoteID, EmailAccountID: acc.ID}); err != nil {
+	recorded, xerr := s.commitEnrollment(ctx, inst, userID, &models.PoolLinkMailbox{InstanceID: inst.ID, RemoteID: req.RemoteID, EmailAccountID: acc.ID}, req)
+	if !recorded {
 		_ = s.emailSvc.Delete(ctx, orgID.String(), acc.ID.String())
-		return nil, errx.InternalError()
 	}
-	return s.startEnrolled(ctx, inst, userID, acc.ID, req)
+	if xerr != nil {
+		return nil, xerr
+	}
+	return s.GetMailbox(ctx, inst, req.RemoteID)
+}
+
+// enrollError reports an enrollment refused on a revoked link as revoked, and anything else as internal.
+func enrollError(err error) *errx.Error {
+	if errors.Is(err, repository.ErrPoolLinkInstanceRevoked) {
+		return ErrInstanceRevoked
+	}
+	return errx.InternalError()
+}
+
+// commitEnrollment records and starts a mailbox under the instance lock RevokeInstance holds, so a revoke either stops it or refuses it.
+func (s *service) commitEnrollment(ctx context.Context, inst *models.PoolLinkInstance, userID string, m *models.PoolLinkMailbox, req models.PoolLinkEnrollRequest) (bool, *errx.Error) {
+	if _, ok := s.repo.(repository.PoolLinkManagedRepository); ok && !managedOperationLocked(ctx) {
+		var recorded bool
+		xerr := s.withManagedOperationLock(ctx, inst.ID, func(ctx context.Context) *errx.Error {
+			var xerr *errx.Error
+			recorded, xerr = s.commitEnrollment(ctx, inst, userID, m, req)
+			return xerr
+		})
+		return recorded, xerr
+	}
+	if err := s.repo.EnrollMailbox(ctx, m); err != nil {
+		return false, enrollError(err)
+	}
+	s.activateEnrolled(ctx, inst, userID, m.EmailAccountID, req)
+	return true, nil
 }
 
 // adoptHostedSMTPIMAP enrolls the workspace's own copy of the address, and only
@@ -569,11 +627,13 @@ func (s *service) adoptHostedSMTPIMAP(ctx context.Context, inst *models.PoolLink
 	} else if busy {
 		return nil, ErrMailboxConflict
 	}
-	if err := s.repo.EnrollMailbox(ctx, &models.PoolLinkMailbox{InstanceID: inst.ID, RemoteID: req.RemoteID, EmailAccountID: ref.ID}); err != nil {
-		return nil, errx.InternalError()
+	// An existing Cloud mailbox keeps its ramp settings when the instance associates it.
+	req.Warmup = models.PoolLinkWarmupSettings{}
+	if _, xerr := s.commitEnrollment(ctx, inst, userID, &models.PoolLinkMailbox{InstanceID: inst.ID, RemoteID: req.RemoteID, EmailAccountID: ref.ID}, req); xerr != nil {
+		return nil, xerr
 	}
 	log.Info().Str("instance_id", inst.ID.String()).Str("account_id", ref.ID.String()).Msg("pool link: adopted the workspace's existing mailbox on enrollment")
-	return s.startEnrolled(ctx, inst, userID, ref.ID, req)
+	return s.GetMailbox(ctx, inst, req.RemoteID)
 }
 
 func sameSMTPIMAPCredentials(stored *repository.SMTPCredentials, got *models.SmtpImap) bool {
@@ -589,7 +649,7 @@ func sameSMTPIMAPCredentials(stored *repository.SMTPCredentials, got *models.Smt
 		same(stored.IMAPHost, stored.IMAPPort, stored.IMAPUser, stored.IMAPPassword, got.IMAP)
 }
 
-func (s *service) startEnrolled(ctx context.Context, inst *models.PoolLinkInstance, userID string, accountID uuid.UUID, req models.PoolLinkEnrollRequest) (*models.PoolLinkMailboxState, *errx.Error) {
+func (s *service) activateEnrolled(ctx context.Context, inst *models.PoolLinkInstance, userID string, accountID uuid.UUID, req models.PoolLinkEnrollRequest) {
 	orgID := inst.OrganizationID
 	s.applyWarmupSettings(ctx, orgID, userID, accountID, req.Warmup)
 	if _, xerr := s.emailSvc.SetWarmupLifecycle(ctx, orgID.String(), accountID.String(), "start"); xerr != nil {
@@ -601,7 +661,6 @@ func (s *service) startEnrolled(ctx context.Context, inst *models.PoolLinkInstan
 	if s.scheduler != nil {
 		_ = s.scheduler.EnsureWarmupScheduled(ctx, accountID)
 	}
-	return s.GetMailbox(ctx, inst, req.RemoteID)
 }
 
 func (s *service) applyWarmupSettings(ctx context.Context, orgID uuid.UUID, userID string, accountID uuid.UUID, w models.PoolLinkWarmupSettings) {
@@ -866,12 +925,12 @@ func (s *service) PatchMailbox(ctx context.Context, inst *models.PoolLinkInstanc
 }
 
 func (s *service) Unenroll(ctx context.Context, inst *models.PoolLinkInstance, remoteID uuid.UUID) *errx.Error {
-	return s.unenroll(ctx, inst, remoteID, true)
+	return s.unenroll(ctx, inst, remoteID)
 }
 
-func (s *service) unenroll(ctx context.Context, inst *models.PoolLinkInstance, remoteID uuid.UUID, stopManaged bool) *errx.Error {
+func (s *service) unenroll(ctx context.Context, inst *models.PoolLinkInstance, remoteID uuid.UUID) *errx.Error {
 	if _, ok := s.repo.(repository.PoolLinkManagedRepository); ok && !managedOperationLocked(ctx) {
-		return s.withManagedOperationLock(ctx, inst.ID, func(ctx context.Context) *errx.Error { return s.unenroll(ctx, inst, remoteID, stopManaged) })
+		return s.withManagedOperationLock(ctx, inst.ID, func(ctx context.Context) *errx.Error { return s.unenroll(ctx, inst, remoteID) })
 	}
 	if r, ok := s.repo.(repository.PoolLinkManagedRepository); ok {
 		if err := r.RevokeManagedOperations(ctx, inst.ID, &remoteID); err != nil {
@@ -885,12 +944,11 @@ func (s *service) unenroll(ctx context.Context, inst *models.PoolLinkInstance, r
 	if m == nil {
 		return ErrMailboxNotFound
 	}
-	// Individual removal stops Cloud participation; an instance disconnect only releases its mirrors.
-	if m.Managed && stopManaged {
-		if _, xerr := s.emailSvc.SetWarmupLifecycle(ctx, inst.OrganizationID.String(), m.EmailAccountID.String(), "stop"); xerr != nil && xerr != errx.ErrNotFound {
-			return xerr
-		}
-	} else if !m.Managed {
+	// A released mailbox sends and receives no Cloud warmup, whether Cloud keeps it or deletes it.
+	if xerr := s.stopParticipation(ctx, inst, *m); xerr != nil {
+		return xerr
+	}
+	if !m.Managed {
 		if xerr := s.emailSvc.Delete(ctx, inst.OrganizationID.String(), m.EmailAccountID.String()); xerr != nil && xerr != errx.ErrNotFound {
 			return xerr
 		}

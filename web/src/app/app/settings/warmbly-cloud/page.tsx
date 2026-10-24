@@ -21,6 +21,7 @@ import { WARMUP_PLAN_BENEFITS, WARMUP_PLAN_PITCH } from "@/lib/plans";
 import { Row, Section, SectionShell } from "../_components/SectionShell";
 import ConnectFlow from "./ConnectFlow";
 import MailboxTable from "./MailboxTable";
+import CloudMailboxPicker from "@/components/app/emails/CloudMailboxPicker";
 import LinkedInstances from "./LinkedInstances";
 
 export default function WarmblyCloudSettingsPage() {
@@ -32,7 +33,7 @@ export default function WarmblyCloudSettingsPage() {
     if (authConfig.data && !authConfig.data.self_hosted) {
         return (
             <SectionShell title="Linked instances" description="Self-hosted Warmbly instances that warm their mailboxes in this workspace's pool.">
-                <Section eyebrow="Instances" description="Each instance enrolls its own mailboxes. Unlinking releases its links; Cloud-managed mailboxes keep their existing warmup settings.">
+                <Section eyebrow="Instances" description="Each instance enrolls its own mailboxes. Unlinking stops Cloud warmup for its mailboxes and releases their links; Cloud-managed mailboxes keep their settings and history.">
                     <LinkedInstances />
                 </Section>
             </SectionShell>
@@ -135,6 +136,7 @@ function SelfHostedCloud() {
                             eyebrow="Mailboxes"
                             description="Enrolled mailboxes are warmed by Warmbly Cloud; their local warmup stops. Campaigns keep sending from this server."
                         >
+                            <CloudMailboxPicker />
                             <MailboxTable />
                         </Section>
                         <Section eyebrow="Disconnect">

@@ -44,7 +44,7 @@ func (r *taskRepository) DiagnosticAuth(ctx context.Context, req models.Diagnost
       AND wr.retired_at IS NULL AND btrim(wr.message_id,'<>')=$4))
  AND sender.status='active' AND (sender.test_mode IS NULL OR sender.test_mode='legacy' OR sender.test_mode='diagnostic' AND sender.test_send_enabled)
  AND NOT EXISTS(SELECT 1 FROM cloud_link_mailboxes clm WHERE clm.email_account_id=ea.id)
- AND `+partnerEligibleSQL, req.Token, req.MailboxID, req.WorkerID, strings.Trim(req.MessageID, "<> \t")).Scan(&task, &grant.From, &grant.To, &grant.MessageID)
+ AND `+arrivedRecipientSQL, req.Token, req.MailboxID, req.WorkerID, strings.Trim(req.MessageID, "<> \t")).Scan(&task, &grant.From, &grant.To, &grant.MessageID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrSendAdmissionDenied
 	}

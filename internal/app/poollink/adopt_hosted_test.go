@@ -98,7 +98,8 @@ func TestEnrollAdoptsTheWorkspacesOwnMailboxOnlyWithItsExactCredentials(t *testi
 			emails := &adoptEmails{org: org}
 			s := &service{repo: r, emails: accounts, emailSvc: emails, campaigns: tc.campaigns}
 			inst := &models.PoolLinkInstance{ID: uuid.New(), OrganizationID: org, CreatedBy: &owner}
-			req := models.PoolLinkEnrollRequest{RemoteID: uuid.New(), Email: hosted.Email, Provider: models.InboxProviderSMTPIMAP, SMTPIMAP: presented}
+			req := models.PoolLinkEnrollRequest{RemoteID: uuid.New(), Email: hosted.Email, Provider: models.InboxProviderSMTPIMAP, SMTPIMAP: presented,
+				Warmup: models.PoolLinkWarmupSettings{Base: 31, Max: 42, Increase: 5}}
 
 			got, xerr := s.Enroll(context.Background(), inst, req)
 			if !tc.adopt {

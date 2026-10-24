@@ -31,10 +31,9 @@ import (
 // the same amount of data either way.
 const previewRows = models.MaxContactImportPreviewRows + 1
 
-// fullColumnSpan is the widest A1 column range we read. Google Sheets caps at
-// far more, but contact imports are narrow; A:Z is plenty for typical lead
-// sheets and keeps the read cheap.
-const fullColumnSpan = "A:Z"
+// fullColumnSpan runs to Sheets' last column (ZZZ). The API drops trailing empty
+// columns from the response, so a narrow sheet costs no more than it would under A:Z.
+const fullColumnSpan = "A:ZZZ"
 
 // Service is the on-demand lead-sync control-plane surface.
 type Service interface {
@@ -357,7 +356,7 @@ func (s *service) recordResult(ctx context.Context, id uuid.UUID, status models.
 func buildA1Range(tabTitle string, maxRows int) string {
 	span := fullColumnSpan
 	if maxRows > 0 {
-		span = "A1:Z" + strconv.Itoa(maxRows)
+		span = "A1:ZZZ" + strconv.Itoa(maxRows)
 	}
 	tab := strings.TrimSpace(tabTitle)
 	if tab == "" {

@@ -1713,6 +1713,7 @@ func Run(
 				poolLinkInstance.POST("/analytics/warmup", h.PoolLinkWarmupStats)
 				poolLinkInstance.POST("/analytics/warmup/placement", h.PoolLinkWarmupPlacement)
 				poolLinkInstance.POST("/mailboxes", h.PoolLinkEnroll)
+				poolLinkInstance.POST("/mailboxes/associate-smtp", h.PoolLinkAssociateSMTPIMAP)
 				poolLinkInstance.GET("/mailboxes/:remoteId", h.PoolLinkGetMailbox)
 				poolLinkInstance.PATCH("/mailboxes/:remoteId", h.PoolLinkPatchMailbox)
 				poolLinkInstance.PATCH("/mailboxes/:remoteId/participation", h.PoolLinkPatchMailbox)

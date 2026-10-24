@@ -1306,6 +1306,8 @@ function WarmupTab({ form, update, status, mailbox, canWarmup = true }: { form: 
     const confirm = useConfirm();
     const off = !mailbox.warmup || mailbox.test_mode === "off";
     const paused = !off && !!mailbox.warmup && (!!mailbox.warmup_paused_at || !diagnosticSendingAllowed(mailbox));
+    // Warmup on with sending off is receive-only, which still receives; only a real pause stops both.
+    const receiveOnly = paused && !mailbox.warmup_paused_at;
     const active = diagnosticWarmupActive(mailbox);
     // When Warmbly Cloud warms this mailbox the local controls step aside.
     const pool = useCloudPool();
@@ -1355,8 +1357,8 @@ function WarmupTab({ form, update, status, mailbox, canWarmup = true }: { form: 
                         <FlameIcon className="w-4 h-4" />
                     </div>
                     <div className="min-w-0">
-                        <div className="text-[12.5px] font-medium text-slate-900">{active ? "Warming up" : paused ? "Paused" : "Warmup off"}</div>
-                        <div className="text-[11px] text-slate-400 truncate">{active ? "Automated diagnostic traffic, not organic engagement" : paused && !off ? "Sending paused; receiving permission is separate" : "Sending and receiving diagnostic tests disabled"}</div>
+                        <div className="text-[12.5px] font-medium text-slate-900">{active ? "Warming up" : receiveOnly ? "Receiving only" : paused ? "Paused" : "Warmup off"}</div>
+                        <div className="text-[11px] text-slate-400 truncate">{active ? "Automated diagnostic traffic, not organic engagement" : receiveOnly ? "Receives warmup mail; sending is off" : paused && !off ? "Paused: no warmup mail is sent or received" : "Sending and receiving diagnostic tests disabled"}</div>
                     </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -1417,20 +1419,38 @@ function WarmupTab({ form, update, status, mailbox, canWarmup = true }: { form: 
             {!inCloud && (
                 <div className="px-5 py-4 space-y-3 border-t border-slate-100">
                     <Eyebrow>Diagnostic participation</Eyebrow>
-                    <select aria-label="Diagnostic participation mode" value={form.test_mode ?? "legacy"}
-                        onChange={(e) => update({ test_mode: e.target.value as Inbox["test_mode"], test_send_enabled: false, test_receive_enabled: false })}
-                        className="h-8 rounded border border-slate-200 text-sm">
-                        {(form.test_mode == null || form.test_mode === "legacy") && <option value="legacy" disabled>Legacy participation (unchanged until explicit action)</option>}
-                        <option value="diagnostic">Disclosed automated diagnostics</option>
-                        <option value="off">Off: no diagnostic sends or receipts</option>
-                    </select>
+                    <SelectMenu
+                        aria-label="Diagnostic participation mode"
+                        value={form.test_mode ?? "legacy"}
+                        onChange={(v) => update({ test_mode: v as Inbox["test_mode"], test_send_enabled: false, test_receive_enabled: false })}
+                        options={[
+                            ...(form.test_mode == null || form.test_mode === "legacy"
+                                ? [{ value: "legacy", label: "Legacy participation (unchanged until explicit action)", disabled: true }]
+                                : []),
+                            { value: "diagnostic", label: "Disclosed automated diagnostics" },
+                            { value: "off", label: "Off: no diagnostic sends or receipts" },
+                        ]}
+                        fullWidth
+                    />
                     {form.test_mode === "diagnostic" && <>
-                        <label className="flex items-center justify-between text-xs">Allow diagnostic sending and replies<Toggle value={!!form.test_send_enabled} onChange={(v) => update({ test_send_enabled: v })} /></label>
-                        <label className="flex items-center justify-between text-xs">Allow receiving tests and automated mailbox actions<Toggle value={!!form.test_receive_enabled} onChange={(v) => update({ test_receive_enabled: v })} /></label>
+                        <div className="flex items-center justify-between gap-3 text-xs text-slate-700">
+                            <span>Allow diagnostic sending and replies</span>
+                            <Toggle value={!!form.test_send_enabled} onChange={(v) => update({ test_send_enabled: v })} ariaLabel="Allow diagnostic sending and replies" />
+                        </div>
+                        <div className="flex items-center justify-between gap-3 text-xs text-slate-700">
+                            <span>Allow receiving tests and automated mailbox actions</span>
+                            <Toggle value={!!form.test_receive_enabled} onChange={(v) => update({ test_receive_enabled: v })} ariaLabel="Allow receiving tests and automated mailbox actions" />
+                        </div>
                     </>}
-                    <p className="text-xs text-slate-500">Save to apply. Sending also requires an active schedule and sender role. Receiving allows automated spam rescue, reads, importance and stars or flags where supported. Receive-only does not authorize replies. Actions are probabilistic, not human engagement or a guaranteed reputation improvement. Off also stops placement tests, not legitimate campaign mail.</p>
-                    <label className="block text-xs">Shared daily send limit (all send types; 0 uses configured caps)<input type="number" min={0} value={form.shared_daily_limit ?? 0} onChange={(e) => update({ shared_daily_limit: Number(e.target.value) })} className="ml-2 w-20 rounded border border-slate-200" /></label>
-                    <label className="block text-xs">Recipients in rolling 24 hours (To/CC/BCC; 0 uses configured caps)<input type="number" min={0} value={form.rolling_recipient_limit ?? 0} onChange={(e) => update({ rolling_recipient_limit: Number(e.target.value) })} className="ml-2 w-20 rounded border border-slate-200" /></label>
+                    <p className="text-xs text-slate-500">Save to apply. Sending also requires an active schedule and sender role. Receiving also requires warmup to be on; a paused mailbox receives nothing. Receiving allows automated spam rescue, reads, importance and stars or flags where supported. Receive-only does not authorize replies. Actions are probabilistic, not human engagement or a guaranteed reputation improvement. Off also stops placement tests, not legitimate campaign mail.</p>
+                    <label className="flex items-center justify-between gap-3 text-xs text-slate-700">
+                        <span>Shared daily send limit (all send types; 0 uses configured caps)</span>
+                        <NumberInput value={form.shared_daily_limit ?? 0} min={0} onChange={(n) => update({ shared_daily_limit: n })} className="w-24 shrink-0" />
+                    </label>
+                    <label className="flex items-center justify-between gap-3 text-xs text-slate-700">
+                        <span>Recipients in rolling 24 hours (To/CC/BCC; 0 uses configured caps)</span>
+                        <NumberInput value={form.rolling_recipient_limit ?? 0} min={0} onChange={(n) => update({ rolling_recipient_limit: n })} className="w-24 shrink-0" />
+                    </label>
                 </div>
             )}
 

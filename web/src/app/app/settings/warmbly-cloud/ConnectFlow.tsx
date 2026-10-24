@@ -3,6 +3,7 @@
 // like NewCampaignDialog; a step cannot be skipped ahead of.
 
 import React from "react";
+import { cloudMailboxPickerOpened } from "@/lib/cloudMailboxConnect";
 import { AnimatePresence, motion } from "framer-motion";
 import toast from "react-hot-toast/headless";
 import { ArrowRightIcon, CheckIcon, CloudIcon, FlameIcon, InboxIcon, Loader2Icon, SparklesIcon } from "lucide-react";
@@ -11,6 +12,8 @@ import buildError from "@/lib/helper/buildError";
 import type { CloudLinkMailboxRow, CloudLinkStatus } from "@/lib/api/models/app/cloudlink/CloudLink";
 import { useCloudLinkMailboxes, useEnrollCloudLinkMailbox, useUnenrollCloudLinkMailbox } from "@/lib/api/hooks/app/cloudlink/useCloudLink";
 import CloudLinkCard from "@/components/app/cloud/CloudLinkCard";
+import CloudMailboxPicker from "@/components/app/emails/CloudMailboxPicker";
+import { useMailboxSourceBusy } from "@/lib/api/hooks/app/emails/mailboxSourceBusy";
 import { Toggle } from "../_components/SectionShell";
 import { providerLabel, providerSupported } from "./providers";
 
@@ -43,7 +46,8 @@ export default function ConnectFlow({
     // to come from the poll that completed it.
     const [orgName, setOrgName] = React.useState(status.link?.organization_name ?? "");
 
-    const issue = step === 0 && !linked ? "Approve the code on Warmbly Cloud first" : null;
+    const sourceBusy = useMailboxSourceBusy();
+    const issue = sourceBusy ? "Wait for the current mailbox connections to finish" : step === 0 && !linked ? "Approve the code on Warmbly Cloud first" : null;
     React.useEffect(() => {
         if (!issue) setNudged(false);
     }, [issue]);
@@ -51,6 +55,7 @@ export default function ConnectFlow({
     const canReach = React.useCallback((target: Step) => (target === 0 ? true : linked), [linked]);
     const goTo = React.useCallback(
         (target: Step) => {
+            if (sourceBusy) { setNudged(true); return; }
             if (target === step) return;
             if (target > step && !canReach(target)) {
                 setNudged(true);
@@ -60,7 +65,7 @@ export default function ConnectFlow({
             setNudged(false);
             setStep(target);
         },
-        [step, canReach],
+        [step, canReach, sourceBusy],
     );
 
     return (
@@ -233,7 +238,7 @@ function MailboxesStep({ onCountChange }: { onCountChange: (n: number) => void }
                 toast.success(`${row.email} is now warming in the pool`);
             }
         } catch (e) {
-            toast.error(buildError(e as AppError));
+            if (!cloudMailboxPickerOpened(e)) toast.error(buildError(e as AppError));
         } finally {
             setBusy(null);
         }
@@ -247,6 +252,7 @@ function MailboxesStep({ onCountChange }: { onCountChange: (n: number) => void }
                     Each enrolled mailbox is warmed by Warmbly Cloud from now on. Its local warmup stops; campaigns keep sending from here as usual.
                 </p>
             </div>
+            <CloudMailboxPicker />
             {rows.isLoading ? (
                 <div className="py-8 flex justify-center text-slate-400">
                     <Loader2Icon className="w-4 h-4 animate-spin" />

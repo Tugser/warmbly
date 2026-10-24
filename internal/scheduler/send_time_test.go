@@ -126,6 +126,34 @@ func TestSnapToPreferredHourIsForwardOnly(t *testing.T) {
 	}
 }
 
+func TestSnapToPreferredHourKeepsSubSecondInWindowSlot(t *testing.T) {
+	// Slots come from time.Now() and carry nanoseconds. Rebuilding the same
+	// hour with time.Date drops them, which put the rebuilt slot a fraction of
+	// a second before the original: the current preferred hour was skipped and
+	// every send moved to the next one, forever, as the clock moved with it.
+	loc := time.UTC
+	hours := []int{9, 10, 14}
+	at := time.Date(2026, 3, 4, 9, 30, 15, 751_000_000, loc)
+	if got := snapToPreferredHour(at, loc, hours, false); !got.Equal(at) {
+		t.Errorf("in-window slot with sub-second moved: got %s want %s", got, at)
+	}
+
+	// Outside a preferred hour it still moves forward, never backward.
+	between := time.Date(2026, 3, 4, 11, 5, 40, 500_000_000, loc)
+	got := snapToPreferredHour(between, loc, hours, false)
+	if got.Hour() != 14 || got.Day() != 4 || got.Before(between) {
+		t.Errorf("mid-gap sub-second slot = %s, want 14:xx same day, not before %s", got, between)
+	}
+
+	// Inside a preferred hour on a weekend still waits for Monday when
+	// weekends are avoided. 2026-03-07 is a Saturday.
+	sat := time.Date(2026, 3, 7, 9, 30, 15, 500_000_000, loc)
+	got = snapToPreferredHour(sat, loc, hours, true)
+	if got.Weekday() != time.Monday || got.Hour() != 9 {
+		t.Errorf("weekend in-hour slot = %s (%s), want Monday 09:xx", got, got.Weekday())
+	}
+}
+
 func TestSnapToPreferredHourSkipsWeekend(t *testing.T) {
 	loc := time.UTC
 	// 2026-03-07 is a Saturday.

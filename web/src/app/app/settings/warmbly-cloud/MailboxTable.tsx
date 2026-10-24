@@ -15,6 +15,7 @@ import {
     useUnenrollCloudLinkMailbox,
 } from "@/lib/api/hooks/app/cloudlink/useCloudLink";
 import { useConfirm } from "@/hooks/context/confirm";
+import { cloudMailboxPickerOpened } from "@/lib/cloudMailboxConnect";
 import { TableSurface, Toggle } from "../_components/SectionShell";
 import { providerLabel, providerSupported } from "./providers";
 import { cloudWarmupPaused } from "@/lib/cloudWarmup";
@@ -34,7 +35,7 @@ export default function MailboxTable() {
             await fn();
             toast.success(ok);
         } catch (e) {
-            toast.error(buildError(e as AppError));
+            if (!cloudMailboxPickerOpened(e)) toast.error(buildError(e as AppError));
         } finally {
             setBusy(null);
         }
@@ -45,6 +46,8 @@ export default function MailboxTable() {
             confirm.show(
                 row.managed
                     ? `Remove ${row.email} from this instance and stop its Cloud warmup sending and receiving? Its mailbox, sign-in and history stay in your Warmbly Cloud workspace. You can restart warmup there.`
+                    : row.independent_smtp || row.cloud?.managed
+                    ? `Disconnect Cloud warmup for ${row.email}? Its Cloud mailbox, credentials and warmup history stay on Cloud. Campaigns here keep their existing app-password connection. Cloud warmup sending and receiving stop until you restart them there.`
                     : `Stop warming ${row.email} in the Warmbly pool? The cloud deletes its credential right away.`,
                 async () => {
                     await run(row.id, () => unenroll.mutateAsync(row.id), row.managed ? `${row.email} removed from this instance` : `${row.email} removed from the pool`);

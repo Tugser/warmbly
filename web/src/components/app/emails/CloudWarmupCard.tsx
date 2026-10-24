@@ -20,6 +20,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { setCloudLinkParticipation } from "@/lib/api/client/app/cloudlink/cloudLink";
 import type { DiagnosticParticipation } from "@/lib/api/models/app/cloudlink/CloudLink";
 import { Toggle } from "@/components/app/campaigns/preferences/components/CampaignPreferenceBoolBox";
+import { cloudMailboxPickerOpened } from "@/lib/cloudMailboxConnect";
 
 export default function CloudWarmupCard({ mailboxId, email, provider }: { mailboxId: string; email: string; provider: string }) {
     const pool = useCloudPool();
@@ -38,11 +39,11 @@ export default function CloudWarmupCard({ mailboxId, email, provider }: { mailbo
             await fn();
             toast.success(ok);
         } catch (e) {
-            toast.error(buildError(e as AppError));
+            if (!cloudMailboxPickerOpened(e)) toast.error(buildError(e as AppError));
         }
     };
 
-    if (!pool.connected || (!pool.workspaceConnected && !pool.isEnrolled(mailboxId))) {
+    if (!pool.connected) {
         return (
             <div className="px-5 py-3 flex items-center gap-2.5 text-[12px] text-slate-500">
                 <CloudIcon className="w-3.5 h-3.5 text-sky-600 shrink-0" />
@@ -120,6 +121,8 @@ export default function CloudWarmupCard({ mailboxId, email, provider }: { mailbo
                                 confirm.show(
                                     row.managed
                                         ? `Remove ${email} from this instance and stop its Cloud warmup sending and receiving? Its mailbox, sign-in and history stay in your Warmbly Cloud workspace. You can restart warmup there.`
+                                        : row.independent_smtp || cloud?.managed
+                                        ? `Disconnect Cloud warmup for ${email}? Its Cloud mailbox, credentials and warmup history stay on Cloud. Campaigns here keep their existing app-password connection. Cloud warmup sending and receiving stop until you restart them there.`
                                         : `Stop warming ${email} in the Warmbly pool? The cloud deletes its credential right away and local warmup takes over.`,
                                     async () => {
                                         await run(() => unenroll.mutateAsync(mailboxId), row.managed ? `${email} removed from this instance` : `${email} removed from the pool`);

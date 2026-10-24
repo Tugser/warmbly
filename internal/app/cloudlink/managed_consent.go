@@ -106,19 +106,51 @@ func (s *service) adoptManagedMailbox(ctx context.Context, orgID, userID, cloudA
 		return s.completeManagedConsent(ctx, l, r, existing)
 	}
 	var list []models.PoolLinkWorkspaceMailbox
-	if xerr := s.clientFor(l).do(ctx, http.MethodGet, "/instance/workspace-mailboxes", nil, &list); xerr != nil {
+	if xerr := s.clientFor(l).do(ctx, http.MethodGet, workspaceMailboxPath, nil, &list); xerr != nil {
 		return nil, xerr
 	}
 	var provider models.InboxProvider
+	var address string
 	for _, acc := range list {
 		if acc.ID == cloudAccountID && acc.Status == "active" {
+			if acc.Provider == string(models.InboxProviderSMTPIMAP) {
+				return s.connectExistingSMTPIMAP(ctx, orgID, l, acc)
+			}
 			provider = models.InboxProvider(acc.Provider)
+			address = acc.Email
 		}
+	}
+	if provider == "" {
+		return s.recoverExistingSMTPIMAP(ctx, orgID, l, cloudAccountID)
 	}
 	if provider != models.InboxProviderGoogle && provider != models.InboxProviderOutlook {
 		return nil, ErrOAuthSession
 	}
 	remoteID, plannedID := uuid.New(), uuid.New()
+	ref, xerr := s.emails.FindInOrganization(ctx, orgID, address)
+	if xerr != nil {
+		return nil, xerr
+	}
+	if ref != nil {
+		if ref.Status != "active" || ref.Provider != string(models.InboxProviderSMTPIMAP) || ref.Managed {
+			return nil, errx.ErrEmailOnboardAlreadyExists
+		}
+		acc, xerr := s.ownedAccount(ctx, orgID, ref.ID)
+		if xerr != nil {
+			return nil, xerr
+		}
+		if acc.VendorConnectionID != nil || acc.DomainGrantID != nil {
+			return nil, errx.ErrEmailOnboardAlreadyExists
+		}
+		m, err := s.repo.GetByAccount(ctx, ref.ID)
+		if err != nil {
+			return nil, errx.InternalError()
+		}
+		if m != nil && (m.InstanceID != l.InstanceID || m.Managed || m.EnrollmentState != "pending_enroll" || m.SMTPCloudAccountID != nil) {
+			return nil, errx.ErrEmailOnboardAlreadyExists
+		}
+		plannedID = ref.ID
+	}
 	c := &models.CloudManagedConsent{ID: uuid.New(), OrganizationID: orgID, UserID: &userID, InstanceID: &l.InstanceID,
 		RemoteID: &remoteID, PlannedAccountID: &plannedID, CloudAccountID: &cloudAccountID, Kind: "adopt", Provider: provider,
 		State: "pending", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(15 * time.Minute)}
@@ -183,7 +215,24 @@ func (s *service) completeManagedConsent(ctx context.Context, l *models.CloudLin
 			return nil, xerr
 		}
 	}
-	if acc.OrganizationID == nil || *acc.OrganizationID != c.OrganizationID || acc.ID != *c.PlannedAccountID || acc.Email != state.Email || acc.Provider != string(c.Provider) || acc.Status != "active" {
+	if acc.OrganizationID == nil || *acc.OrganizationID != c.OrganizationID || acc.ID != *c.PlannedAccountID || !strings.EqualFold(acc.Email, state.Email) || acc.Status != "active" {
+		return nil, ErrOAuthSession
+	}
+	if c.Kind == "adopt" && acc.Provider == string(models.InboxProviderSMTPIMAP) {
+		adopter, ok := s.repo.(repository.CloudManagedMailboxAdopter)
+		if !ok {
+			return nil, errx.InternalError()
+		}
+		if err := adopter.ConvertManagedMailbox(ctx, c, state.Email); err != nil {
+			return nil, errx.InternalError()
+		}
+		c.State = "active"
+		acc, xerr = s.emails.GetByID(ctx, acc.ID)
+		if xerr != nil {
+			return nil, xerr
+		}
+	}
+	if acc.Provider != string(c.Provider) || acc.AuthMethod == models.MailAuthDelegated {
 		return nil, ErrOAuthSession
 	}
 	if err := r.SetManagedConsentState(ctx, c.OrganizationID, c.ID, c.State, &acc.ID); err != nil {
@@ -203,6 +252,7 @@ func (s *service) completeManagedConsent(ctx context.Context, l *models.CloudLin
 	if err := r.SetManagedConsentState(ctx, c.OrganizationID, c.ID, "active", &acc.ID); err != nil {
 		return nil, errx.InternalError()
 	}
+	s.syncLocalPool(ctx, acc.ID)
 	if s.emailSvc != nil {
 		if err := s.emailSvc.LoadAccountOntoWorker(ctx, acc.ID); err != nil {
 			log.Warn().Str("account_id", acc.ID.String()).Msg("cloud link: managed worker load will retry")
@@ -228,6 +278,10 @@ func (s *service) releaseManagedConsent(ctx context.Context, l *models.CloudLink
 			return xerr
 		}
 		if acc != nil {
+			// An unconverted local mailbox survives a cancelled adoption.
+			if c.Kind == "adopt" && acc.Provider == string(models.InboxProviderSMTPIMAP) {
+				return managedConsentRevoked(ctx, r, c)
+			}
 			if acc.OrganizationID == nil || *acc.OrganizationID != c.OrganizationID || s.emailSvc == nil {
 				return errx.InternalError()
 			}
@@ -236,6 +290,10 @@ func (s *service) releaseManagedConsent(ctx context.Context, l *models.CloudLink
 			}
 		}
 	}
+	return managedConsentRevoked(ctx, r, c)
+}
+
+func managedConsentRevoked(ctx context.Context, r repository.CloudManagedConsentRepository, c *models.CloudManagedConsent) *errx.Error {
 	if err := r.SetManagedConsentState(ctx, c.OrganizationID, c.ID, "revoked", nil); err != nil {
 		return errx.InternalError()
 	}

@@ -18,6 +18,8 @@ In the dashboard, open **Settings -> OAuth apps** and register an application. Y
 
 Managing apps (`/oauth/applications/*` and `/oauth/application-logo`) is for a signed-in member or an API key. An OAuth access token is refused there with `403` `oauth_token_not_allowed`, so an app can never register apps, rotate secrets, or read webhook secrets.
 
+Creating, editing or deleting an app, rotating its client or webhook secret, and changing its logo are recorded in the workspace audit log as `oauth_application` entries, which also refresh teammates' app lists live. No secret is written to the log.
+
 You receive a **client ID** and a **client secret**, shown only once. Keep the secret server-side and use it to authenticate the token exchange.
 
 ### App logo

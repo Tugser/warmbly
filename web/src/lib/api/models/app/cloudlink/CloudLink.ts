@@ -60,6 +60,7 @@ export interface PoolLinkRedirectOffer {
 }
 
 export interface PoolLinkInstanceInfo {
+	 smtp_association_protocol?: number;
     instance: PoolLinkInstance;
     organization: PoolLinkOrgInfo;
     plan: PoolLinkPlan;
@@ -196,6 +197,7 @@ export interface CloudLinkPollResult {
 }
 
 export interface CloudLinkMailboxRow {
+	independent_smtp?: boolean;
     legacy?: boolean;
     id: string;
     email: string;
@@ -225,4 +227,5 @@ export interface PoolLinkWorkspaceMailbox {
     name: string;
     provider: string;
     status: string;
+    mail_host?: string;
 }

@@ -218,4 +218,26 @@ func TestLiveManagedTokenUsesCurrentConsentAndObservedStanding(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertAllowed(false)
+	// New explicit consent can reuse a retained local mailbox without reviving the old operation.
+	newRemote := uuid.New()
+	next := &models.CloudManagedConsent{ID: uuid.New(), OrganizationID: f.org, UserID: &f.user, InstanceID: &instance,
+		RemoteID: &newRemote, PlannedAccountID: &f.sender, Kind: "adopt", Provider: models.InboxProviderGoogle, ExpiresAt: time.Now().Add(time.Minute)}
+	if err := r.CreateManagedConsent(ctx, next); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.BindManagedCloudAccount(ctx, f.org, next.ID, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := base.Enroll(ctx, f.sender, newRemote, instance, true); err != nil {
+		t.Fatal(err)
+	}
+	assertAllowed(false)
+	if err := r.SetManagedConsentState(ctx, f.org, next.ID, "active", &f.sender); err != nil {
+		t.Fatal(err)
+	}
+	assertAllowed(true)
+	if err := r.RevokeManagedConsents(ctx, instance, &f.sender); err != nil {
+		t.Fatal(err)
+	}
+	assertAllowed(false)
 }

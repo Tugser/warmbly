@@ -3,6 +3,7 @@ package poollink
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ type mailboxRemovalRepo struct {
 	*managedOpsRepo
 	trace     *[]string
 	deleteErr error
+	revoked   bool
 }
 
 func (r *mailboxRemovalRepo) DeleteMailbox(ctx context.Context, instance, remote uuid.UUID) error {
@@ -27,12 +29,17 @@ func (r *mailboxRemovalRepo) DeleteMailbox(ctx context.Context, instance, remote
 }
 
 func (r *mailboxRemovalRepo) RevokeInstance(context.Context, uuid.UUID) error {
+	*r.trace = append(*r.trace, "revoke")
 	now := time.Now()
 	r.instance.RevokedAt = &now
+	r.revoked = true
 	return nil
 }
 
 func (r *mailboxRemovalRepo) ListMailboxes(context.Context, uuid.UUID) ([]models.PoolLinkMailbox, error) {
+	if r.mailbox == nil {
+		return nil, nil
+	}
 	return []models.PoolLinkMailbox{*r.mailbox}, nil
 }
 
@@ -125,13 +132,26 @@ func TestManagedMailboxRemovalRemainsStoppedWhenUnlinkFails(t *testing.T) {
 	}
 }
 
-func TestInstanceDisconnectPreservesManagedCloudParticipation(t *testing.T) {
+func TestInstanceDisconnectStopsManagedCloudParticipation(t *testing.T) {
 	s, r, e, trace := newMailboxRemoval(t, true)
 	if xerr := s.RevokeInstance(t.Context(), r.instance.OrganizationID, r.instance.ID); xerr != nil {
 		t.Fatal(xerr)
 	}
-	if len(*trace) != 1 || (*trace)[0] != "unlink" || e.deleted || !e.account.TestSendingAllowed() || !e.account.TestReceivingAllowed() || r.mailbox != nil {
-		t.Fatal("whole-instance disconnect must only release managed mirrors", *trace)
+	want := []string{"stop", "revoke", "stop", "unlink"}
+	if !slices.Equal(*trace, want) || e.deleted || e.account.TestSendingAllowed() || e.account.TestReceivingAllowed() || r.mailbox != nil || !r.revoked {
+		t.Fatalf("disconnect = %v, want %v with the Cloud mailbox kept and both directions stopped", *trace, want)
+	}
+}
+
+func TestInstanceDisconnectStaysRetryableWhenStopFails(t *testing.T) {
+	s, r, e, trace := newMailboxRemoval(t, true)
+	e.stopErr = errx.InternalError()
+	if xerr := s.RevokeInstance(t.Context(), r.instance.OrganizationID, r.instance.ID); xerr == nil || r.revoked || r.mailbox == nil {
+		t.Fatal("a failed stop must keep the link and its mailbox for the instance to retry", xerr, *trace)
+	}
+	e.stopErr = nil
+	if xerr := s.RevokeInstance(t.Context(), r.instance.OrganizationID, r.instance.ID); xerr != nil || !r.revoked || r.mailbox != nil || e.account.TestReceivingAllowed() {
+		t.Fatal("retry must stop the mailbox and end the link", xerr, *trace)
 	}
 }
 
@@ -139,13 +159,15 @@ func TestUnmanagedMailboxRemovalAndInstanceDisconnectDeleteCloudCredential(t *te
 	for _, disconnect := range []bool{false, true} {
 		s, r, e, trace := newMailboxRemoval(t, false)
 		var xerr *errx.Error
+		want := []string{"stop", "delete", "unlink"}
 		if disconnect {
 			xerr = s.RevokeInstance(t.Context(), r.instance.OrganizationID, r.instance.ID)
+			want = append([]string{"stop", "revoke"}, want...)
 		} else {
 			xerr = s.Unenroll(t.Context(), r.instance, r.mailbox.RemoteID)
 		}
-		if xerr != nil || !e.deleted || r.mailbox != nil || len(*trace) != 2 || (*trace)[0] != "delete" || (*trace)[1] != "unlink" {
-			t.Fatalf("disconnect=%v: unmanaged removal = %v, %v", disconnect, *trace, xerr)
+		if xerr != nil || !e.deleted || r.mailbox != nil || !slices.Equal(*trace, want) || e.account.TestReceivingAllowed() {
+			t.Fatalf("disconnect=%v: unmanaged removal = %v, %v, want %v", disconnect, *trace, xerr, want)
 		}
 	}
 }

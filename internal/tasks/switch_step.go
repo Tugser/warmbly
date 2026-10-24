@@ -306,11 +306,10 @@ func (s *tasksService) latestReplyContext(ctx context.Context, campaign *models.
 	if s.advanced == nil {
 		return ""
 	}
-	owner, err := uuid.Parse(campaign.UserID)
-	if err != nil {
+	if campaign.OrganizationID == nil {
 		return ""
 	}
-	subject, snippet, lerr := s.advanced.LatestInboundFromContact(ctx, owner, contact.Email)
+	subject, snippet, lerr := s.advanced.LatestInboundFromContact(ctx, *campaign.OrganizationID, contact.Email)
 	if lerr != nil || (subject == "" && snippet == "") {
 		return ""
 	}

@@ -1896,6 +1896,11 @@ func main() {
 			GoogleSignin:      googleSignin,
 			Prover:            domainProver,
 		})
+		if w, ok := poolLinkService.(interface {
+			WireDelegation(poollink.DelegatedTokenBroker)
+		}); ok {
+			w.WireDelegation(delegationService)
+		}
 		go delegationService.StartHealth(ctx)
 
 		// Inbox vendor accounts: keys sealed per workspace, mailboxes imported by API.
@@ -1979,6 +1984,10 @@ func main() {
 			WireScheduler(poollink.WarmupScheduler)
 		}); ok {
 			w.WireScheduler(tasksService)
+		}
+		// Stops Cloud warmup on mailboxes of links revoked before revocation stopped it; a no-op once complete.
+		if j, ok := poolLinkService.(interface{ StopDetachedWarmup(context.Context) error }); ok {
+			go jobrun.Loop(ctx, "pool_link_detached_warmup_stop", 10*time.Minute, true, j.StopDetachedWarmup)
 		}
 
 		// Admin outreach composer — sends from the platform mailer

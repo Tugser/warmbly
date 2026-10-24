@@ -31,11 +31,11 @@ var (
 	ErrOAuthPending      = errx.NewWithIdentifier(errx.Conflict, "pool_link_oauth_pending", "The sign-in has not completed yet.")
 	ErrOAuthSession      = errx.NewWithIdentifier(errx.NotFound, "pool_link_oauth_session", "That sign-in session is unknown or has expired. Start again.")
 	ErrOAuthBrowser      = errx.NewWithIdentifier(errx.BadRequest, "pool_link_oauth_browser", "The sign-in was not continued from the Warmbly Cloud page that started it, in this browser. Start again from your instance.")
-	ErrMailboxNotManaged = errx.NewWithIdentifier(errx.Forbidden, "pool_link_not_managed", "This mailbox's credential is held by the instance, not by Warmbly Cloud.")
+	ErrMailboxNotManaged = errx.NewWithIdentifier(errx.Forbidden, "pool_link_not_managed", "This mailbox does not use Cloud-brokered access tokens.")
 	ErrMailboxBlocked    = errx.NewWithIdentifier(errx.Forbidden, "pool_link_mailbox_blocked", "Warmbly Cloud has blocked this mailbox for hurting the pool. Sending from it is suspended until it is reviewed.")
 	ErrMailboxInactive   = errx.NewWithIdentifier(errx.Forbidden, "pool_link_mailbox_inactive", "This mailbox is not active on Warmbly Cloud. Reconnect it to keep sending.")
 	ErrAlreadyAdopted    = errx.NewWithIdentifier(errx.Conflict, "pool_link_already_adopted", "That mailbox is already linked to an instance.")
-	ErrNotAdoptable      = errx.NewWithIdentifier(errx.Unprocessable, "pool_link_not_adoptable", "Only active Google and Microsoft mailboxes in this workspace can be linked.")
+	ErrNotAdoptable      = errx.NewWithIdentifier(errx.Unprocessable, "pool_link_not_adoptable", "Only active Google mailboxes and Microsoft mailboxes connected with per-mailbox sign-in in this workspace can be linked.")
 )
 
 // BrokerStatePrefix marks a consent state as brokered so the callback can route it.
@@ -444,7 +444,7 @@ func (s *service) connectBrokered(ctx context.Context, st brokerState, code stri
 	remoteID := uuid.New()
 	if err := s.repo.EnrollMailbox(ctx, &models.PoolLinkMailbox{InstanceID: inst.ID, RemoteID: remoteID, EmailAccountID: acc.ID, Managed: true}); err != nil {
 		_ = s.emailSvc.Delete(ctx, orgID.String(), acc.ID.String())
-		return uuid.Nil, errx.InternalError()
+		return uuid.Nil, enrollError(err)
 	}
 	s.startWarmup(ctx, orgID.String(), acc.ID)
 	return remoteID, nil
@@ -517,13 +517,30 @@ func (s *service) AccessToken(ctx context.Context, inst *models.PoolLinkInstance
 	if xerr != nil {
 		return nil, xerr
 	}
-	if acc.Status != "active" {
+	if acc.OrganizationID == nil || *acc.OrganizationID != inst.OrganizationID || acc.Status != "active" {
 		return nil, ErrMailboxInactive
+	}
+	if acc.Provider == string(models.InboxProviderSMTPIMAP) {
+		return nil, ErrMailboxNotManaged
 	}
 	if s.analytics != nil {
 		if status, xerr := s.analytics.GetAccountStatus(ctx, inst.OrganizationID, acc.ID); xerr == nil && status != nil && status.WarmupHealth != nil && status.WarmupHealth.State == "blocked" {
 			return nil, ErrMailboxBlocked
 		}
+	}
+	if acc.AuthMethod == models.MailAuthDelegated {
+		if acc.Provider != string(models.InboxProviderGoogle) || s.delegation == nil {
+			return nil, ErrMailboxInactive
+		}
+		tok, handled, xerr := s.delegation.AccessToken(ctx, acc.ID)
+		if xerr != nil {
+			return nil, xerr
+		}
+		if !handled || tok == nil || tok.AccessToken == "" || tok.Provider != acc.Provider || !strings.EqualFold(tok.Email, acc.Email) {
+			return nil, ErrMailboxInactive
+		}
+		_ = s.repo.TouchMailboxToken(ctx, inst.ID, remoteID)
+		return tok, nil
 	}
 	tok, xerr := s.emailSvc.OAuthAccessToken(ctx, acc.ID)
 	if xerr != nil {
@@ -533,8 +550,8 @@ func (s *service) AccessToken(ctx context.Context, inst *models.PoolLinkInstance
 	return &models.PoolLinkAccessToken{AccessToken: tok.AccessToken, ExpiresAt: tok.Expiry, Provider: acc.Provider, Email: acc.Email}, nil
 }
 
-func (s *service) ListWorkspaceMailboxes(ctx context.Context, inst *models.PoolLinkInstance) ([]models.PoolLinkWorkspaceMailbox, *errx.Error) {
-	list, err := s.repo.ListAdoptableMailboxes(ctx, inst.OrganizationID)
+func (s *service) ListWorkspaceMailboxes(ctx context.Context, inst *models.PoolLinkInstance, includeSMTPIMAP bool) ([]models.PoolLinkWorkspaceMailbox, *errx.Error) {
+	list, err := s.repo.ListAdoptableMailboxes(ctx, inst.OrganizationID, includeSMTPIMAP)
 	if err != nil {
 		return nil, errx.InternalError()
 	}
@@ -565,9 +582,8 @@ func (s *service) Adopt(ctx context.Context, inst *models.PoolLinkInstance, req 
 	if xerr != nil {
 		return nil, xerr
 	}
-	// A mailbox under an administrator's grant has no token of its own to broker.
 	if acc.OrganizationID == nil || *acc.OrganizationID != inst.OrganizationID || acc.Status != "active" ||
-		acc.AuthMethod == models.MailAuthDelegated ||
+		(acc.AuthMethod == models.MailAuthDelegated && acc.Provider != string(models.InboxProviderGoogle)) ||
 		(acc.Provider != string(models.InboxProviderGoogle) && acc.Provider != string(models.InboxProviderOutlook)) {
 		return nil, ErrNotAdoptable
 	}
@@ -577,7 +593,7 @@ func (s *service) Adopt(ctx context.Context, inst *models.PoolLinkInstance, req 
 		return nil, ErrAlreadyAdopted
 	}
 	if err := s.repo.EnrollMailbox(ctx, &models.PoolLinkMailbox{InstanceID: inst.ID, RemoteID: req.RemoteID, EmailAccountID: acc.ID, Managed: true}); err != nil {
-		return nil, errx.InternalError()
+		return nil, enrollError(err)
 	}
 	s.startWarmup(ctx, inst.OrganizationID.String(), acc.ID)
 	return s.GetMailbox(ctx, inst, req.RemoteID)

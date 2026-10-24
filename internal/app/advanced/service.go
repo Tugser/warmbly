@@ -125,7 +125,7 @@ type Service interface {
 	// LatestInboundFromContact returns the subject + snippet of the newest email
 	// received from the contact ("" when none). Backs the campaign AI step's
 	// incoming-email context.
-	LatestInboundFromContact(ctx context.Context, userID uuid.UUID, contactEmail string) (string, string, error)
+	LatestInboundFromContact(ctx context.Context, orgID uuid.UUID, contactEmail string) (string, string, error)
 
 	// ListCategories returns the workspace's contact categories, which double as
 	// unibox conversation labels (same registry). An AI agent step offers these

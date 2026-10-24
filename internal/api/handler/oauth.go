@@ -74,6 +74,7 @@ func (h *Handler) CreateOAuthApplication(c *gin.Context) {
 		errx.JSON(c, oauthAppWriteError(err))
 		return
 	}
+	h.auditOrg(c, models.AuditActionCreate, models.AuditEntityOAuthApplication, &app.ID, nil, map[string]string{"name": app.Name})
 	c.JSON(http.StatusCreated, app)
 }
 
@@ -138,6 +139,7 @@ func (h *Handler) UpdateOAuthApplication(c *gin.Context) {
 	if app.LogoURL != current.LogoURL {
 		h.deleteAppLogo(c.Request.Context(), *orgID, id, current.LogoURL, "")
 	}
+	h.auditOrg(c, models.AuditActionUpdate, models.AuditEntityOAuthApplication, &id, nil, nil)
 	c.JSON(http.StatusOK, app)
 }
 
@@ -156,6 +158,7 @@ func (h *Handler) DeleteOAuthApplication(c *gin.Context) {
 		errx.JSON(c, errx.New(errx.Internal, "delete failed"))
 		return
 	}
+	h.auditOrg(c, models.AuditActionDelete, models.AuditEntityOAuthApplication, &id, nil, nil)
 	c.JSON(http.StatusOK, gin.H{"deleted": true})
 }
 
@@ -175,6 +178,7 @@ func (h *Handler) RotateOAuthApplicationSecret(c *gin.Context) {
 		errx.JSON(c, oauthAppWriteError(rerr))
 		return
 	}
+	h.auditOrg(c, models.AuditActionRotate, models.AuditEntityOAuthApplication, &id, nil, map[string]string{"secret": "client"})
 	c.JSON(http.StatusOK, gin.H{"client_secret": secret})
 }
 
@@ -221,6 +225,7 @@ func (h *Handler) RotateOAuthAppWebhookSecret(c *gin.Context) {
 		errx.JSON(c, oauthAppWriteError(rerr))
 		return
 	}
+	h.auditOrg(c, models.AuditActionRotate, models.AuditEntityOAuthApplication, &id, nil, map[string]string{"secret": "webhook"})
 	c.JSON(http.StatusOK, gin.H{"webhook_secret": secret})
 }
 

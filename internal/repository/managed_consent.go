@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
@@ -110,12 +111,21 @@ func (r *cloudLinkRepository) CanBrokerManagedToken(ctx context.Context, account
  AND clm.standing_observed_at <= NOW()
  AND (standing.health_state NOT IN ('blocked','quarantined') OR standing.blocked_until <= NOW())
  AND NOT EXISTS (SELECT 1 FROM cloud_managed_consents c WHERE c.instance_id = l.instance_id
+ AND c.remote_id = clm.remote_id
  AND (c.email_account_id = ea.id OR c.planned_account_id = ea.id) AND c.consent_state <> 'active'))`, accountID).Scan(&allowed)
 	return allowed, err
 }
 
 func (r *cloudLinkRepository) SetManagedConsentState(ctx context.Context, orgID, id uuid.UUID, state string, accountID *uuid.UUID) error {
-	tag, err := r.db.Exec(ctx, `UPDATE cloud_managed_consents SET consent_state = $3,
+	return setManagedConsentState(ctx, r.db, orgID, id, state, accountID)
+}
+
+type managedConsentWriter interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func setManagedConsentState(ctx context.Context, writer managedConsentWriter, orgID, id uuid.UUID, state string, accountID *uuid.UUID) error {
+	tag, err := writer.Exec(ctx, `UPDATE cloud_managed_consents SET consent_state = $3,
  email_account_id = COALESCE($4, email_account_id) WHERE organization_id = $1 AND id = $2
  AND (consent_state IN ('pending','unknown') OR consent_state = $3 OR $3 IN ('pending_remove','revoked','expired'))
  AND ($3 <> 'active' OR (cloud_account_id IS NOT NULL AND planned_account_id=$4 AND EXISTS (SELECT 1 FROM email_accounts a
@@ -232,7 +242,8 @@ func (r *poolLinkRepository) CompleteManagedOperation(ctx context.Context, insta
 	err = tx.QueryRow(ctx, `SELECT c.organization_id FROM pool_link_managed_operations c
  JOIN pool_link_instances i ON i.id = c.instance_id AND i.organization_id = c.organization_id
  JOIN organizations o ON o.id=c.organization_id AND o.risk_state IN ('trusted','watch')
- JOIN email_accounts a ON a.id = $3 AND a.organization_id = c.organization_id AND a.provider = c.provider AND a.status = 'active' AND a.auth_method='oauth'
+ JOIN email_accounts a ON a.id = $3 AND a.organization_id = c.organization_id AND a.provider = c.provider AND a.status = 'active'
+ AND (a.auth_method='oauth' OR (c.kind='adopt' AND a.auth_method='delegated' AND a.provider='gmail'))
  WHERE c.instance_id = $1 AND c.remote_id = $2 AND c.planned_account_id = $3
  AND c.consent_state IN ('pending','exchanging','completed') AND (c.expires_at > NOW() OR c.consent_state = 'completed')
  AND i.revoked_at IS NULL FOR UPDATE OF c`, instanceID, remoteID, accountID).Scan(&orgID)

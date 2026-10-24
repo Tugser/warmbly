@@ -31,7 +31,7 @@ Choose where warmup mail is filed: **Its own folder** (the default), **Leave it 
 
 <Step>
 
-Pause to stop sending but keep receiving, or Stop to turn off both while keeping the ramp history.
+Pause to stop both sending and receiving warmup mail, or Stop to also turn diagnostic participation off, both while keeping the ramp history.
 
 </Step>
 
@@ -77,7 +77,7 @@ Providers may strip headers or replace identifiers. Exact authorized lineage and
 
 When an SMTP relay rewrites a Message-ID, a valid recipient-bound verification token, the expected sender address and a confirmed send can authorize one received copy. Replies and message-specific DKIM verification use that copy's received identifier. Headerless arrivals still require an exact confirmed identifier for new diagnostic lineage; a matching subject or mailbox pair alone does not authorize a reply. Arrivals held before send confirmation or during a verification outage are retained and retried automatically while their token remains valid.
 
-New mailboxes default off. Independent send/receive controls and shared daily/rolling limits are on the Warmup tab. Start/resume enables disclosed automated sending and, when starting from Off or legacy, receiving with provider-supported spam rescue, reads, importance and stars or flags. Pause preserves separately authorized receiving, and Stop disables both while retaining ramp history and holds. Recipient-only cannot reply. Sender-only does not authorize recipient engagement. Existing receive-enabled diagnostic mailboxes also use these actions after the consumer, backend and workers are upgraded; no new setting or data migration is needed. Existing NULL stays legacy until explicit action; unrelated edits do not relabel it. Cloud controls require updated Cloud replicas. See [send safety](/development/send-safety/).
+New mailboxes default off. Independent send/receive controls and shared daily/rolling limits are on the Warmup tab. Start/resume enables disclosed automated sending and, when starting from Off or legacy, receiving with provider-supported spam rescue, reads, importance and stars or flags. Pause stops receiving as well as sending, and Stop disables both participation directions, each while retaining ramp history and holds. A mailbox whose warmup is paused or was never started receives no warmup mail, whatever its receive setting; the send and receive settings only narrow participation while warmup is on. Recipient-only (sending off, receiving on, warmup on) keeps receiving and cannot reply. Sender-only does not authorize recipient engagement. Existing receive-enabled diagnostic mailboxes also use these actions after the consumer, backend and workers are upgraded; no new setting or data migration is needed. Existing NULL stays legacy until explicit action; unrelated edits do not relabel it. Cloud controls require updated Cloud replicas. See [send safety](/development/send-safety/).
 
 ### When a send fails
 
@@ -168,7 +168,7 @@ The drawer shows confirmed partners/domains/workspaces and verified arrivals ove
 
 The **Analytics** tab of the same drawer charts the exchange over time: sent, received and replies per day, with the total received against the total sent for the range. The same numbers are in the [warmup analytics](/api/reference/analytics/#get-warmup-analytics) endpoint.
 
-Pause preserves separate receiving permission; Stop disables both directions. Lost authority, disconnection, quarantine or block also restrict participation. Health alone is not consent.
+Pause and Stop both end receiving: no new warmup mail or reply is sent to the mailbox, and unstarted sends already queued for it are withdrawn. Mail a provider accepted before then can still arrive. The mailbox keeps its pool standing. Turning warmup back on resumes sending, and resumes receiving only when the mailbox's participation setting allows it. Lost authority, disconnection, quarantine or block also restrict participation. Health alone is not consent.
 
 </Fold>
 

@@ -43,6 +43,7 @@ Anything flagged on [Instance health](/development/instance-health/) links back 
 | `WARMBLY_CLOUD_URL` | The Warmbly Cloud API a self-hosted instance links to for the hosted warmup pool ([guide](/guides/warmbly-cloud/)). Outbound HTTPS only | `https://api.warmbly.com` | no |
 | `INSTANCE_NAME` | The name shown on the Warmbly Cloud approval page when linking this instance | the hostname | no |
 | `WARMBLY_VERSION` | Version string reported to Warmbly Cloud on link requests | `dev` | no |
+| `APP_VERSION` | Release name written into a workspace export archive's manifest (`source_app_version`). Informational only: an import never keys off it | unset | yes |
 | `WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS` | `true` lets customer webhooks point at `http://` and private addresses. Development only: it lets any workspace member make the backend reach into your internal network | `false` | yes |
 
 In Gin release mode, access logs omit successful health probes and internal GET lookups, including an expected missing email-message mapping. Authentication failures, server errors, other missing resources and all mutations remain logged. Gin debug mode keeps every access log. Query strings and credential path parameters remain redacted in both modes; organization audit events are unaffected.
@@ -507,6 +508,10 @@ Keep the copies private. GeoLite2 may not be redistributed, which is also why no
 | `ENCRYPTED_KEYS_BACKEND_URL` | Backend base the worker fetches organization keys from | unset | yes |
 | `ENCRYPTED_KEYS_WORKER_TOKEN` | The worker's copy of `INTERNAL_API_TOKEN` | unset | yes |
 | `MAIL_TLS_INSECURE` | Skips certificate verification on mailbox connections | `false` | yes |
+| `WARMBLY_BACKEND_URL` | Backend base a joined node calls for its heartbeat, and the brokered key and blob providers, when `ENCRYPTED_KEYS_BACKEND_URL` is unset. Written by the join script | unset | yes |
+| `WARMBLY_NODE_NAME` | Display name the node reports to the fleet list and admin panel. Written by the join script from `--name`, else the hostname | unset | yes |
+| `WARMBLY_TARGET_VERSION_PATH` | File the node writes the control plane's `desired_version` to, for the `warmbly-node-update` timer to apply. Unset, the node never writes one and does not update itself. Written by the join script | unset | yes |
+| `APP_INTERNAL_URL` | Read by the backend: the address a joining node is told to call back on when `ENCRYPTED_KEYS_BACKEND_URL` is unset on the backend. Instance health checks whichever of the two is set | unset | no (read per join) |
 
 <Callout type="warn" title="An unset key URL is silent">
 An empty `ENCRYPTED_KEYS_BACKEND_URL` or `ENCRYPTED_KEYS_WORKER_TOKEN` lets the worker start, subscribe and never register. There is no log line. The `no_worker_heartbeat` check on [Instance health](/development/instance-health/#no_worker_heartbeat) is what surfaces it.
@@ -879,6 +884,8 @@ Session replay masks what is typed into a password field in the browser, before 
 | `UPDATE_CHANNEL` | `stable` follows releases; `dev` also offers prereleases | `stable` | yes |
 | `RELEASES_GITHUB_REPO` | The `owner/repo` whose releases count as Warmbly versions. Point a fork's instance at the fork | `warmbly/warmbly` | yes |
 | `RELEASES_GITHUB_TOKEN` | Optional GitHub token; only raises the API rate limit | unset | yes |
+| `RELEASES_ENABLED` | Resolves the fleet's target release from `RELEASES_GITHUB_REPO` on boot and on each check, and hands it to nodes in their heartbeat so they update themselves. Off by default: no release lookup on boot, and nodes are never told to update | `false` | yes |
+| `RELEASES_WORKER_IMAGE_REPO` | Image repository a node's target version is pulled from, as `<repo>:<tag>`. Point it at your own registry to roll a fleet from your own builds | `ghcr.io/warmbly/warmbly/worker` | yes |
 | `UPDATER_URL` | The host-side updater that applies an update (pull, rebuild, restart). Unset, or `none`, leaves the panel report-only | `http://updater:8095` under compose | yes |
 | `UPDATER_TOKEN` | The bearer token the backend presents to the updater, which can pull and restart the instance. Give it its own value so the token the tracking and forms services hold cannot start an update; the installer generates one | `INTERNAL_API_TOKEN` | yes |
 

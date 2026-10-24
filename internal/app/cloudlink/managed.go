@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,6 +25,8 @@ const OAuthReturnPath = "/cloud-oauth/done"
 
 // tokenCacheMax bounds how long a brokered token is reused before the cloud is asked again.
 const tokenCacheMax = 10 * time.Minute
+
+const workspaceMailboxPath = "/instance/workspace-mailboxes?include_smtp_imap=true"
 
 type cachedToken struct {
 	token   *models.PoolLinkAccessToken
@@ -62,13 +65,156 @@ func (s *service) ListWorkspaceMailboxes(ctx context.Context, orgID uuid.UUID) (
 		return nil, xerr
 	}
 	var list []models.PoolLinkWorkspaceMailbox
-	if xerr := s.clientFor(l).do(ctx, http.MethodGet, "/instance/workspace-mailboxes", nil, &list); xerr != nil {
+	if xerr := s.clientFor(l).do(ctx, http.MethodGet, workspaceMailboxPath, nil, &list); xerr != nil {
 		return nil, xerr
 	}
 	if list == nil {
 		list = []models.PoolLinkWorkspaceMailbox{}
 	}
-	return list, nil
+	var addresses []string
+	for _, mailbox := range list {
+		if mailbox.Provider == string(models.InboxProviderSMTPIMAP) {
+			addresses = append(addresses, mailbox.Email)
+		}
+	}
+	if len(addresses) == 0 {
+		return list, nil
+	}
+	refs, xerr := s.emails.FindManyInOrganization(ctx, orgID, addresses)
+	if xerr != nil {
+		return nil, xerr
+	}
+	enrollments, err := s.repo.ListForOrg(ctx, orgID, nil)
+	if err != nil {
+		return nil, errx.InternalError()
+	}
+	byAccount := make(map[uuid.UUID]models.CloudLinkMailbox, len(enrollments))
+	for _, enrollment := range enrollments {
+		byAccount[enrollment.EmailAccountID] = enrollment
+	}
+	filtered := make([]models.PoolLinkWorkspaceMailbox, 0, len(list))
+	for _, mailbox := range list {
+		if mailbox.Provider == string(models.InboxProviderSMTPIMAP) {
+			ref, found := refs[strings.ToLower(mailbox.Email)]
+			if !found || ref.Status != "active" || ref.Provider != mailbox.Provider || ref.Managed {
+				continue
+			}
+			if m, found := byAccount[ref.ID]; found && (m.InstanceID != l.InstanceID || m.Managed || m.EnrollmentState != "pending_enroll") {
+				continue
+			}
+		}
+		filtered = append(filtered, mailbox)
+	}
+	return filtered, nil
+}
+
+func (s *service) connectExistingSMTPIMAP(ctx context.Context, orgID uuid.UUID, l *models.CloudLink, cloud models.PoolLinkWorkspaceMailbox) (*models.Email, *errx.Error) {
+	ref, xerr := s.emails.FindInOrganization(ctx, orgID, cloud.Email)
+	if xerr != nil {
+		return nil, xerr
+	}
+	if ref == nil || ref.Provider != string(models.InboxProviderSMTPIMAP) || ref.Status != "active" || ref.Managed {
+		return nil, errx.ErrEmailCredentials
+	}
+	acc, xerr := s.ownedAccount(ctx, orgID, ref.ID)
+	if xerr != nil {
+		return nil, xerr
+	}
+	if !strings.EqualFold(acc.Email, cloud.Email) {
+		return nil, errx.ErrNotFound
+	}
+	m, err := s.repo.GetByAccount(ctx, acc.ID)
+	if err != nil {
+		return nil, errx.InternalError()
+	}
+	if m != nil && (m.InstanceID != l.InstanceID || m.Managed || m.EnrollmentState != "pending_enroll") {
+		return nil, errx.ErrEmailOnboardAlreadyExists
+	}
+	if m != nil && m.SMTPCloudAccountID != nil && *m.SMTPCloudAccountID != cloud.ID {
+		return nil, errx.ErrEmailOnboardAlreadyExists
+	}
+	var info models.PoolLinkInstanceInfo
+	if xerr := s.clientFor(l).do(ctx, http.MethodGet, "/instance", nil, &info); xerr != nil {
+		return nil, xerr
+	}
+	if info.Instance.ID != l.InstanceID || info.SMTPAssociationProtocol != models.SMTPAssociationProtocol {
+		return nil, errx.NewWithIdentifier(errx.Conflict, "cloud_link_smtp_association_protocol", "Update Warmbly Cloud before connecting an existing app-password mailbox. Keep both mailbox records; no passwords or history need replacing.")
+	}
+	r, ok := s.repo.(repository.CloudSMTPAssociationRepository)
+	if !ok {
+		return nil, errx.InternalError()
+	}
+	if err := r.BeginSMTPAssociation(ctx, acc.ID, l.InstanceID, cloud.ID); err != nil {
+		return nil, errx.InternalError()
+	}
+	m, err = s.repo.GetByAccount(ctx, acc.ID)
+	if err != nil || m == nil || m.SMTPCloudAccountID == nil || *m.SMTPCloudAccountID != cloud.ID || m.InstanceID != l.InstanceID || m.EnrollmentState != "pending_enroll" {
+		return nil, errx.InternalError()
+	}
+	s.syncLocalPool(ctx, acc.ID)
+	var state models.PoolLinkMailboxState
+	req := models.PoolLinkSMTPAssociationRequest{RemoteID: m.RemoteID, EmailAccountID: cloud.ID, Email: acc.Email}
+	if xerr := s.clientFor(l).do(ctx, http.MethodPost, "/instance/mailboxes/associate-smtp", req, &state); xerr != nil {
+		if xerr.Identifier == "pool_link_mailbox_conflict" {
+			return nil, errx.NewWithIdentifier(errx.Conflict, "cloud_link_smtp_association", "This existing Cloud mailbox could not be linked. Check that it belongs to the linked Cloud workspace and is not used by an active Cloud campaign or another instance. Keep the Cloud mailbox to preserve its history.")
+		}
+		return nil, xerr
+	}
+	if state.RemoteID != m.RemoteID || state.EmailAccountID != cloud.ID || state.Provider != acc.Provider || !state.Managed || state.Status != "active" || !strings.EqualFold(state.Email, acc.Email) {
+		return nil, ErrOAuthSession
+	}
+	if _, err := s.repo.Enroll(ctx, acc.ID, state.RemoteID, l.InstanceID, false); err != nil {
+		return nil, errx.InternalError()
+	}
+	s.recordStanding(ctx, acc.ID, state.Health, true)
+	s.mirrorReported(ctx, acc.ID, &state)
+	s.syncLocalPool(ctx, acc.ID)
+	return s.emails.GetByID(ctx, acc.ID)
+}
+
+func (s *service) recoverExistingSMTPIMAP(ctx context.Context, orgID uuid.UUID, l *models.CloudLink, cloudAccountID uuid.UUID) (*models.Email, *errx.Error) {
+	var states []models.PoolLinkMailboxState
+	if xerr := s.clientFor(l).do(ctx, http.MethodGet, "/instance/mailboxes", nil, &states); xerr != nil {
+		return nil, xerr
+	}
+	enrollments, err := s.repo.ListForOrg(ctx, orgID, nil)
+	if err != nil {
+		return nil, errx.InternalError()
+	}
+	byRemote := map[uuid.UUID]models.CloudLinkMailbox{}
+	for _, m := range enrollments {
+		if m.InstanceID == l.InstanceID {
+			byRemote[m.RemoteID] = m
+		}
+	}
+	for _, state := range states {
+		if state.EmailAccountID != cloudAccountID || state.Provider != string(models.InboxProviderSMTPIMAP) || state.Status != "active" {
+			continue
+		}
+		m, found := byRemote[state.RemoteID]
+		if !found {
+			return nil, ErrOAuthSession
+		}
+		acc, xerr := s.ownedAccount(ctx, orgID, m.EmailAccountID)
+		if xerr != nil {
+			return nil, xerr
+		}
+		if m.InstanceID != l.InstanceID || m.RemoteID != state.RemoteID || m.Managed || m.EnrollmentState == "pending_remove" ||
+			(m.SMTPCloudAccountID != nil && *m.SMTPCloudAccountID != cloudAccountID) ||
+			acc.Provider != state.Provider || acc.Status != "active" || !strings.EqualFold(acc.Email, state.Email) {
+			return nil, ErrOAuthSession
+		}
+		if m.EnrollmentState == "pending_enroll" {
+			if _, err := s.repo.Enroll(ctx, acc.ID, state.RemoteID, l.InstanceID, false); err != nil {
+				return nil, errx.InternalError()
+			}
+			s.recordStanding(ctx, acc.ID, state.Health, true)
+			s.mirrorReported(ctx, acc.ID, &state)
+			s.syncLocalPool(ctx, acc.ID)
+		}
+		return acc, nil
+	}
+	return nil, ErrOAuthSession
 }
 
 func (s *service) Adopt(ctx context.Context, orgID, userID, cloudAccountID uuid.UUID) (*models.Email, *errx.Error) {

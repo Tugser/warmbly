@@ -119,7 +119,7 @@ func (s *tasksService) sendAdmission(ctx context.Context, account *Email) error 
 }
 
 func (s *tasksService) validateWarmupPair(ctx context.Context, sender, recipient *Email, pool string, reply bool) error {
-	if !sender.TestSendingAllowed() || !recipient.TestReceivingAllowed() {
+	if !sender.TestSendingAllowed() || !recipient.WarmupReceivingAllowed() {
 		return errors.New("diagnostic participation unavailable")
 	}
 	if reply && !sender.IsWarmingActive() {

@@ -1006,12 +1006,23 @@ func (r *emailRepository) NewManagedAccount(ctx context.Context, userID string, 
 	if data.ID != uuid.Nil {
 		id = data.ID
 	}
+	tx, err := r.DB.Begin(ctx)
+	if err != nil {
+		return nil, errx.InternalError()
+	}
+	defer tx.Rollback(ctx)
+	if xerr := ensureMailboxAbsentTx(ctx, tx, data.OrganizationID, data.Email); xerr != nil {
+		return nil, xerr
+	}
 	query := withNewMailboxBehavior(`
 		INSERT INTO email_accounts (id, user_id, organization_id, email, name, provider, signature_plain, signature_html, tracking_domain, last_synced_at, created_at, updated_at, warmup_tag, mail_host, auth_method)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, $10, $11, $12, $13)
 	`, true)
-	if _, err := r.DB.Exec(ctx, query, id, userID, data.OrganizationID, data.Email, data.Name, data.Provider, sigplain, sightml, "", t, "", data.MailHost, models.MailAuthOAuth); err != nil {
+	if _, err := tx.Exec(ctx, query, id, userID, data.OrganizationID, data.Email, data.Name, data.Provider, sigplain, sightml, "", t, "", data.MailHost, models.MailAuthOAuth); err != nil {
 		db.CaptureError(err, query, nil, "exec")
+		return nil, errx.InternalError()
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, errx.InternalError()
 	}
 	return r.GetByID(ctx, id)
@@ -1594,8 +1605,10 @@ func (r *emailRepository) Update(ctx context.Context, orgID, emailAccountID stri
 		}
 		direction := ""
 		diagnostic := currentMode != nil && *currentMode == "diagnostic"
-		sendingOff := currentPaused || diagnostic && !currentSend || udata.TestSendEnabled != nil && !*udata.TestSendEnabled
-		receivingOff := diagnostic && !currentReceive || udata.TestReceiveEnabled != nil && !*udata.TestReceiveEnabled
+		// Pausing warmup stops both directions whatever participation flags the same request sends.
+		pausing := currentPaused || udata.Warmup != nil && !*udata.Warmup
+		sendingOff := pausing || diagnostic && !currentSend || udata.TestSendEnabled != nil && !*udata.TestSendEnabled
+		receivingOff := pausing || diagnostic && !currentReceive || udata.TestReceiveEnabled != nil && !*udata.TestReceiveEnabled
 		if currentStatus != "active" || udata.Status != nil && *udata.Status != "active" || currentMode != nil && *currentMode == "off" || udata.TestMode != nil && *udata.TestMode == "off" || sendingOff && receivingOff {
 			direction = "both"
 		} else if sendingOff {
@@ -2215,7 +2228,8 @@ func (r *emailRepository) SetWarmupLifecycle(ctx context.Context, orgID, emailAc
 	}
 	diagnostic := currentMode != nil && *currentMode == "diagnostic"
 	sendingOff := currentPaused || action == "pause" || diagnostic && !currentSend
-	receivingOff := diagnostic && !currentReceive
+	// Warmup off stops receiving as well as sending.
+	receivingOff := currentPaused || action == "pause" || diagnostic && !currentReceive
 	direction := ""
 	if action == "stop" || action == "disable" || currentStatus != "active" || currentMode != nil && *currentMode == "off" || sendingOff && receivingOff {
 		direction = "both"

@@ -134,3 +134,48 @@ func TestDirectedWarmupPartnerReplyAcrossTiers(t *testing.T) {
 		})
 	}
 }
+
+// withdrawnGate answers like the real gate for a pool member whose receiving was stopped.
+type withdrawnGate struct {
+	warmupapp.Service
+
+	asked []string
+}
+
+func (g *withdrawnGate) CanParticipate(_ context.Context, _ uuid.UUID, poolType string) (bool, string, *errx.Error) {
+	g.asked = append(g.asked, poolType)
+	return false, "pool_authority_unavailable", nil
+}
+
+// A reply-back into a thread never reaches a mailbox that stopped receiving, in either tier.
+func TestDirectedWarmupPartnerRefusesStoppedRecipient(t *testing.T) {
+	org := uuid.New()
+	target := uuid.New()
+	gate := &withdrawnGate{}
+	s := &tasksService{
+		taskRepo:     &directedTaskRepo{target: target},
+		emailRepo:    directedEmailRepo{},
+		warmupRepo:   standingRepo{state: models.WarmupHealthHealthy},
+		warmupHealth: gate,
+		orgRiskRepo:  riskRepo{state: models.OrgRiskTrusted},
+	}
+	sender := &Email{ID: uuid.New(), OrganizationID: &org, WarmupPoolType: "premium"}
+	if partner := s.directedWarmupPartner(context.Background(), uuid.New(), sender, "premium"); partner != nil {
+		t.Fatalf("reply-back addressed a stopped mailbox: %v", partner.ID)
+	}
+	if len(gate.asked) != 1 {
+		t.Fatalf("gated in pools %v, want only the sender's: a withdrawn recipient is not a cross-tier candidate", gate.asked)
+	}
+
+	off, diagnostic := models.TestParticipationOff, models.TestParticipationDiagnostic
+	sending := &Email{ID: uuid.New(), TestMode: &diagnostic, TestSendEnabled: true, TestReceiveEnabled: true}
+	for _, recipient := range []*Email{
+		{ID: target, TestMode: &off},
+		{ID: target, TestMode: &diagnostic, TestSendEnabled: true},
+	} {
+		// No repository is wired: the pair is refused on the recipient's own consent first.
+		if err := (&tasksService{}).validateWarmupPair(context.Background(), sending, recipient, "premium", true); err == nil {
+			t.Fatalf("dispatch admitted a recipient with receiving withdrawn (mode %v)", *recipient.TestMode)
+		}
+	}
+}

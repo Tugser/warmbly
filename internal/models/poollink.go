@@ -56,7 +56,7 @@ type PoolLinkMailbox struct {
 	RemoteID       uuid.UUID `json:"remote_id"`
 	EmailAccountID uuid.UUID `json:"email_account_id"`
 	EnrolledAt     time.Time `json:"enrolled_at"`
-	// Managed: the cloud holds the only credential and the instance sends with brokered tokens.
+	// Managed retains the Cloud-owned mailbox on unlink; SMTP/IMAP instances keep their own credentials.
 	Managed     bool       `json:"managed"`
 	LastTokenAt *time.Time `json:"last_token_at,omitempty"`
 }
@@ -114,12 +114,21 @@ type PoolLinkPlan struct {
 
 // PoolLinkInstanceInfo is the instance-facing status document.
 type PoolLinkInstanceInfo struct {
-	ManagedConsentProtocol int              `json:"managed_consent_protocol,omitempty"`
-	Instance               PoolLinkInstance `json:"instance"`
-	Organization           PoolLinkOrgInfo  `json:"organization"`
-	Plan                   PoolLinkPlan     `json:"plan"`
+	SMTPAssociationProtocol int              `json:"smtp_association_protocol,omitempty"`
+	ManagedConsentProtocol  int              `json:"managed_consent_protocol,omitempty"`
+	Instance                PoolLinkInstance `json:"instance"`
+	Organization            PoolLinkOrgInfo  `json:"organization"`
+	Plan                    PoolLinkPlan     `json:"plan"`
 	// Redirects is nil from a Cloud that does not serve root redirects.
 	Redirects *PoolLinkRedirectOffer `json:"redirects,omitempty"`
+}
+
+const SMTPAssociationProtocol = 1
+
+type PoolLinkSMTPAssociationRequest struct {
+	RemoteID       uuid.UUID `json:"remote_id"`
+	EmailAccountID uuid.UUID `json:"email_account_id"`
+	Email          string    `json:"email"`
 }
 
 // PoolLinkWarmupSettings is the requested ramp; zero values mean cloud defaults.
@@ -221,6 +230,7 @@ type PoolLinkWorkspaceMailbox struct {
 	Name     string    `json:"name"`
 	Provider string    `json:"provider"`
 	Status   string    `json:"status"`
+	MailHost string    `json:"mail_host,omitempty"`
 }
 
 // PoolLinkWarmupDeliveryQuery asks the cloud whether one message that arrived
@@ -305,10 +315,11 @@ type CloudLink struct {
 
 // CloudLinkMailbox marks a local mailbox as warmed by the cloud.
 type CloudLinkMailbox struct {
-	InstanceID     uuid.UUID `json:"-"`
-	EmailAccountID uuid.UUID `json:"email_account_id"`
-	RemoteID       uuid.UUID `json:"remote_id"`
-	EnrolledAt     time.Time `json:"enrolled_at"`
+	SMTPCloudAccountID *uuid.UUID `json:"smtp_cloud_account_id,omitempty"`
+	InstanceID         uuid.UUID  `json:"-"`
+	EmailAccountID     uuid.UUID  `json:"email_account_id"`
+	RemoteID           uuid.UUID  `json:"remote_id"`
+	EnrolledAt         time.Time  `json:"enrolled_at"`
 	// Managed: no local credential; the worker sends with tokens brokered by the cloud.
 	Managed            bool       `json:"managed"`
 	EnrollmentState    string     `json:"enrollment_state,omitempty"`
@@ -349,6 +360,7 @@ type CloudLinkStatus struct {
 
 // CloudLinkMailboxRow merges a local mailbox with its cloud warmup state.
 type CloudLinkMailboxRow struct {
+	IndependentSMTP    bool                  `json:"independent_smtp,omitempty"`
 	Legacy             bool                  `json:"legacy"`
 	ID                 uuid.UUID             `json:"id"`
 	Email              string                `json:"email"`

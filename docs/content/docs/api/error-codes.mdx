@@ -186,6 +186,51 @@ Each registered key may make 30 protected calls per hour. Past that the call ans
 | `pool_link_workspace_connected` | 409 | The Cloud workspace already has an active self-hosted connection, including a legacy link. Use another Cloud workspace and plan, or disconnect the existing link first |
 | `cloud_link_upgrade_required` | 409 | This Cloud deployment does not support workspace-scoped connections. Upgrade Cloud first |
 | `organization_cloud_connected` | 409 | Disconnect the workspace's Cloud connection before deleting it or scheduling deletion of it or its owner account |
+| `cloud_link_connected` | 409 | The workspace is already connected to Warmbly Cloud. Disconnect first to link a different Cloud workspace |
+| `cloud_link_not_connected` | 409 | The workspace is not connected to Warmbly Cloud, so there is nothing to change or disconnect |
+| `cloud_link_no_key` | 409 | The instance has no `CREDENTIALS_ENCRYPTION_KEY`, so it cannot store the Warmbly Cloud token. Set one and restart the backend before connecting |
+| `cloud_link_url` | 400 | The Cloud URL does not start with `https://` |
+| `cloud_link_no_pending` | 404 | No connection is in progress for this workspace. Start the connection again |
+| `cloud_link_code_expired` | 404 | The connection code expired before it was approved in Warmbly Cloud. Start again |
+| `cloud_link_mailbox_inactive` | 422 | Only active mailboxes can be enrolled in Warmbly Cloud warmup |
+| `cloud_link_oauth_mailbox` | 422 | A Google or Microsoft mailbox connected with this instance's own OAuth app cannot be warmed by Warmbly Cloud, because its refresh grant is bound to that app. The `message` says how to connect it instead |
+| `cloud_link_lifecycle` | 400 | A pause or resume request named an action other than `pause` or `resume` |
+
+#### Warmbly Cloud pool link
+
+These come from Warmbly Cloud's side of the connection (`/v1/pool-link/*`), which a self-hosted instance calls on your behalf. The instance passes the `code` and `message` through, so they can reach you from the instance's own settings and mailbox screens too.
+
+| `code` | Status | Meaning |
+|--------|--------|---------|
+| `pool_link_request` | 400 | The connection request is missing the instance name |
+| `pool_link_credential` | 400 | Enrolling a mailbox needs a credential that matches the mailbox's provider |
+| `pool_link_code_not_found` | 404 | The connection code is unknown or has expired. Start the connection again from the instance |
+| `pool_link_code_used` | 409 | The connection code has already been used |
+| `pool_link_denied` | 403 | The connection was declined in Warmbly Cloud |
+| `pool_link_revoked` | 401 | The instance's link has been revoked. Reconnect from the instance's settings |
+| `pool_link_instance_not_found` | 404 | The linked instance no longer exists in Warmbly Cloud |
+| `pool_link_mailbox_not_found` | 404 | The mailbox is not enrolled in Warmbly Cloud |
+| `pool_link_mailbox_limit` | 402 | The Cloud workspace has used its free allowance of linked mailboxes. Upgrade to the pool plan for unlimited mailboxes |
+| `pool_link_already_adopted` | 409 | The mailbox is already linked to an instance |
+| `pool_link_not_adoptable` | 422 | Only active Google and Microsoft mailboxes in the Cloud workspace can be linked to an instance |
+| `pool_link_not_managed` | 403 | The mailbox's credential is held by the instance, not by Warmbly Cloud, so Cloud cannot act on it |
+| `pool_link_mailbox_blocked` | 403 | Warmbly Cloud blocked the mailbox for hurting the pool. Sending from it is suspended until it is reviewed |
+| `pool_link_mailbox_inactive` | 403 | The mailbox is not active in Warmbly Cloud. Reconnect it to keep sending |
+| `pool_link_warmup_unavailable` | 403 | Warmup is not available on the Cloud workspace |
+| `pool_link_oauth_pending` | 409 | A mailbox sign-in started through Warmbly Cloud has not completed yet. Poll again |
+| `pool_link_oauth_session` | 404 | The mailbox sign-in session is unknown or has expired. Start the sign-in again |
+
+#### CLI sign-in
+
+`warmbly auth login` signs the CLI in with a one-time code (`POST /auth/cli/code`, `POST /auth/cli/poll`, and the dashboard's approval page). See the [CLI](/api/cli/).
+
+| `code` | Status | Meaning |
+|--------|--------|---------|
+| `cli_auth_request` | 400 | `POST /auth/cli/poll` was sent without a `device_code` |
+| `cli_auth_scopes` | 400 | The CLI asked for [scopes](/api/cli/#scopes) that include permission bits this instance does not grant |
+| `cli_auth_code_not_found` | 404 | The code is unknown or has expired. Run `warmbly auth login` again for a fresh one |
+| `cli_auth_code_used` | 409 | The code has already been used |
+| `cli_auth_forbidden` | 403 | Approving a CLI sign-in needs the `manage_api_keys` permission in the workspace, because the approval mints an API key |
 
 #### Warmbly Cloud warmup refusals
 
@@ -283,11 +328,14 @@ The [inbox vendor](/guides/mailbox-import/#import-from-an-inbox-vendor) routes (
 | `domain_redirect_limit` | 409 | Warmbly Cloud already serves 200 redirects for this linked instance |
 | `pool_link_redirect_not_found` | 404 | On Warmbly Cloud's linked-instance API: Cloud serves no redirect for this domain for the calling instance |
 | `pool_link_cleartext_mailbox` | 422 | Enrolling a mailbox in [Warmbly Cloud](/guides/warmbly-cloud/), or updating its credential there: SMTP or IMAP uses security `none`. Cloud reaches the mail server over the internet and needs TLS or STARTTLS on both legs. Switch the mailbox to TLS, or keep warming it on the instance |
-| `pool_link_mailbox_conflict` | 409 | Enrollment found the address already connected in the linked Cloud workspace and could not attach it. Cloud attaches an existing copy only when it is an active SMTP/IMAP mailbox, the server presents exactly the credentials Cloud holds for it, no active Cloud campaign sends from it and no other server has enrolled it. Nothing is attached by address alone. Contact Warmbly support to check the exact instance and mailbox IDs; do not delete or re-enroll the mailbox |
+| `pool_link_mailbox_conflict` | 409 | Enrollment found the address already connected in the linked Cloud workspace and could not attach it. Automatic SMTP/IMAP association requires an active SMTP/IMAP Cloud mailbox, exactly matching credentials, no active Cloud campaign using it and no other instance enrollment. For an existing Google or Microsoft OAuth mailbox, or a delegated Google Workspace mailbox, an instance administrator uses **Add account > In your Warmbly Cloud workspace > Connect** instead. This explicit adoption keeps Cloud history and can switch an existing local app-password mailbox in place. Nothing is attached by address alone. Contact support for other associations; do not delete or recreate the Cloud mailbox |
+| `pool_link_not_adoptable` | 422 | The selected Cloud mailbox is not active in the linked workspace, is not Google or Microsoft, or uses a Microsoft whole-organization grant. Google Workspace delegated mailboxes and per-mailbox Google or Microsoft OAuth mailboxes can be adopted |
 | `pool_link_instance_url` | 422 | Starting a Google or Microsoft sign-in through [Warmbly Cloud](/guides/warmbly-cloud/#google-and-microsoft-mailboxes-sign-in-through-warmbly-cloud) from an instance that registered no address of its own when it was linked, so Cloud has nowhere to return the sign-in to. Set `APP_URL` on the instance, disconnect it and link it again |
 | `pool_link_return_url` | 400 | The same sign-in named a return address that is not on the instance's registered address (same scheme and host) |
 | `pool_link_oauth_browser` | 400 | The brokered sign-in was not continued from the Warmbly Cloud page that started it, or returned to a different browser. Nothing was connected. Start again from the instance |
 | `cloud_link_managed_protocol` | 409 | Cloud does not advertise durable managed-consent protocol 1. Upgrade all Cloud control-plane replicas before opening a new managed connection or adoption. Existing mailboxes are unchanged |
+| `cloud_link_smtp_association_protocol` | 409 | Cloud does not advertise `smtp_association_protocol: 1`. Update all Cloud replicas before connecting existing app-password copies. No local association intent or credentials have changed |
+| `cloud_link_smtp_association` | 409 | The explicitly selected existing Cloud SMTP/IMAP mailbox could not be associated. Check the linked workspace and whether an active Cloud campaign or another instance uses that mailbox. Do not delete it or replace passwords to repair the association |
 | `pool_link_oauth_unknown` | 409 | The provider exchange has no confirmed committed mailbox. Do not retry the authorization code or infer success; remove the pending connection before starting new explicit consent |
 | `cli_auth_scopes_role` | 403 | Approving a [CLI sign-in](/api/cli/#scopes): your role in the chosen workspace allows none of the scopes the CLI asked for. Pick another workspace, or ask for narrower scopes with `--scopes` |
 | `sending_domain_bulk_invalid` | 400 | A bulk setup named no domain, more than 100, neither a `tracking_label` nor a `redirect_url`, a `tracking_label` that is not one DNS label, or a `served_by` other than `instance` or `cloud` |

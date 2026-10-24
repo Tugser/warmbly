@@ -32,6 +32,7 @@ import CloudConnectDialog from "@/components/app/cloud/CloudConnectDialog";
 import useCloudPool from "@/hooks/useCloudPool";
 import useAuthConfig from "@/lib/api/hooks/auth/useAuthConfig";
 import { useEnrollCloudLinkMailbox, useUnenrollCloudLinkMailbox, useCloudLinkMailboxLifecycle } from "@/lib/api/hooks/app/cloudlink/useCloudLink";
+import { cloudMailboxPickerOpened } from "@/lib/cloudMailboxConnect";
 import { providerSupported } from "@/app/app/settings/warmbly-cloud/providers";
 import { CloudIcon, MailCheckIcon } from "lucide-react";
 import { PlacementRateBadge } from "@/components/app/placement/PlacementCharts";
@@ -539,7 +540,7 @@ export default function AddressesPage() {
                             canWarmup={canWarmup}
                             onAdd={() => p?.setAddEmail(true)}
                             onConnectCloud={cloud.manageable && !cloud.connected ? () => setCloudDialog(true) : undefined}
-                            cloudConnected={cloud.workspaceConnected}
+                            cloudConnected={cloud.connected}
                         />
                     )}
                 </div>
@@ -627,7 +628,7 @@ export default function AddressesPage() {
                                         findings={advisor.get(box.id)}
                                         canWarmup={canWarmup}
                                         cloud={cloud.connected ? cloud.rowFor(box.id) : undefined}
-                                        cloudConnected={cloud.workspaceConnected}
+                                        cloudConnected={cloud.connected}
                                         retiring={retiringDomain.has(box.id)}
                                         onRetiring={() => openMigration(retiringDomain.get(box.id) ?? null)}
                                         checked={selected.includes(box.id)}
@@ -896,7 +897,7 @@ function MailboxRow({
             await fn();
             toast.success(ok);
         } catch (e) {
-            toast.error(buildError(e as AppError));
+            if (!cloudMailboxPickerOpened(e)) toast.error(buildError(e as AppError));
         }
     };
 
@@ -1213,6 +1214,8 @@ function MailboxRow({
                                             confirm.show(
                                                 cloud?.managed
                                                     ? `Remove ${box.email} from this instance and stop its Cloud warmup sending and receiving? Its mailbox, sign-in and history stay in your Warmbly Cloud workspace; campaigns here stop sending from it.`
+                                                    : cloud?.independent_smtp || cloud?.cloud?.managed
+                                                    ? `Disconnect Cloud warmup for ${box.email}? Its Cloud mailbox, credentials and warmup history stay on Cloud. Campaigns here keep their existing app-password connection. Cloud warmup sending and receiving stop until you restart them there.`
                                                     : `Stop warming ${box.email} in the Warmbly pool? The cloud deletes its credential right away.`,
                                                 async () => {
                                                     await cloudRun(() => cloudUnenroll.mutateAsync(box.id), cloud?.managed ? `${box.email} removed from this instance` : `${box.email} removed from the pool`);
@@ -1221,7 +1224,7 @@ function MailboxRow({
                                         }
                                         icon={<CloudIcon className="w-3 h-3" />}
                                     >
-                                        {cloud?.managed ? "Remove from this instance" : "Remove from Warmbly Cloud"}
+                                        {cloud?.managed ? "Remove from this instance" : cloud?.independent_smtp || cloud?.cloud?.managed ? "Disconnect Cloud warmup" : "Remove from Warmbly Cloud"}
                                     </PopoverMenuItem>
                                     <PopoverMenuSeparator />
                                 </>

@@ -20,6 +20,11 @@ func (e *Email) TestReceivingAllowed() bool {
 	return e.LegacyTestParticipation() || *e.TestMode == TestParticipationDiagnostic && e.TestReceiveEnabled
 }
 
+// WarmupReceivingAllowed: new warmup mail reaches only a mailbox whose warmup is on and whose participation receives.
+func (e *Email) WarmupReceivingAllowed() bool {
+	return e.IsWarmingActive() && e.TestReceivingAllowed()
+}
+
 func (e *Email) SyntheticActionsAllowed() bool {
 	return e.TestReceivingAllowed()
 }

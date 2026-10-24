@@ -15,11 +15,6 @@ import (
 )
 
 type UniboxService interface {
-	Incoming(
-		ctx context.Context,
-		userID uuid.UUID,
-		limit, cursor, from string,
-	) (*models.MailSearchResult, *errx.Error)
 	Search(
 		ctx context.Context,
 		orgID uuid.UUID,

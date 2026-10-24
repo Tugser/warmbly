@@ -255,7 +255,7 @@ func (r *cloudLinkRepository) IsEnrolled(ctx context.Context, accountID uuid.UUI
 
 const cloudLinkMailboxColumns = `email_account_id, remote_id, enrolled_at, managed,
 	health_state, health_pool_type, health_reason, health_score, blocked_until, health_evaluated_at, instance_id,
-	enrollment_state, standing_observed_at, settings_observed_at`
+	enrollment_state, standing_observed_at, settings_observed_at, smtp_cloud_account_id`
 
 func scanCloudLinkMailbox(row pgx.Row) (*models.CloudLinkMailbox, error) {
 	var m models.CloudLinkMailbox
@@ -263,7 +263,7 @@ func scanCloudLinkMailbox(row pgx.Row) (*models.CloudLinkMailbox, error) {
 	var score float64
 	var blockedUntil, evaluatedAt *time.Time
 	if err := row.Scan(&m.EmailAccountID, &m.RemoteID, &m.EnrolledAt, &m.Managed,
-		&state, &poolType, &reason, &score, &blockedUntil, &evaluatedAt, &m.InstanceID, &m.EnrollmentState, &m.StandingObservedAt, &m.SettingsObservedAt); err != nil {
+		&state, &poolType, &reason, &score, &blockedUntil, &evaluatedAt, &m.InstanceID, &m.EnrollmentState, &m.StandingObservedAt, &m.SettingsObservedAt, &m.SMTPCloudAccountID); err != nil {
 		return nil, err
 	}
 	if state != nil {

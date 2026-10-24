@@ -28,6 +28,7 @@ vi.mock("@/lib/api/hooks/app/cloudlink/useCloudLink", () => ({
 }));
 vi.mock("./ConnectFlow", () => ({ default: () => <div>Connection setup</div> }));
 vi.mock("./LinkedInstances", () => ({ default: () => null }));
+vi.mock("@/components/app/emails/CloudMailboxPicker", () => ({ default: () => <div>Existing Cloud mailboxes</div> }));
 
 describe("existing Cloud connections", () => {
     beforeEach(() => {
@@ -55,6 +56,7 @@ describe("existing Cloud connections", () => {
     it("shows the normal connection and allows enrollment without a migration", async () => {
         render(<WarmblyCloudSettingsPage />);
         expect(screen.getByText("Existing Cloud workspace")).toBeInTheDocument();
+        expect(screen.getByText("Existing Cloud mailboxes")).toBeInTheDocument();
         expect(screen.queryByText(/legacy/i)).not.toBeInTheDocument();
         expect(screen.queryByText("Connect this workspace")).not.toBeInTheDocument();
         expect(screen.queryByText("Connection setup")).not.toBeInTheDocument();

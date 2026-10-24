@@ -598,6 +598,7 @@ func (s *service) ListMailboxes(ctx context.Context, orgID uuid.UUID) ([]models.
 			row.Legacy = legacyInstances[e.InstanceID]
 			row.EnrolledAt = &at
 			row.Managed = e.Managed
+			row.IndependentSMTP = e.SMTPCloudAccountID != nil
 			row.EnrollmentState = e.EnrollmentState
 			row.StandingObservedAt = e.StandingObservedAt
 			row.SettingsObservedAt = e.SettingsObservedAt
@@ -695,6 +696,15 @@ func (s *service) Enroll(ctx context.Context, orgID, accountID uuid.UUID) (*mode
 	if l.DisconnectPending {
 		return nil, ErrAlreadyLinked
 	}
+	if m != nil && m.SMTPCloudAccountID != nil {
+		if m.EnrollmentState == "active" {
+			return s.row(ctx, orgID, accountID)
+		}
+		if _, xerr := s.connectExistingSMTPIMAP(ctx, orgID, l, models.PoolLinkWorkspaceMailbox{ID: *m.SMTPCloudAccountID, Email: acc.Email, Provider: acc.Provider, Status: acc.Status}); xerr != nil {
+			return nil, xerr
+		}
+		return s.row(ctx, orgID, accountID)
+	}
 	// The cloud owns the ramp once it holds the mailbox, so only a first enrollment proposes one.
 	warmup := models.PoolLinkWarmupSettings{Timezone: acc.ClockTimezone()}
 	if m == nil || m.EnrollmentState == "pending_enroll" && m.SettingsObservedAt == nil {
@@ -752,7 +762,7 @@ func (s *service) RefreshCredentials(ctx context.Context, orgID, accountID uuid.
 		return errx.InternalError()
 	}
 	// A managed mailbox's sign-in lives on the cloud; nothing here to hand over.
-	if m == nil || m.Managed || m.EnrollmentState == "pending_remove" {
+	if m == nil || m.Managed || m.SMTPCloudAccountID != nil || m.EnrollmentState == "pending_remove" {
 		return nil
 	}
 	// Enrolling again is how the cloud takes a new credential: it updates the mailbox it already holds.

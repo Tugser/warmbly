@@ -143,12 +143,15 @@ func snapToPreferredHour(t time.Time, loc *time.Location, hours []int, avoidWeek
 			if day == 0 && h < local.Hour() {
 				continue
 			}
-			minute, second := local.Minute(), local.Second()
-			if day > 0 || h > local.Hour() {
-				second = 0
+			// Already inside a preferred hour. Return t itself: rebuilding it
+			// with time.Date drops the nanoseconds, lands just before t and
+			// skips this hour.
+			if day == 0 && h == local.Hour() {
+				return t
 			}
+			// A later hour or day: keep the minute, start at second zero.
 			candidate := time.Date(candidateDay.Year(), candidateDay.Month(), candidateDay.Day(),
-				h, minute, second, 0, loc)
+				h, local.Minute(), 0, 0, loc)
 			if !candidate.Before(local) {
 				return candidate
 			}

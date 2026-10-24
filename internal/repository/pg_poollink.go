@@ -33,6 +33,7 @@ type PoolLinkRepository interface {
 	HasActiveInstance(ctx context.Context, orgID uuid.UUID) (bool, error)
 
 	EnrollMailbox(ctx context.Context, m *models.PoolLinkMailbox) error
+	RetainMailbox(ctx context.Context, instanceID, remoteID, accountID uuid.UUID) error
 	GetMailboxByRemote(ctx context.Context, instanceID, remoteID uuid.UUID) (*models.PoolLinkMailbox, error)
 	GetMailboxByAccount(ctx context.Context, accountID uuid.UUID) (*models.PoolLinkMailbox, error)
 	ListMailboxes(ctx context.Context, instanceID uuid.UUID) ([]models.PoolLinkMailbox, error)
@@ -42,8 +43,8 @@ type PoolLinkRepository interface {
 	DeleteMailbox(ctx context.Context, instanceID, remoteID uuid.UUID) error
 	// TouchMailboxToken records when a managed mailbox last drew an access token.
 	TouchMailboxToken(ctx context.Context, instanceID, remoteID uuid.UUID) error
-	// ListAdoptableMailboxes: the workspace's active OAuth mailboxes no instance holds yet.
-	ListAdoptableMailboxes(ctx context.Context, orgID uuid.UUID) ([]models.PoolLinkWorkspaceMailbox, error)
+	// ListAdoptableMailboxes includes Google domain grants and per-mailbox OAuth sign-ins not held by an instance.
+	ListAdoptableMailboxes(ctx context.Context, orgID uuid.UUID, includeSMTPIMAP bool) ([]models.PoolLinkWorkspaceMailbox, error)
 }
 
 type poolLinkRepository struct {
@@ -290,17 +291,35 @@ func (r *poolLinkRepository) HasActiveInstance(ctx context.Context, orgID uuid.U
 	return ok, nil
 }
 
+// ErrPoolLinkInstanceRevoked refuses an enrollment on a link that has ended.
+var ErrPoolLinkInstanceRevoked = errors.New("pool link instance revoked")
+
+// EnrollMailbox share-locks the live instance row, so it commits before a concurrent revoke or is refused after it.
 func (r *poolLinkRepository) EnrollMailbox(ctx context.Context, m *models.PoolLinkMailbox) error {
 	query := `
 		INSERT INTO pool_link_mailboxes (instance_id, remote_id, email_account_id, managed)
-		VALUES ($1, $2, $3, $4)
+		SELECT i.id, $2, $3, $4 FROM pool_link_instances i
+		 WHERE i.id = $1 AND i.revoked_at IS NULL
+		   FOR SHARE
 		RETURNING enrolled_at
 	`
-	if err := r.db.QueryRow(ctx, query, m.InstanceID, m.RemoteID, m.EmailAccountID, m.Managed).Scan(&m.EnrolledAt); err != nil {
+	err := r.db.QueryRow(ctx, query, m.InstanceID, m.RemoteID, m.EmailAccountID, m.Managed).Scan(&m.EnrolledAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrPoolLinkInstanceRevoked
+	}
+	if err != nil {
 		db.CaptureError(err, query, nil, "queryrow")
 		return err
 	}
 	return nil
+}
+
+func (r *poolLinkRepository) RetainMailbox(ctx context.Context, instanceID, remoteID, accountID uuid.UUID) error {
+	tag, err := r.db.Exec(ctx, `UPDATE pool_link_mailboxes SET managed=true WHERE instance_id=$1 AND remote_id=$2 AND email_account_id=$3`, instanceID, remoteID, accountID)
+	if err == nil && tag.RowsAffected() != 1 {
+		return errors.New("Cloud mailbox association changed")
+	}
+	return err
 }
 
 func scanPoolLinkMailbox(row pgx.Row) (*models.PoolLinkMailbox, error) {
@@ -426,18 +445,18 @@ func (r *poolLinkRepository) TouchMailboxToken(ctx context.Context, instanceID, 
 	return err
 }
 
-func (r *poolLinkRepository) ListAdoptableMailboxes(ctx context.Context, orgID uuid.UUID) ([]models.PoolLinkWorkspaceMailbox, error) {
+func (r *poolLinkRepository) ListAdoptableMailboxes(ctx context.Context, orgID uuid.UUID, includeSMTPIMAP bool) ([]models.PoolLinkWorkspaceMailbox, error) {
 	query := `
-		SELECT a.id, a.email, a.name, a.provider, a.status
+		SELECT a.id, a.email, a.name, a.provider, a.status, a.mail_host
 		FROM email_accounts a
 		WHERE a.organization_id = $1
 		  AND a.status = 'active'
-		  AND a.provider IN ('gmail', 'outlook')
-		  AND a.auth_method <> 'delegated'
+		  AND (a.provider IN ('gmail', 'outlook') OR ($2 AND a.provider = 'smtp_imap'))
+		  AND (a.auth_method <> 'delegated' OR a.provider = 'gmail')
 		  AND NOT EXISTS (SELECT 1 FROM pool_link_mailboxes m WHERE m.email_account_id = a.id)
 		ORDER BY a.created_at
 	`
-	rows, err := r.db.Query(ctx, query, orgID)
+	rows, err := r.db.Query(ctx, query, orgID, includeSMTPIMAP)
 	if err != nil {
 		db.CaptureError(err, query, []any{orgID}, "query")
 		return nil, err
@@ -446,7 +465,7 @@ func (r *poolLinkRepository) ListAdoptableMailboxes(ctx context.Context, orgID u
 	out := []models.PoolLinkWorkspaceMailbox{}
 	for rows.Next() {
 		var m models.PoolLinkWorkspaceMailbox
-		if err := rows.Scan(&m.ID, &m.Email, &m.Name, &m.Provider, &m.Status); err != nil {
+		if err := rows.Scan(&m.ID, &m.Email, &m.Name, &m.Provider, &m.Status, &m.MailHost); err != nil {
 			return nil, err
 		}
 		out = append(out, m)

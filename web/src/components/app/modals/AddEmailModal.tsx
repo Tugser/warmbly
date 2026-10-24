@@ -65,7 +65,8 @@ import {
 } from "@/lib/api/models/app/emails/Service";
 import SecuritySelect from "@/components/app/emails/SecuritySelect";
 import useAuthConfig from "@/lib/api/hooks/auth/useAuthConfig";
-import { useAdoptCloudMailbox, useCloudWorkspaceMailboxes } from "@/lib/api/hooks/app/cloudlink/useCloudLink";
+import CloudMailboxPicker from "@/components/app/emails/CloudMailboxPicker";
+import { CLOUD_MAILBOX_PICKER_EVENT } from "@/lib/cloudMailboxConnect";
 import useMailboxOAuth, { isAllowanceError, type MailboxOAuthProvider } from "@/hooks/useMailboxOAuth";
 import { useConfirm } from "@/hooks/context/confirm";
 import { Google, Outlook } from "@/components/svg";
@@ -130,6 +131,7 @@ export default function AddEmailModal() {
     const qc = useQueryClient();
 
     const [view, setView] = React.useState<View>("pick");
+    const [cloudAddress, setCloudAddress] = React.useState("");
     // The CSV import is reached from the picker and from the Google chooser; Back returns to whichever opened it.
     const [bulkFrom, setBulkFrom] = React.useState<View>("pick");
     // Deeper views slide in from the right, shallower ones from the left.
@@ -182,6 +184,7 @@ export default function AddEmailModal() {
     // Reset when the modal closes.
     React.useEffect(() => {
         if (!user.addEmail) {
+            setCloudAddress("");
             setView("pick");
             setDir(1);
             setNotConfigured(null);
@@ -205,7 +208,7 @@ export default function AddEmailModal() {
     // Every way out of the modal (close, backdrop, Escape, back to the picker)
     // asks first while the import wizard holds work nobody has imported yet.
     // An import or grant request in flight finishes before the modal can be left.
-    const sourceBusy = useMailboxSourceBusy() && user.addEmail && WIZARD_VIEWS.includes(view);
+    const sourceBusy = useMailboxSourceBusy() && user.addEmail;
     const guard = React.useCallback(
         (leave: () => void) => {
             if (sourceBusy) return;
@@ -225,6 +228,16 @@ export default function AddEmailModal() {
         [view, wizardDirty, confirm, sourceBusy],
     );
     const requestClose = React.useCallback(() => guard(() => user.setAddEmail(false)), [guard, user]);
+
+    React.useEffect(() => {
+        const openCloudMailbox = (event: Event) => guard(() => {
+            setCloudAddress((event as CustomEvent<{ email: string }>).detail.email);
+            setView("pick");
+            user.setAddEmail(true);
+        });
+        window.addEventListener(CLOUD_MAILBOX_PICKER_EVENT, openCloudMailbox);
+        return () => window.removeEventListener(CLOUD_MAILBOX_PICKER_EVENT, openCloudMailbox);
+    }, [guard, user]);
 
     React.useEffect(() => {
         if (!user.addEmail) return;
@@ -296,10 +309,8 @@ export default function AddEmailModal() {
                                                 onPick={navigate}
                                                 viaCloud={viaCloud}
                                                 open={user.addEmail}
-                                                onAdopted={() => {
-                                                    qc.invalidateQueries({ queryKey: ["emails", "list"] });
-                                                    user.setAddEmail(false);
-                                                }}
+                                                cloudAddress={cloudAddress}
+                                                busy={sourceBusy}
                                             />
                                         </>
                                     )}
@@ -601,13 +612,15 @@ function PickProvider({
     onPick,
     viaCloud,
     open,
-    onAdopted,
+    cloudAddress,
+    busy,
 }: {
     onPick: (v: View) => void;
     viaCloud: boolean;
     /** The modal is open, so the import sources may be asked what they offer. */
     open: boolean;
-    onAdopted: () => void;
+    cloudAddress: string;
+    busy: boolean;
 }) {
     // Asked now so the Google and Microsoft choosers open with their methods known.
     useGrantConfig(open);
@@ -643,10 +656,12 @@ function PickProvider({
     ];
     return (
         <div className="divide-y divide-slate-200/60">
+            {viaCloud && <CloudMailboxPicker initialSearch={cloudAddress} />}
             {rows.map((r, i) => (
                 <motion.button
                     key={r.key}
                     type="button"
+                    disabled={busy}
                     onClick={() => onPick(r.key)}
                     initial={{ opacity: 0, y: 4 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -663,7 +678,6 @@ function PickProvider({
                     <ChevronRightIcon className="w-4 h-4 text-slate-300 shrink-0 group-hover:text-slate-500 group-hover:translate-x-0.5 transition-all" />
                 </motion.button>
             ))}
-            {viaCloud && <WorkspaceMailboxes onAdopted={onAdopted} />}
         </div>
     );
 }
@@ -693,6 +707,7 @@ function MethodChooser({
     open: boolean;
 }) {
     const grantConfig = useGrantConfig(open);
+    const busy = useMailboxSourceBusy();
     const methods: Method[] = [];
     if (provider === "google") {
         if (grantConfig.data?.google_enabled) {
@@ -740,6 +755,7 @@ function MethodChooser({
 
     return (
         <div className="p-4 space-y-2">
+            {viaCloud && <CloudMailboxPicker provider={provider === "google" ? "gmail" : "outlook"} />}
             <div className="flex items-center gap-2.5 pb-1">
                 <ProviderLogo id={provider} size="lg" />
                 <div className="min-w-0">
@@ -758,6 +774,7 @@ function MethodChooser({
                 <motion.button
                     key={m.view}
                     type="button"
+                    disabled={busy}
                     onClick={() => onPick(m.view)}
                     initial={{ opacity: 0, y: 4 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -800,60 +817,6 @@ function MethodChooser({
                     </button>
                 </p>
             )}
-        </div>
-    );
-}
-
-// Mailboxes connected directly on the linked Warmbly Cloud workspace: one
-// click brings each one here, sending with tokens the cloud brokers.
-function WorkspaceMailboxes({ onAdopted }: { onAdopted: () => void }) {
-    const list = useCloudWorkspaceMailboxes();
-    const adopt = useAdoptCloudMailbox();
-    const [busy, setBusy] = React.useState<string | null>(null);
-    const items = list.data ?? [];
-    if (list.isLoading || items.length === 0) return null;
-
-    const run = async (id: string, email: string) => {
-        setBusy(id);
-        try {
-            await adopt.mutateAsync(id);
-            toast.success(`${email} connected`);
-            onAdopted();
-        } catch (e) {
-            toast.error(buildError(e as AppError));
-        } finally {
-            setBusy(null);
-        }
-    };
-
-    return (
-        <div className="px-4 py-3 bg-sky-50/40">
-            <div className="flex items-center gap-1.5 mb-2">
-                <CloudIcon className="w-3.5 h-3.5 text-sky-600" />
-                <span className="text-[10px] uppercase tracking-[0.14em] text-slate-400 font-medium">In your Warmbly Cloud workspace</span>
-            </div>
-            <div className="space-y-1.5">
-                {items.map((m) => (
-                    <div key={m.id} className="flex items-center gap-2.5 rounded-md border border-slate-200 bg-white px-2.5 py-2">
-                        <div className="size-7 rounded-md border border-slate-200 bg-white flex items-center justify-center shrink-0">
-                            {m.provider === "gmail" ? <Google className="w-4 h-4" /> : <Outlook className="w-4 h-4" />}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                            <div className="text-[12.5px] text-slate-900 truncate">{m.email}</div>
-                            <div className="text-[11px] text-slate-500 truncate">Connected on the cloud. Add it here to send campaigns from it.</div>
-                        </div>
-                        <button
-                            type="button"
-                            disabled={busy === m.id}
-                            onClick={() => void run(m.id, m.email)}
-                            className="shrink-0 h-7 px-2.5 rounded-md bg-slate-900 hover:bg-slate-800 text-white text-[12px] font-medium inline-flex items-center gap-1.5 transition-colors disabled:opacity-60"
-                        >
-                            {busy === m.id ? <Loader2Icon className="w-3 h-3 animate-spin" /> : <CheckIcon className="w-3 h-3" />}
-                            Connect
-                        </button>
-                    </div>
-                ))}
-            </div>
         </div>
     );
 }

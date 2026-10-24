@@ -258,6 +258,25 @@ func (h *Handler) PoolLinkEnroll(c *gin.Context) {
 	c.JSON(http.StatusCreated, state)
 }
 
+func (h *Handler) PoolLinkAssociateSMTPIMAP(c *gin.Context) {
+	inst := middleware.GetPoolLinkInstance(c)
+	if inst == nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	var req models.PoolLinkSMTPAssociationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		errx.JSON(c, errx.InvalidBody(err))
+		return
+	}
+	state, xerr := h.PoolLinkService.AssociateSMTPIMAP(c.Request.Context(), inst, req)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, state)
+}
+
 func poolLinkRemoteID(c *gin.Context) (uuid.UUID, bool) {
 	id, err := uuid.Parse(c.Param("remoteId"))
 	if err != nil {
@@ -404,7 +423,7 @@ func (h *Handler) PoolLinkWorkspaceMailboxes(c *gin.Context) {
 		errx.JSON(c, errx.ErrUnauthorized)
 		return
 	}
-	list, xerr := h.PoolLinkService.ListWorkspaceMailboxes(c.Request.Context(), inst)
+	list, xerr := h.PoolLinkService.ListWorkspaceMailboxes(c.Request.Context(), inst, c.Query("include_smtp_imap") == "true")
 	if xerr != nil {
 		errx.JSON(c, xerr)
 		return

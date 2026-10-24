@@ -155,6 +155,8 @@ Warmbly signs in with whichever method your server offers, preferring CRAM-MD5, 
 
 ### Gmail and Google Workspace
 
+On a self-hosted instance linked to Warmbly Cloud, an administrator can also use **Add account > In your Warmbly Cloud workspace > Connect** for an existing Cloud mailbox, including one connected through a Google Workspace domain grant. The mailbox keeps warming on Cloud with its history intact, while campaigns send from your instance through brokered access tokens. An existing local app-password connection switches in place, keeping its campaigns and imported mail. See [mailboxes connected on Cloud](/guides/warmbly-cloud/#mailboxes-connected-on-the-cloud).
+
 Where your deployment enables it, choose **Add account > Google > Sign in with Google** to connect one mailbox through Google's consent screen. This option is deployment-dependent; an administrator can enable it with the [dashboard configuration flag](/development/configuration/#google-sign-in-per-dashboard-deployment). If it is hidden, use an app password or a Workspace whole-domain grant instead. Existing Google sign-in mailboxes keep working and can re-authorize even when new Google sign-in connects are disabled.
 
 Choose **Add account**, then **Google**, then **App password**. The dialog walks through three steps, and the only things you type are the address and the app password; the server settings are Gmail's own and are filled in for you.

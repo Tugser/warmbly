@@ -575,6 +575,8 @@ export function useRealtimeEvents() {
           mcp_server: [['ai', 'connections']],
           // A teammate published, edited or unpublished one of the workspace's apps.
           app_listing: [['oauth-app-listing'], ['integrations', 'community']],
+          // A teammate created, edited, deleted or rotated a secret of one of the workspace's apps.
+          oauth_application: [['oauth-apps']],
           // A member's app authorization ended, by them or by a workspace admin.
           oauth_authorization: [['oauth-authorized-apps']],
           // Advisor: a background evaluation that opened or resolved findings,
