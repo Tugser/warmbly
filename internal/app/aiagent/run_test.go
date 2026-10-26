@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -38,7 +39,11 @@ func (r *runRepository) AppendMessages(ctx context.Context, _, _, _ uuid.UUID, r
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	r.rows = append(r.rows, rows...)
+	// Match the repository's strictly increasing per-session timestamps.
+	for _, row := range rows {
+		row.CreatedAt = time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC).Add(time.Duration(len(r.rows)) * time.Microsecond)
+		r.rows = append(r.rows, row)
+	}
 	if r.afterAppend != nil {
 		r.afterAppend(ctx)
 	}

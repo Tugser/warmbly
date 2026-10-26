@@ -243,17 +243,21 @@ func (r *agentRepository) AppendMessages(ctx context.Context, orgID, userID, ses
 	defer tx.Rollback(ctx)
 	// Verify the session belongs to this member before appending, so a raw
 	// session id from a mis-wired caller can't write into another org's log.
+	// The row lock keeps a concurrent batch's timestamps from interleaving with this one.
 	var ok bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_sessions WHERE id = $1 AND org_id = $2 AND user_id = $3)`, sessionID, orgID, userID).Scan(&ok); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT true FROM agent_sessions WHERE id = $1 AND org_id = $2 AND user_id = $3 FOR UPDATE`, sessionID, orgID, userID).Scan(&ok); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errors.New("session not found for this member")
+		}
 		return err
 	}
-	if !ok {
-		return errors.New("session not found for this member")
-	}
 	for _, m := range msgs {
+		// Strictly after the session's last row: now() is one value for the whole transaction.
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO agent_messages (session_id, role, content, tokens)
-			VALUES ($1, $2, $3, $4)`, sessionID, m.Role, []byte(m.Content), m.Tokens); err != nil {
+			INSERT INTO agent_messages (session_id, role, content, tokens, created_at)
+			VALUES ($1, $2, $3, $4, GREATEST(clock_timestamp(),
+				(SELECT max(created_at) FROM agent_messages WHERE session_id = $1) + interval '1 microsecond'))`,
+			sessionID, m.Role, []byte(m.Content), m.Tokens); err != nil {
 			return err
 		}
 	}
