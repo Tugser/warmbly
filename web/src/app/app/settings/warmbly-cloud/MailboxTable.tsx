@@ -18,7 +18,7 @@ import { useConfirm } from "@/hooks/context/confirm";
 import { cloudMailboxPickerOpened } from "@/lib/cloudMailboxConnect";
 import { TableSurface, Toggle } from "../_components/SectionShell";
 import { providerLabel, providerSupported } from "./providers";
-import { cloudWarmupPaused } from "@/lib/cloudWarmup";
+import { resolveMailboxWarmup, warmupActivityLabel, warmupUnknown } from "@/lib/mailboxWarmup";
 import { cloudStandingUnavailable } from "@/lib/mailboxStatus";
 
 export default function MailboxTable() {
@@ -66,6 +66,7 @@ export default function MailboxTable() {
         );
     }
     const list = rows.data ?? [];
+    if (rows.isError) return <p className="text-[12.5px] text-slate-500">Cloud warmup status unavailable. Refresh to try again.</p>;
     if (list.length === 0) {
         return <p className="text-[12.5px] text-slate-500">No active mailboxes. Connect one under Mailboxes to enroll it.</p>;
     }
@@ -87,7 +88,10 @@ export default function MailboxTable() {
                         {list.map((row) => {
                             const supported = providerSupported(row.provider) || row.managed;
                             const cloud = row.cloud;
-                            const paused = cloudWarmupPaused(cloud);
+                            const warmup = resolveMailboxWarmup(row, undefined, { connected: true, rowFor: () => row });
+                            const unknown = warmupUnknown(warmup);
+                            const paused = warmup.activity === "paused" || warmup.activity === "receive_only";
+                            const resume = paused || warmup.activity === "off";
                             return (
                                 <motion.tr key={row.id} layout initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="bg-white">
                                     <td className="px-3 py-2.5">
@@ -97,7 +101,7 @@ export default function MailboxTable() {
                                                 {providerLabel(row.provider)}
                                                 {row.managed && " · signed in through Warmbly Cloud"}
                                                 {!supported && " · signed in with this instance's own OAuth app; add it again through Warmbly Cloud to warm it"}
-                                                {row.enrolled && !cloud && " · waiting for the cloud"}
+                                                {row.enrolled && ` · ${warmupActivityLabel[warmup.activity]}`}
                                                 {cloud?.errors && cloud.errors.length > 0 && (
                                                     <span className="inline-flex items-center gap-1 text-amber-700 ml-1">
                                                         <AlertTriangleIcon className="w-3 h-3" />
@@ -108,10 +112,10 @@ export default function MailboxTable() {
                                         </div>
                                     </td>
                                     <td className="px-3 py-2.5 hidden md:table-cell">
-                                        {row.enrolled ? <HealthPill health={cloud?.health ?? null} paused={paused} /> : <span className="text-slate-300">–</span>}
+                                        {row.enrolled ? unknown ? <Pill tone="muted">Unavailable</Pill> : <HealthPill health={cloud?.health ?? null} paused={paused} /> : <span className="text-slate-300">–</span>}
                                     </td>
                                     <td className="px-3 py-2.5 text-right tabular-nums hidden md:table-cell">
-                                        {row.enrolled && cloud ? (
+                                        {row.enrolled && !unknown && cloud ? (
                                             <span className="text-slate-700">
                                                 {cloud.sent_today}
                                                 <span className="text-slate-400"> / {cloud.warmup?.target_volume ?? cloud.settings.base}</span>
@@ -121,7 +125,7 @@ export default function MailboxTable() {
                                         )}
                                     </td>
                                     <td className="px-3 py-2.5 text-right tabular-nums hidden lg:table-cell">
-                                        {row.enrolled && cloud ? (
+                                        {row.enrolled && !unknown && cloud ? (
                                             <span className="text-slate-700" title={`${cloud.replied_7d} replies, ${cloud.spam_placed_7d} landed in spam`}>
                                                 {cloud.sent_7d} sent
                                                 {cloud.spam_placed_7d > 0 && <span className="text-amber-700"> · {cloud.spam_placed_7d} spam</span>}
@@ -132,26 +136,26 @@ export default function MailboxTable() {
                                     </td>
                                     <td className="px-3 py-2.5">
                                         <div className="flex items-center justify-end gap-2">
-                                            {row.enrolled && cloud && (
+                                            {row.enrolled && !unknown && cloud && warmup.activity !== "inactive" && (
                                                 <button
                                                     type="button"
-                                                    title={paused ? "Resume warmup" : "Pause warmup"}
+                                                    title={resume ? "Resume warmup" : "Pause warmup"}
                                                     onClick={() =>
                                                         void run(
                                                             row.id,
-                                                            () => lifecycle.mutateAsync({ id: row.id, action: paused ? "resume" : "pause" }),
-                                                            paused ? "Warmup resumed" : "Warmup paused",
+                                                            () => lifecycle.mutateAsync({ id: row.id, action: resume ? "resume" : "pause" }),
+                                                            resume ? "Warmup resumed" : "Warmup paused",
                                                         )
                                                     }
                                                     className="size-6 rounded-md inline-flex items-center justify-center text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors"
                                                 >
-                                                    {paused ? <PlayIcon className="w-3.5 h-3.5" /> : <PauseIcon className="w-3.5 h-3.5" />}
+                                                    {resume ? <PlayIcon className="w-3.5 h-3.5" /> : <PauseIcon className="w-3.5 h-3.5" />}
                                                 </button>
                                             )}
                                             {busy === row.id ? (
                                                 <Loader2Icon className="w-3.5 h-3.5 animate-spin text-slate-400" />
                                             ) : (
-                                                <Toggle on={row.enrolled} disabled={!supported} onChange={() => flip(row)} />
+                                                <Toggle on={row.enrolled} disabled={!supported || row.enrollment_state === "pending_remove" || row.enrollment_state === "pending_enroll"} onChange={() => flip(row)} />
                                             )}
                                         </div>
                                     </td>
