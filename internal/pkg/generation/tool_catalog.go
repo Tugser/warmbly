@@ -81,9 +81,10 @@ func (c *toolCatalog) instructions() string {
 }
 
 type toolSearchMatch struct {
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	Risk        RiskClass `json:"risk"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Risk        RiskClass      `json:"risk"`
+	InputSchema map[string]any `json:"input_schema"`
 }
 
 type toolSearchResult struct {
@@ -136,7 +137,7 @@ func (c *toolCatalog) find(_ context.Context, args json.RawMessage) (string, err
 	for _, match := range matches[start:end] {
 		tool := match.tool
 		c.active = append(c.active, tool)
-		result.Tools = append(result.Tools, toolSearchMatch{Name: tool.Name, Description: tool.Description, Risk: tool.Risk})
+		result.Tools = append(result.Tools, toolSearchMatch{Name: tool.Name, Description: tool.Description, Risk: tool.Risk, InputSchema: tool.InputSchema})
 	}
 	out, err := json.Marshal(result)
 	return string(out), err
