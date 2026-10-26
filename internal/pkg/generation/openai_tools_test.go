@@ -210,6 +210,7 @@ func TestOpenAIAgentDiscoveredToolPausesAndResumes(t *testing.T) {
 	}
 }
 
+// TestOpenAIAgentDiscoveryKeepsArgumentSchemasAcrossSearches retains required arguments after the active tool page changes.
 func TestOpenAIAgentDiscoveryKeepsArgumentSchemasAcrossSearches(t *testing.T) {
 	tools := catalogTestTools(138)
 	tools[136].InputSchema = map[string]any{

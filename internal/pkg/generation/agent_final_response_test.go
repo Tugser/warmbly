@@ -14,12 +14,14 @@ import (
 
 type agentFixtureTransport struct{ handler http.Handler }
 
+// RoundTrip routes provider requests to deterministic fixtures without external network access.
 func (tr agentFixtureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	w := httptest.NewRecorder()
 	tr.handler.ServeHTTP(w, req)
 	return w.Result(), nil
 }
 
+// agentFixtureProvider exercises each provider adapter against the same local HTTP contract.
 func agentFixtureProvider(kind string, handler http.Handler) Provider {
 	client := &http.Client{Transport: agentFixtureTransport{handler: handler}}
 	if kind == "anthropic" {
@@ -28,6 +30,7 @@ func agentFixtureProvider(kind string, handler http.Handler) Provider {
 	return &openAIProvider{baseURL: "http://provider.test", http: client}
 }
 
+// writeAgentFixture emits equivalent tool and text responses in each provider's wire format.
 func writeAgentFixture(w http.ResponseWriter, kind, text string, calls ...ToolCall) {
 	if kind != "anthropic" {
 		writeAgentResponse(w, kind == "openai-stream", text, calls...)
@@ -43,6 +46,7 @@ func writeAgentFixture(w http.ResponseWriter, kind, text string, calls ...ToolCa
 	})
 }
 
+// TestAgentReservesFinalResponseOnlyWhenRequested keeps chat answers inside the caller's turn and credit budget.
 func TestAgentReservesFinalResponseOnlyWhenRequested(t *testing.T) {
 	for _, kind := range []string{"openai", "openai-stream", "anthropic"} {
 		for _, reserve := range []bool{false, true} {
@@ -109,6 +113,7 @@ func TestAgentReservesFinalResponseOnlyWhenRequested(t *testing.T) {
 	}
 }
 
+// TestAgentReturnsEarlyAnswerWithoutSpendingReservedTurn avoids charging another turn after an answer arrives.
 func TestAgentReturnsEarlyAnswerWithoutSpendingReservedTurn(t *testing.T) {
 	for _, kind := range []string{"openai", "openai-stream", "anthropic"} {
 		t.Run(kind, func(t *testing.T) {
@@ -133,6 +138,7 @@ func TestAgentReturnsEarlyAnswerWithoutSpendingReservedTurn(t *testing.T) {
 	}
 }
 
+// TestAgentRejectsEmptyAnswer requires visible text for a successful chat completion.
 func TestAgentRejectsEmptyAnswer(t *testing.T) {
 	for _, kind := range []string{"openai", "openai-stream", "anthropic"} {
 		t.Run(kind, func(t *testing.T) {
@@ -153,6 +159,7 @@ func TestAgentRejectsEmptyAnswer(t *testing.T) {
 	}
 }
 
+// TestAgentAllowsEmptyStopForToolOnlyCallers preserves research flows that report findings through tools.
 func TestAgentAllowsEmptyStopForToolOnlyCallers(t *testing.T) {
 	for _, kind := range []string{"openai", "openai-stream", "anthropic"} {
 		t.Run(kind, func(t *testing.T) {
@@ -174,6 +181,7 @@ func TestAgentAllowsEmptyStopForToolOnlyCallers(t *testing.T) {
 	}
 }
 
+// TestAgentHonorsStopBeforeReservedFinalResponse keeps the final answer behind the caller's credit gate.
 func TestAgentHonorsStopBeforeReservedFinalResponse(t *testing.T) {
 	for _, kind := range []string{"openai", "openai-stream", "anthropic"} {
 		t.Run(kind, func(t *testing.T) {
@@ -206,6 +214,7 @@ func TestAgentHonorsStopBeforeReservedFinalResponse(t *testing.T) {
 	}
 }
 
+// TestAgentNeverExecutesToolsInReservedResponse refuses tool execution after the tool budget closes.
 func TestAgentNeverExecutesToolsInReservedResponse(t *testing.T) {
 	for _, kind := range []string{"openai", "openai-stream", "anthropic"} {
 		t.Run(kind, func(t *testing.T) {
@@ -230,6 +239,7 @@ func TestAgentNeverExecutesToolsInReservedResponse(t *testing.T) {
 	}
 }
 
+// TestAgentPreservesCompletedToolsWhenFinalResponseFails retains tool evidence alongside later provider errors.
 func TestAgentPreservesCompletedToolsWhenFinalResponseFails(t *testing.T) {
 	for _, kind := range []string{"openai", "openai-stream", "anthropic"} {
 		for _, failure := range []string{"empty", "unexpected_tool", "provider_error"} {

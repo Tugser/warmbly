@@ -103,6 +103,7 @@ func TestForReaderWithholdsResultsOfToolsTheReaderCannotRun(t *testing.T) {
 	}
 }
 
+// TestTranscriptOnlyDescribesDraftToolsAsCreation keeps read results from being presented as newly created resources.
 func TestTranscriptOnlyDescribesDraftToolsAsCreation(t *testing.T) {
 	for _, tc := range []struct{ tool, result, want string }{
 		{"get_campaign_stats", `{"campaign_id":"c1","emails_sent":4}`, `{"campaign_id":"c1","emails_sent":4}`},

@@ -26,15 +26,18 @@ type runRepository struct {
 	afterAppend func(context.Context)
 }
 
+// GetSession returns a snapshot so an older run cannot mutate newer persisted approval state.
 func (r *runRepository) GetSession(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (*models.AgentSession, error) {
 	session := r.session
 	return &session, nil
 }
 
+// LoadTranscript exposes persisted fixture rows in their per-session timestamp order.
 func (r *runRepository) LoadTranscript(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) ([]models.AgentMessageRow, error) {
 	return r.rows, nil
 }
 
+// AppendMessages models cancellation and monotonic timestamps at the transcript storage boundary.
 func (r *runRepository) AppendMessages(ctx context.Context, _, _, _ uuid.UUID, rows []models.AgentMessageRow) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -50,19 +53,23 @@ func (r *runRepository) AppendMessages(ctx context.Context, _, _, _ uuid.UUID, r
 	return nil
 }
 
+// UpdateSessionContext persists approval state for subsequent run and resume calls.
 func (r *runRepository) UpdateSessionContext(_ context.Context, _, _, _ uuid.UUID, sctx models.AgentSessionContext) error {
 	r.session.Context = sctx
 	return nil
 }
 
+// UpdateSessionTitle ignores title writes because these fixtures exercise run completion.
 func (r *runRepository) UpdateSessionTitle(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, string) error {
 	return nil
 }
 
+// GetToolPolicies supplies the explicit always-allow policies needed to exercise completed writes.
 func (r *runRepository) GetToolPolicies(context.Context, uuid.UUID) (map[string]string, error) {
 	return r.policies, nil
 }
 
+// ClearPendingTool rejects canceled requests so stale cleanup cannot remove a newer approval.
 func (r *runRepository) ClearPendingTool(ctx context.Context, _ uuid.UUID, _ uuid.UUID) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -71,6 +78,7 @@ func (r *runRepository) ClearPendingTool(ctx context.Context, _ uuid.UUID, _ uui
 	return nil
 }
 
+// ClaimPendingTool consumes only the matching approval, leaving replay attempts without an action.
 func (r *runRepository) ClaimPendingTool(_ context.Context, _, _ uuid.UUID, callID string) (*models.PendingAgentTool, error) {
 	pending := r.session.Context.Pending
 	if pending == nil || pending.ToolCallID != callID {
@@ -82,10 +90,12 @@ func (r *runRepository) ClaimPendingTool(_ context.Context, _, _ uuid.UUID, call
 
 type runFeatureGate struct{}
 
+// IsPaidOrganization selects the paid model while each test chooses whether credits are metered.
 func (runFeatureGate) IsPaidOrganization(context.Context, uuid.UUID) (bool, *errx.Error) {
 	return true, nil
 }
 
+// TestRunMessageAnswersBeforeBudgetIsExhausted requires a streamed and persisted answer after repeated tool rounds.
 func TestRunMessageAnswersBeforeBudgetIsExhausted(t *testing.T) {
 	const answer = "No sending mailbox matched that address, so I could not verify why it did not send."
 	requests, executions := 0, 0
@@ -155,6 +165,7 @@ func TestRunMessageAnswersBeforeBudgetIsExhausted(t *testing.T) {
 	}
 }
 
+// TestRunMessageReportsEmptyProviderAnswer surfaces an explicit error instead of silently completing the chat.
 func TestRunMessageReportsEmptyProviderAnswer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -180,6 +191,7 @@ func TestRunMessageReportsEmptyProviderAnswer(t *testing.T) {
 	}
 }
 
+// TestRunMessagePreservesCompletedActionsWhenFinalResponseFails keeps completed writes visible after provider failure.
 func TestRunMessagePreservesCompletedActionsWhenFinalResponseFails(t *testing.T) {
 	for _, failure := range []string{"empty", "unexpected_tool", "provider_error"} {
 		t.Run(failure, func(t *testing.T) {
@@ -241,6 +253,7 @@ func TestRunMessagePreservesCompletedActionsWhenFinalResponseFails(t *testing.T)
 	}
 }
 
+// TestResumePreservesApprovedActionWhenProviderFails records the approved action once and refuses approval replay.
 func TestResumePreservesApprovedActionWhenProviderFails(t *testing.T) {
 	requests, writes := 0, 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -294,6 +307,7 @@ func TestResumePreservesApprovedActionWhenProviderFails(t *testing.T) {
 	}
 }
 
+// TestRunMessagePreservesCompletedActionsAfterCancellation protects receipts, refunds, and newer approvals during cleanup.
 func TestRunMessagePreservesCompletedActionsAfterCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -23,6 +23,7 @@ type runCreditLedger struct {
 	keys                                                                    []string
 }
 
+// Consume enforces the fixture balance and records the idempotency key of each charged turn.
 func (l *runCreditLedger) Consume(ctx context.Context, _ uuid.UUID, amount int, _, _ string, _ int, key string) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return l.balance, err
@@ -36,6 +37,7 @@ func (l *runCreditLedger) Consume(ctx context.Context, _ uuid.UUID, amount int, 
 	return l.balance, nil
 }
 
+// Grant records failed-turn refunds and rejects canceled storage contexts.
 func (l *runCreditLedger) Grant(ctx context.Context, _ uuid.UUID, amount int, _ string) (int, *errx.Error) {
 	if ctx.Err() != nil {
 		return l.balance, errx.New(errx.Internal, "credit context is canceled")
@@ -45,6 +47,7 @@ func (l *runCreditLedger) Grant(ctx context.Context, _ uuid.UUID, amount int, _ 
 	return l.balance, nil
 }
 
+// SettleUsage records the charged turns and token usage without introducing external pricing into the fixture.
 func (l *runCreditLedger) SettleUsage(ctx context.Context, _ uuid.UUID, charged int, _ string, tokens int, _, _ string) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -54,6 +57,7 @@ func (l *runCreditLedger) SettleUsage(ctx context.Context, _ uuid.UUID, charged 
 	return 0, nil
 }
 
+// TestRunMessageChargesReservedAnswerWithinBudget covers successful answers, failed-turn refunds, and depleted credits.
 func TestRunMessageChargesReservedAnswerWithinBudget(t *testing.T) {
 	for _, tc := range []struct {
 		name                                                                                   string

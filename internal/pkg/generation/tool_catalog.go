@@ -93,6 +93,7 @@ type toolSearchResult struct {
 	NextOffset   *int              `json:"next_offset,omitempty"`
 }
 
+// find preserves matching argument schemas in the transcript while replacing the active tool page.
 func (c *toolCatalog) find(_ context.Context, args json.RawMessage) (string, error) {
 	var input struct {
 		Query  string `json:"query"`
