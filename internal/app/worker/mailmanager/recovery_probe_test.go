@@ -13,7 +13,7 @@ import (
 	"github.com/warmbly/warmbly/internal/models"
 )
 
-func TestRecoveryProbeFailedReplacementRetainsStoppedButReofferRecovers(t *testing.T) {
+func TestRecoveryProbeTransientReplacementStaysLoadedAndRecovers(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "self_hosted")
 	events := 0
 	m := NewMailManager(func(models.JobEventType, string, any) error { events++; return nil }, nil, nil, nil, nil, nil, nil)
@@ -39,15 +39,12 @@ func TestRecoveryProbeFailedReplacementRetainsStoppedButReofferRecovers(t *testi
 	creds.IMAP = &models.Service{Host: "127.0.0.1", Port: port, Username: "local", Password: "local", Security: models.MailSecurityNone}
 	s.Credentials = &creds
 	retry.SmtpImap, retry.ImapSync = &s, true
-	loadErr := m.AddWMail(t.Context(), &retry)
-	var failure *errx.MailError
-	want := errx.ErrMailServerUnreachableAt(errx.MailConnectionStageIMAPDial, errors.New(errx.MailConnectionReasonRefused))
-	if !errors.As(loadErr, &failure) || failure.Type != want.Type || failure.Code != want.Code ||
-		failure.ResolveMethod != want.ResolveMethod || failure.Message != want.Message || !errx.IsKnownIMAPConnectionMessage(failure.Message) {
-		t.Fatalf("initial unavailable provider: %v", loadErr)
+	if err := m.AddWMail(t.Context(), &retry); err != nil {
+		t.Fatalf("temporary IMAP outage blocked the replacement: %v", err)
 	}
-	if m.Get(d.ID) != old || !m.Has(d.ID) || old.Ctx.Err() == nil {
-		t.Fatal("failed replacement did not retain stopped pointer")
+	next := m.Get(d.ID)
+	if next == nil || next == old || !m.Has(d.ID) || old.Ctx.Err() == nil || !next.SameExecution(&retry) {
+		t.Fatal("replacement did not stop the old execution and install the retryable mailbox")
 	}
 	if _, ok := old.BeginExecution(); ok {
 		t.Fatal("stopped pointer admitted work")
@@ -55,7 +52,7 @@ func TestRecoveryProbeFailedReplacementRetainsStoppedButReofferRecovers(t *testi
 	if old.SameExecution(d) || old.SameExecution(&retry) {
 		t.Fatal("stopped pointer bypasses reload on republish")
 	}
-	old.CaptureError(failure)
+	old.CaptureError(errx.ErrMailServerUnreachable)
 	if events != 0 {
 		t.Fatal("retired pointer emitted a fresh transport report")
 	}
@@ -77,13 +74,44 @@ func TestRecoveryProbeFailedReplacementRetainsStoppedButReofferRecovers(t *testi
 	if err := m.AddWMail(t.Context(), &retry); err != nil {
 		t.Fatal(err)
 	}
-	next := m.Get(d.ID)
-	if next == nil || next == old || next.Ctx.Err() != nil || !next.SameExecution(&retry) {
-		t.Fatal("same reoffered credentials did not recover")
+	if m.Get(d.ID) != next || next.Ctx.Err() != nil {
+		t.Fatal("republish replaced a usable mailbox while sync was retrying")
 	}
 	resumed := retry
 	next.ResumeInto(&resumed)
 	if resumed.Sync.State.LastSyncedAt == nil || !resumed.Sync.State.LastSyncedAt.Equal(stamp) || resumed.Sync.State.BackfillSynced != 7 {
 		t.Fatal("retry lost previous sync evidence")
+	}
+	if err := next.SyncMail(t.Context()); err != nil {
+		t.Fatalf("loaded mailbox could not recover without replacement: %v", err)
+	}
+}
+
+func TestRecoveryProbeRejectedReplacementStopsOldExecution(t *testing.T) {
+	m := NewMailManager(func(models.JobEventType, string, any) error { return nil }, nil, nil, nil, nil, nil, nil)
+	d := smtpPayload()
+	if err := m.AddWMail(t.Context(), d); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.Terminate(d.ID) })
+	old := m.Get(d.ID)
+	rejected := *d
+	rejected.SmtpImap = nil
+	err := m.AddWMail(t.Context(), &rejected)
+	var failure *errx.MailError
+	if !errors.As(err, &failure) || failure.Code != errx.MailErrorCodeInvalidCredentials || m.Get(d.ID) != old {
+		t.Fatalf("invalid replacement bypassed credential failure: %v", err)
+	}
+	if _, ok := old.BeginExecution(); ok {
+		t.Fatal("rejected replacement retained executable old credentials")
+	}
+	if old.SameExecution(d) || old.SameExecution(&rejected) {
+		t.Fatal("stopped pointer bypasses credential reload")
+	}
+	if err := m.AddWMail(t.Context(), d); err != nil {
+		t.Fatal(err)
+	}
+	if next := m.Get(d.ID); next == nil || next == old || !next.SameExecution(d) {
+		t.Fatal("valid reoffer did not recover the stopped execution")
 	}
 }

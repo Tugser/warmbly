@@ -39,8 +39,8 @@ func (h *Handler) AdminMiddleware() gin.HandlerFunc {
 		}
 
 		// The admin panel is an internet-reachable administrative interface, so
-		// every account that reaches it has to have presented a second factor
-		// (CASA 3.3.1). Enforced on the session rather than on enrolment: an
+		// every account that reaches it has to have presented a second factor.
+		// Enforced on the session rather than on enrolment: an
 		// admin who has 2FA switched on but signed in before switching it on
 		// is still holding a single-factor session.
 		//

@@ -12,7 +12,7 @@ import { CloudIcon, InboxIcon, PlusIcon } from "lucide-react";
 import useFeatureAccess from "@/hooks/useFeatureAccess";
 import useAuthConfig from "@/lib/api/hooks/auth/useAuthConfig";
 import { usePoolLinkInstances } from "@/lib/api/hooks/app/cloudlink/useCloudLink";
-import { getPlan } from "@/lib/plans";
+import { getPlan, isWarmupOnlyPlan } from "@/lib/plans";
 import WarmupPlanDialog from "@/components/app/billing/WarmupPlanDialog";
 
 const FREE_MAILBOXES = 10;
@@ -41,7 +41,7 @@ export default function CloudPathsPanel({ mailboxCount, onAdd }: { mailboxCount:
     const allowance = limit ?? FREE_MAILBOXES;
     const canBuy = free && access.billing && access.isOwner;
     const warmup = getPlan("warmup");
-    const onWarmupPlan = access.plan === "warmup";
+    const onWarmupPlan = isWarmupOnlyPlan(access.plan);
 
     const dialog = <WarmupPlanDialog open={planOpen} onClose={() => setPlanOpen(false)} />;
 

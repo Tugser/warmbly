@@ -20,6 +20,8 @@ type TrackedLink struct {
 	// click can be named without re-parsing the email. Empty for image links.
 	Label     string
 	CreatedAt time.Time
+	// OrganizationID is read through the task's mailbox, else the campaign; nil when neither remains.
+	OrganizationID *uuid.UUID
 }
 
 // TrackedLinkRepository is the server-side click-link store. Only the send
@@ -61,16 +63,20 @@ func (r *trackedLinkRepository) CreateBatch(ctx context.Context, links []Tracked
 	return err
 }
 
-// GetByID resolves a ticket to its destination. nil, nil when unknown.
+// GetByID resolves a ticket to its destination and owning organization. nil, nil when unknown.
 func (r *trackedLinkRepository) GetByID(ctx context.Context, id uuid.UUID) (*TrackedLink, error) {
 	query := `
-		SELECT id, task_id, campaign_id, destination, label, created_at
-		FROM tracked_links
-		WHERE id = $1
+		SELECT l.id, l.task_id, l.campaign_id, l.destination, l.label, l.created_at,
+		       COALESCE(ea.organization_id, c.organization_id)
+		FROM tracked_links l
+		LEFT JOIN tasks t ON t.id = l.task_id
+		LEFT JOIN email_accounts ea ON ea.id = t.email_account_id
+		LEFT JOIN campaigns c ON c.id = l.campaign_id
+		WHERE l.id = $1
 	`
 
 	var l TrackedLink
-	err := r.db.QueryRow(ctx, query, id).Scan(&l.ID, &l.TaskID, &l.CampaignID, &l.Destination, &l.Label, &l.CreatedAt)
+	err := r.db.QueryRow(ctx, query, id).Scan(&l.ID, &l.TaskID, &l.CampaignID, &l.Destination, &l.Label, &l.CreatedAt, &l.OrganizationID)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}

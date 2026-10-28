@@ -13,7 +13,7 @@ func TestSSEEmitterDoesNotStoreEvents(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/ai/agent", nil)
-	sseEmitter(c)
+	sseEmitter[writingEvent](c)
 	if got := w.Header().Get("Cache-Control"); got != "no-cache, no-store" {
 		t.Errorf("Cache-Control = %q, want no-cache, no-store", got)
 	}

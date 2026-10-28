@@ -20,8 +20,8 @@ export function createTester(body: {
     /** Joins an existing workspace instead of minting one. Requires role_id. */
     organization_id?: string;
     role_id?: string;
-    /** Days the password works, 1 to 90. Defaults to 30. */
-    password_days?: number;
+    /** Hours the password works, 1 to 48. Defaults to 48. */
+    password_hours?: number;
 }): Promise<CreatedTester> {
     return Request({ method: "POST", url: "/admin/testers", authorization: true, data: body });
 }

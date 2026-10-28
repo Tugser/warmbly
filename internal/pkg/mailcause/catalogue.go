@@ -36,6 +36,7 @@ const (
 	AuthRefused                 = "auth_refused"
 	HostNotFound                = "host_not_found"
 	HostUnreachable             = "host_unreachable"
+	PrivateHost                 = "private_host"
 	PortBlocked                 = "port_blocked"
 	TLSFailed                   = "tls_failed"
 	CleartextRefused            = "cleartext_refused"
@@ -82,19 +83,21 @@ var catalogue = []Cause{
 	{TooManyLogins, "Too many sign-in attempts",
 		"The provider is limiting sign-ins for this account or from this network. Wait 15 to 60 minutes before retrying, and avoid retrying the same failing password repeatedly.", true},
 	{AuthUnavailable, "The server does not take a password here",
-		"The server did not offer password sign-in on this port. Check the host and port: use the provider's submission server (usually port 587 or 465), not the MX server or port 25.", false},
+		"The server did not offer a password sign-in method Warmbly supports (LOGIN, PLAIN or CRAM-MD5) on this port. Check the host and port: use the provider's submission server (usually port 587 or 465), not the MX server or port 25.", false},
 	{AuthRefused, "The server refused the sign-in",
 		"The server refused this username and password. Check both, and whether the provider needs an app password or a username other than the email address.", true},
 	{HostNotFound, "The server name does not exist",
 		"The server hostname could not be found in DNS. Check the spelling of the SMTP and IMAP host.", false},
 	{HostUnreachable, "The server could not be reached",
 		"No connection could be made to the server. Check the host and port, and that the server accepts connections from outside your network.", false},
+	{PrivateHost, "The server is on a private network",
+		"The server's host name points to a private network address, and Warmbly only connects mailboxes to public addresses. Use the host name your provider gives for connecting from outside your network.", false},
 	{PortBlocked, "The mail port looks blocked",
 		"The SMTP port did not answer while IMAP worked, which usually means the port is blocked on the way. Try port 587 with STARTTLS instead of 465 or 25, or check the provider's documented SMTP port.", false},
 	{TLSFailed, "The secure connection failed",
-		"The server did not complete a secure connection. Check the security setting for the port: 465 and 993 use SSL/TLS, 587 and 143 use STARTTLS. Also check that the hostname matches the server's certificate.", false},
+		"The server did not complete a secure connection. Check the security setting for the port: 465 and 993 use SSL/TLS, 587 and 143 use STARTTLS. Also check that the hostname matches the server's certificate. A server with a self-signed or company certificate can be connected on its own certificate from the connect form.", false},
 	{CleartextRefused, "Encryption is required",
-		"The connection was attempted without encryption, which is not allowed here. Use SSL/TLS on 465 or 993, or STARTTLS on 587 or 143.", false},
+		"Warmbly only signs in over an encrypted connection, and this one was not encrypted or the server only offers sign-in without encryption. Use SSL/TLS on 465 or 993, or STARTTLS on 587 or 143.", false},
 	{Timeout, "The server did not answer in time",
 		"The server did not answer before the time ran out. It may be slow or overloaded; retry later, and check the host and port if it keeps happening.", true},
 	{Temporary, "The server asked to retry later",

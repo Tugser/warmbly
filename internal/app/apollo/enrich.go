@@ -38,6 +38,18 @@ func (s *Service) StartEnrichment(ctx context.Context, orgID, connID, userID uui
 	if len(unique) > EnrichCap {
 		return nil, errx.NewWithIdentifier(errx.BadRequest, "apollo_enrich_too_many", "Enrich at most 5,000 contacts at a time")
 	}
+	// A run records only the workspace's own contacts.
+	owned, err := s.Repo.ContactsForEnrichment(ctx, orgID, unique)
+	if err != nil {
+		return nil, err
+	}
+	unique = unique[:0]
+	for _, c := range owned {
+		unique = append(unique, c.ID)
+	}
+	if len(unique) == 0 {
+		return nil, errx.New(errx.BadRequest, "select at least one contact to enrich")
+	}
 	uid := userID
 	run := &models.ApolloEnrichmentRun{
 		OrganizationID:    orgID,

@@ -1298,7 +1298,7 @@ var (
 // partnerEligibleSQL is the predicate for a recipient the draw may reach: an
 // active mailbox that receives, in a standing that is live, or an expired
 // quarantine or block that the gate re-evaluates.
-const poolAuthoritySQL = `
+var poolAuthoritySQL = `
           ea.status = 'active' AND ea.seed_scope IS NULL
           AND wpp.participant_role IN ('sender_receiver', 'recipient_only')
           AND EXISTS (SELECT 1 FROM organizations o WHERE o.id = ea.organization_id
@@ -1307,7 +1307,8 @@ const poolAuthoritySQL = `
           AND NOT EXISTS (SELECT 1 FROM warmup_reputation_ledger l
               WHERE l.organization_id = ea.organization_id AND l.email = lower(btrim(ea.email))
               AND l.cloud_health_state IN ('quarantined', 'blocked')
-              AND (l.cloud_blocked_until IS NULL OR l.cloud_blocked_until > NOW()))`
+              AND (l.cloud_blocked_until IS NULL OR l.cloud_blocked_until > NOW()))
+          AND ` + selfExecutionGateSQL("ea.id")
 
 const testSenderSQL = `(ea.test_mode IS NULL OR ea.test_mode='legacy' OR ea.test_mode='diagnostic' AND ea.test_send_enabled)`
 const testReceiveFlagsSQL = `(ea.test_mode IS NULL OR ea.test_mode='legacy' OR ea.test_mode='diagnostic' AND ea.test_receive_enabled)`
@@ -1354,7 +1355,7 @@ const partnerCandidateColumns = `
 // WarmupPartnerCandidates includes qualified cross-tier partners, already inbound-capped.
 func (r *warmupRepository) WarmupPartnerCandidates(ctx context.Context, poolType string, senderID uuid.UUID) ([]models.WarmupPartnerCandidate, error) {
 	// Eligibility and the sender's workspace in one round trip.
-	var eligible bool
+	var eligible, senderExecuted bool
 	var senderOrg *uuid.UUID
 	err := resultDB(ctx, r.db).QueryRow(ctx, `SELECT EXISTS (
  SELECT 1 FROM warmup_pool_participants wpp
@@ -1362,10 +1363,15 @@ func (r *warmupRepository) WarmupPartnerCandidates(ctx context.Context, poolType
  JOIN email_accounts ea ON ea.id = wpp.email_account_id
  WHERE ea.id = $1 AND wp.pool_type = $2
 	 AND wpp.participant_role='sender_receiver' AND `+testSenderSQL+`
-	AND `+poolEligibleSQL+`), (SELECT organization_id FROM email_accounts WHERE id = $1)`, senderID, poolType).
-		Scan(&eligible, &senderOrg)
+	AND `+poolEligibleSQL+`), (SELECT organization_id FROM email_accounts WHERE id = $1), `+instanceExecutedSQL("$1::uuid"), senderID, poolType).
+		Scan(&eligible, &senderOrg, &senderExecuted)
 	if err != nil || !eligible {
 		return nil, err
+	}
+	// Two instance-executed mailboxes never pair: neither side of the exchange would be observed by Cloud.
+	recipientSQL := partnerEligibleSQL
+	if senderExecuted {
+		recipientSQL += ` AND NOT ` + instanceExecutedSQL("ea.id")
 	}
 
 	cands, err := r.partnerCohort(ctx, partnerCandidateColumns+`
@@ -1374,7 +1380,7 @@ func (r *warmupRepository) WarmupPartnerCandidates(ctx context.Context, poolType
 		JOIN email_accounts ea ON ea.id = wpp.email_account_id
 		WHERE wp.pool_type = $1
 		  AND wpp.email_account_id <> $2
-		  AND `+partnerEligibleSQL,
+		  AND `+recipientSQL,
 		poolType, models.WarmupPartnerOwnTier, poolType, senderID)
 	if err != nil {
 		return nil, err
@@ -1388,7 +1394,7 @@ func (r *warmupRepository) WarmupPartnerCandidates(ctx context.Context, poolType
 			JOIN organizations o ON o.id = ea.organization_id
 			WHERE wp.pool_type = $1
 			  AND ea.organization_id IS DISTINCT FROM $3
-			  AND `+partnerEligibleSQL+`
+			  AND `+recipientSQL+`
 			  AND `+partnerProvenSQL,
 			borrowFrom, models.WarmupPartnerBorrowed, borrowFrom, config.WarmupPoolFallbackMinAgeDays, senderOrg)
 		if err != nil {
@@ -1406,7 +1412,7 @@ func (r *warmupRepository) WarmupPartnerCandidates(ctx context.Context, poolType
 			JOIN warmup_pools wp ON wpp.pool_id = wp.id
 			JOIN email_accounts ea ON ea.id = wpp.email_account_id
 			WHERE wp.pool_type = $1
-			  AND `+partnerEligibleSQL+`
+			  AND `+recipientSQL+`
 			  AND wpp.email_account_id IN (
 			      SELECT wr.sender_account_id
 			      FROM warmup_received wr
@@ -1974,7 +1980,7 @@ func (r *warmupRepository) GetWarmupReceived(ctx context.Context, accountID, int
 // and flag events are keyed on.
 func (r *warmupRepository) ListWarmupMailToRetire(ctx context.Context, defaultDays, limit int) ([]WarmupMailToRetire, error) {
 	query := `
-		SELECT ea.user_id, ea.id, ea.worker_id, wr.internal_id, wr.message_id,
+		SELECT ea.user_id, ea.id, ` + actionWorkerSQL("ea") + `, wr.internal_id, wr.message_id,
 		       COALESCE(m.message_id, ''), ea.warmup_placement, ea.warmup_folder
 		FROM warmup_received wr
 		JOIN email_accounts ea ON ea.id = wr.email_account_id
@@ -1984,7 +1990,7 @@ func (r *warmupRepository) ListWarmupMailToRetire(ctx context.Context, defaultDa
 			LIMIT 1
 		) m ON true
 		WHERE ea.status = 'active'
-		  AND ea.worker_id IS NOT NULL
+		  AND ` + actionRoutableSQL("ea") + `
 		  AND wr.retired_at IS NULL
 		  AND wr.created_at < NOW() - make_interval(days => COALESCE(ea.warmup_retention_days, $1))
 		ORDER BY wr.created_at
@@ -2000,7 +2006,7 @@ func (r *warmupRepository) ListWarmupMailToRetire(ctx context.Context, defaultDa
 // is usually empty there and the worker searches by Message-ID instead.
 func (r *warmupRepository) ListWarmupSentCopiesToRetire(ctx context.Context, defaultDays, limit int) ([]WarmupMailToRetire, error) {
 	query := `
-		SELECT ea.user_id, ea.id, ea.worker_id, wt.token, wt.sent_message_id,
+		SELECT ea.user_id, ea.id, ` + actionWorkerSQL("ea") + `, wt.token, wt.sent_message_id,
 		       COALESCE(m.message_id, ''), ea.warmup_placement, ea.warmup_folder
 		FROM warmup_tokens wt
 		JOIN email_accounts ea ON ea.id = wt.sender_account_id
@@ -2010,7 +2016,7 @@ func (r *warmupRepository) ListWarmupSentCopiesToRetire(ctx context.Context, def
 			LIMIT 1
 		) m ON true
 		WHERE ea.status = 'active'
-		  AND ea.worker_id IS NOT NULL
+		  AND ` + actionRoutableSQL("ea") + `
 		  AND ea.provider <> 'smtp_imap'
 		  AND wt.sent_message_id <> ''
 		  AND wt.sent_retired_at IS NULL
@@ -2084,6 +2090,11 @@ func (r *warmupRepository) PruneWarmupEventsBefore(ctx context.Context, before t
 		 WHERE created_at < $1
 		   AND (sent_message_id = '' OR sent_retired_at IS NOT NULL
 		        OR sender_account_id IN (SELECT id FROM email_accounts WHERE provider = 'smtp_imap'))`, []any{before}},
+		{`DELETE FROM pool_link_commands WHERE status IN ('answered', 'expired', 'cancelled') AND created_at < $1`, []any{before}},
+		// An arrival's handle is how a retiring delete reaches the instance, so it outlives the copy it names.
+		{`DELETE FROM pool_link_arrivals a WHERE a.reported_at < $1
+		 AND NOT EXISTS (SELECT 1 FROM warmup_received wr WHERE wr.email_account_id = a.email_account_id
+		                 AND wr.internal_id = a.internal_id AND wr.retired_at IS NULL)`, []any{before}},
 	} {
 		cmd, err := resultDB(ctx, r.db).Exec(ctx, st.query, st.args...)
 		if err != nil {
@@ -2166,7 +2177,7 @@ type WarmupTamperingToVerify struct {
 
 func (r *warmupRepository) ListUnverifiedDeletions(ctx context.Context, since time.Time, retryAfter time.Duration, limit int) ([]WarmupTamperingToVerify, error) {
 	rows, err := resultDB(ctx, r.db).Query(ctx, `
-		SELECT t.email_account_id, ea.user_id, ea.worker_id, t.message_id
+		SELECT t.email_account_id, ea.user_id, `+actionWorkerSQL("ea")+`, t.message_id
 		FROM warmup_tampering_events t
 		JOIN email_accounts ea ON ea.id = t.email_account_id
 		WHERE t.verified_at IS NULL
@@ -2175,7 +2186,7 @@ func (r *warmupRepository) ListUnverifiedDeletions(ctx context.Context, since ti
 		  AND (t.verify_requested_at IS NULL OR t.verify_requested_at < NOW() - make_interval(secs => $2))
 		  AND t.message_id <> ''
 		  AND ea.status = 'active'
-		  AND ea.worker_id IS NOT NULL
+		  AND `+actionRoutableSQL("ea")+`
 		ORDER BY t.created_at
 		LIMIT $3`, since, retryAfter.Seconds(), limit)
 	if err != nil {

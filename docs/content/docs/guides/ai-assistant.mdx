@@ -132,7 +132,7 @@ Some actions always ask, and **Always allow** is never offered for them:
 - starting or stopping a campaign, enabling an automation, starting warmup, releasing a mailbox's send hold or a lead's hold, and adding leads to a campaign, since each puts mail in motion
 - inviting a member, changing a member's role, and creating or editing an API key
 
-Inviting a member, changing a member's role and rotating a webhook signing secret also need the same recent confirmation as doing it in Settings: if you have not confirmed it is you in the last five minutes, Remie stops and asks you to confirm in the dashboard first. From Slack, do these in the dashboard.
+Inviting or removing a member, changing a member's role, creating or editing an API key or a webhook endpoint, and rotating a webhook signing secret also need the same recent confirmation as doing it in Settings: if you have not confirmed it is you in the last five minutes, Remie stops and asks you to confirm in the dashboard first. From Slack, do these in the dashboard.
 - tools from [connected MCP servers](/guides/connect-mcp-tools/)
 
 A send's card shows the sending mailbox, the recipient, the subject, and the plain and HTML bodies, and only that exact message goes out, from that mailbox, to that recipient. If the conversation gets a newer message before you approve a reply, the reply is refused and Remie asks again. It refuses suppressed addresses.

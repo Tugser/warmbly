@@ -28,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/warmbly/warmbly/internal/infrastructure/db"
 	"github.com/warmbly/warmbly/internal/sandbox"
+	"github.com/warmbly/warmbly/internal/seed"
 )
 
 func main() {
@@ -43,6 +44,11 @@ func main() {
 	if *vendorsOnly {
 		serveVendors(ctx, cfg)
 		return
+	}
+
+	// The sandbox seed plants a login with a published password.
+	if err := seed.DevEnvironment(); err != nil {
+		log.Fatalf("Refusing to run the sandbox: %v", err)
 	}
 
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)

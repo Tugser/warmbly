@@ -530,7 +530,8 @@ services:
     environment:
       <<: *selfhost-env
       # Dovecot in the sandbox profile uses a self-signed cert. Set
-      # MAIL_TLS_INSECURE=false once you only connect real mailboxes.
+      # MAIL_TLS_INSECURE=false once you only connect real mailboxes; one on a
+      # self-signed server can then opt out in its own settings, pinning its key.
       MAIL_TLS_INSECURE: ${MAIL_TLS_INSECURE:-true}
       ENCRYPTED_KEYS_PROVIDER: http
       ENCRYPTED_KEYS_BACKEND_URL: ${ENCRYPTED_KEYS_BACKEND_URL:-http://backend:8080}

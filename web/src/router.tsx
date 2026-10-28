@@ -162,12 +162,8 @@ const registerIndex = createRoute({
     component: loginPage,
     staticData: { title: "Create your account" },
 });
-const registerConfirm = createRoute({
-    getParentRoute: () => registerRoute,
-    path: "confirm",
-    component: lazyRouteComponent(() => import("./app/auth/register/confirm/page")),
-    staticData: { title: "Confirm your email" },
-});
+// The code step is part of the sign-in and sign-up pages; these paths only forward there.
+const registerConfirm = forward(registerRoute, "confirm", "/auth/register");
 const loginRoute = createRoute({ getParentRoute: () => authRoute, path: "login", component: loginLayout });
 const loginIndex = createRoute({
     getParentRoute: () => loginRoute,
@@ -175,12 +171,7 @@ const loginIndex = createRoute({
     component: loginPage,
     staticData: { title: "Sign in" },
 });
-const loginConfirm = createRoute({
-    getParentRoute: () => loginRoute,
-    path: "confirm",
-    component: lazyRouteComponent(() => import("./app/auth/login/confirm/page")),
-    staticData: { title: "Verify your email" },
-});
+const loginConfirm = forward(loginRoute, "confirm", "/auth/login");
 // Landing for the single-use code an SSO redirect carries.
 const ssoRoute = createRoute({
     getParentRoute: () => authRoute,

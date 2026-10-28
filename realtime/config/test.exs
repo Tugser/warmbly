@@ -10,7 +10,8 @@ config :realtime,
   jwt_secret: "test_jwt_secret",
   pubsub_enabled: false,
   # Count rate-limit hits in memory: the suite must run with no Redis.
-  rate_limit_counter: Realtime.Test.Counter
+  rate_limit_counter: Realtime.Test.Counter,
+  ticket_store: Realtime.Test.Counter
 
 config :realtime, auth_repo: Realtime.Test.AuthRepo
 config :realtime, subscription_repo: Realtime.Test.AuthRepo

@@ -3,7 +3,6 @@ package handler
 import (
 	"errors"
 	"io"
-	"mime"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/warmbly/warmbly/internal/infrastructure/storage"
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/pkg/imagetype"
 )
 
 // ServePublicObject streams a publicly-readable blob (avatar, org logo, form
@@ -42,13 +42,12 @@ func (h *Handler) ServePublicObject(c *gin.Context) {
 	}
 	defer body.Close()
 
-	// The Content-Type is derived from the key's extension, and every upload
-	// handler forces that extension from a server-side image allowlist. An
-	// extension outside the allowlist therefore means the key did not come from
-	// an upload handler, and the only safe thing to serve is a download.
-	ct := mime.TypeByExtension(filepath.Ext(key))
-	if ct != "" && servableInline[strings.ToLower(filepath.Ext(key))] {
-		c.Header("Content-Type", ct)
+	// The Content-Type is derived from the key's extension, and every writer
+	// of a public key forces that extension from the format its bytes decoded
+	// as. An extension outside the raster set therefore means the key did not
+	// come from one, and the only safe thing to serve is a download.
+	if f, ok := imagetype.ByExt(filepath.Ext(key)); ok {
+		c.Header("Content-Type", f.MIME)
 		c.Header("Content-Disposition", "inline")
 	} else {
 		c.Header("Content-Type", "application/octet-stream")
@@ -72,18 +71,6 @@ func (h *Handler) ServePublicObject(c *gin.Context) {
 	c.Header("Cache-Control", "public, max-age=31536000, immutable")
 	c.Status(http.StatusOK)
 	_, _ = io.Copy(c.Writer, body)
-}
-
-// servableInline is the set of extensions the upload handlers can produce. A
-// public object outside it is handed over as a download rather than rendered,
-// so a key that somehow carries .svg or .html cannot become script on this
-// origin.
-var servableInline = map[string]bool{
-	".png":  true,
-	".jpg":  true,
-	".jpeg": true,
-	".gif":  true,
-	".webp": true,
 }
 
 // isPublicKey guards the /public route to the key prefixes PutPublic writes, so

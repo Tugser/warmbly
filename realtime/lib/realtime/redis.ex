@@ -106,6 +106,13 @@ defmodule Realtime.Redis do
   end
 
   @doc """
+  Set a key only if it is absent. {:ok, "OK"} when set, {:ok, nil} when it was already there.
+  """
+  def set_nx(key, ttl_seconds) do
+    command(["SET", key, "1", "NX", "EX", ttl_seconds])
+  end
+
+  @doc """
   Increment a counter with TTL. Used for rate limiting.
   Returns the new count or nil on failure.
   """

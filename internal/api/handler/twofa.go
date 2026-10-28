@@ -14,7 +14,9 @@ import (
 // so a session cannot guess its way to a valid code on these routes either.
 func (h *Handler) withCodeBudget(c *gin.Context, uid uuid.UUID, check func() *errx.Error) *errx.Error {
 	ctx := c.Request.Context()
-	if !h.AuthService.ReserveReauthAttempt(ctx, uid) {
+	if ok, xerr := h.AuthService.ReserveReauthAttempt(ctx, uid); xerr != nil {
+		return xerr
+	} else if !ok {
 		return errx.ErrAuthLimit
 	}
 	xerr := check()

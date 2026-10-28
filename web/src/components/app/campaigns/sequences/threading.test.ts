@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type Sequence from "@/lib/api/models/app/campaigns/sequences/Sequence";
 import type ABVariant from "@/lib/api/models/app/campaigns/ABVariant";
-import { conversationOpenerFor, conversationSubjectFor, openerArmSubjects } from "./threading";
+import { conversationOpenerFor, conversationSubjectFor, earlierEmailsFor, openerArmSubjects } from "./threading";
 
 const step = (id: string, subject: string, thread_reply = true, kind: Sequence["kind"] = "email") =>
     ({ id, subject, thread_reply, kind }) as Sequence;
@@ -21,6 +21,49 @@ describe("conversationOpenerFor", () => {
     it("has no opener for the first email", () => {
         expect(conversationOpenerFor(steps, 0)).toBeNull();
         expect(conversationSubjectFor(steps, 0)).toBeNull();
+    });
+});
+
+// A step routed by `then` (the catch-all) and `branches` (an opened check each).
+const node = (id: string, kind: Sequence["kind"], then: string | null, branches: string[] = []) =>
+    ({
+        id,
+        subject: id,
+        body_plain: `Body ${id}`,
+        kind,
+        conditions: {
+            branches: [
+                ...branches.map((t, i) => ({ branch_id: `${id}${i}`, target_step_id: t, conditions: [{ field: "opened", operator: "ever" }] })),
+                { branch_id: `${id}else`, target_step_id: then, conditions: [] },
+            ],
+        },
+    }) as Sequence;
+
+const subjects = (steps: Sequence[], id: string) => earlierEmailsFor(steps, steps.findIndex((s) => s.id === id)).map((e) => e.subject);
+
+describe("earlierEmailsFor", () => {
+    it("lists every email before the step in a straight sequence", () => {
+        const steps = [node("a", "email", "b"), node("b", "email", "c"), node("c", "email", null)];
+        expect(subjects(steps, "a")).toEqual([]);
+        expect(subjects(steps, "c")).toEqual(["a", "b"]);
+    });
+
+    it("leaves out an email the contact only gets on another branch", () => {
+        // a -> router: opened -> b, otherwise -> c; both go on to d.
+        const steps = [
+            node("a", "email", "r"),
+            node("r", "wait", "c", ["b"]),
+            node("b", "email", "d"),
+            node("c", "email", "d"),
+            node("d", "email", null),
+        ];
+        expect(subjects(steps, "c")).toEqual(["a"]);
+        expect(subjects(steps, "d")).toEqual(["a"]);
+    });
+
+    it("has nothing for a step the flow never reaches", () => {
+        const steps = [node("a", "email", null), node("b", "email", null)];
+        expect(subjects(steps, "b")).toEqual([]);
     });
 });
 

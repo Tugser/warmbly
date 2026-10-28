@@ -22,6 +22,7 @@ import (
 
 	"github.com/warmbly/warmbly/internal/api/middleware"
 	"github.com/warmbly/warmbly/internal/errx"
+	"github.com/warmbly/warmbly/internal/infrastructure/storage"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
@@ -180,7 +181,9 @@ func (h *Handler) UploadCampaignAttachment(c *gin.Context) {
 	}
 
 	key := models.AttachmentObjectKey(campaignID, filename)
-	if err := h.Storage.Put(c.Request.Context(), key, bytes.NewReader(body), mimeType); err != nil {
+	// The row keeps the declared type for the outgoing MIME part; the object
+	// itself is never stored as something a browser would run.
+	if err := h.Storage.Put(c.Request.Context(), key, bytes.NewReader(body), storage.DownloadType(mimeType)); err != nil {
 		errx.JSON(c, errx.InternalError())
 		return
 	}
@@ -282,7 +285,7 @@ func (h *Handler) DeleteCampaignAttachment(c *gin.Context) {
 func (h *Handler) attachmentResponse(c *gin.Context, att *models.CampaignAttachment) gin.H {
 	url := ""
 	if h.Storage != nil {
-		if u, err := h.Storage.PresignedGetURL(c.Request.Context(), att.S3Key, attachmentURLTTL); err == nil {
+		if u, err := h.Storage.PresignedGetURL(c.Request.Context(), att.S3Key, attachmentURLTTL, storage.Download{Filename: att.Filename, ContentType: att.MimeType}); err == nil {
 			url = u
 		}
 	}

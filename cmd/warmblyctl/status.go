@@ -204,7 +204,10 @@ func nextSteps(s *instanceStatus) []string {
 		steps = append(steps, "Registration is closed (DISABLE_REGISTRATION=true), so the signup form refuses everyone, invitation or not. The commands above still work.")
 	}
 	if !s.MailDelivers {
-		steps = append(steps, "Mail does not leave this instance, so invitations and reset emails are printed in the backend log instead of being delivered.")
+		steps = append(steps,
+			"Mail does not leave this instance, so platform email is printed in the backend log instead of being delivered.",
+			"Login codes appear there in full. Outside APP_ENV=dev the log removes link tokens, so copy an invitation link from its row under Settings > Members > Pending invitations, and reset a password with the command above.",
+		)
 	}
 	return steps
 }

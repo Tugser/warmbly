@@ -304,6 +304,18 @@ func TestParseClientConfig(t *testing.T) {
 	if parseClientConfig([]byte(bad), "x.example") != nil {
 		t.Fatal("an invalid hostname must be refused")
 	}
+
+	withDTD := `<?xml version="1.0"?><!DOCTYPE clientConfig [<!ENTITY h "mail.host.example">]>` + tls465
+	if parseClientConfig([]byte(withDTD), "x.example") != nil {
+		t.Fatal("a document carrying a DTD must be refused")
+	}
+	entity := strings.ReplaceAll(tls465, "mail.host.example", "&h;")
+	if parseClientConfig([]byte(entity), "x.example") != nil {
+		t.Fatal("an undeclared entity must be refused")
+	}
+	if parseClientConfig([]byte(tls465+strings.Repeat(" ", maxBody)), "x.example") != nil {
+		t.Fatal("an oversized document must be refused")
+	}
 }
 
 func TestDetectAutoconfig(t *testing.T) {

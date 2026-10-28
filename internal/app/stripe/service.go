@@ -53,6 +53,8 @@ type StripeService interface {
 	// Checkout. discountCode is optional ("" for none); when set, a one-off
 	// Stripe coupon (money discounts) or trial extension is applied.
 	CreateCheckoutSession(ctx context.Context, userID uuid.UUID, orgID uuid.UUID, priceID, successURL, cancelURL, discountCode string) (*stripe.CheckoutSession, *errx.Error)
+	// CreateCheckoutSessionUntil is CreateCheckoutSession whose session lapses at expiresAt (30 minutes to 24 hours ahead).
+	CreateCheckoutSessionUntil(ctx context.Context, userID uuid.UUID, orgID uuid.UUID, priceID, successURL, cancelURL, discountCode string, expiresAt time.Time) (*stripe.CheckoutSession, *errx.Error)
 	CreatePortalSession(ctx context.Context, customerID, returnURL string) (string, *errx.Error)
 
 	// Subscriptions
@@ -232,6 +234,10 @@ func (s *stripeService) ApplyCustomerCredit(ctx context.Context, customerID stri
 }
 
 func (s *stripeService) CreateCheckoutSession(ctx context.Context, userID uuid.UUID, orgID uuid.UUID, priceID, successURL, cancelURL, discountCode string) (*stripe.CheckoutSession, *errx.Error) {
+	return s.CreateCheckoutSessionUntil(ctx, userID, orgID, priceID, successURL, cancelURL, discountCode, time.Time{})
+}
+
+func (s *stripeService) CreateCheckoutSessionUntil(ctx context.Context, userID uuid.UUID, orgID uuid.UUID, priceID, successURL, cancelURL, discountCode string, expiresAt time.Time) (*stripe.CheckoutSession, *errx.Error) {
 	// Get or create customer
 	sub, err := s.subRepo.GetByOrganizationID(ctx, orgID)
 	if err != nil {
@@ -276,6 +282,9 @@ func (s *stripeService) CreateCheckoutSession(ctx context.Context, userID uuid.U
 			Address: stripe.String("auto"),
 			Name:    stripe.String("auto"),
 		}
+	}
+	if !expiresAt.IsZero() {
+		params.ExpiresAt = stripe.Int64(expiresAt.Unix())
 	}
 
 	// Auto-apply the invitee's referral discount when none was supplied, so a

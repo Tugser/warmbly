@@ -67,6 +67,8 @@ func (s *emailService) runTrackingDomainSweep(ctx context.Context, staleAfter ti
 		lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		res := trackdns.VerifyWith(lookupCtx, trackdns.DefaultResolver, t.Domain, target)
 		cancel()
+		// A mailbox that is not verified yet needs the workspace's TXT proof too.
+		res = s.customHosts.Gate(ctx, res, t.OrganizationID, t.Verified)
 		if res.Code == trackdns.CodeLookupError {
 			// A resolver hiccup is not evidence of a broken record, and
 			// revoking on one would move a working customer's links back to

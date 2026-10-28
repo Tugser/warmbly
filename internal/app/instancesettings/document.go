@@ -6,12 +6,12 @@ import (
 	"github.com/warmbly/warmbly/internal/config"
 )
 
-// Bounds on the invitation lifetime. An hour is the shortest window a person
-// can realistically act in; 30 days is the longest a bearer link should live.
+// Bounds on the invitation lifetime. An invitation is an initial credential, so
+// it lives at most 48 hours; a stored longer value is read back as 48.
 const (
 	TTLHoursMin     = 1
-	TTLHoursMax     = 720
-	TTLHoursDefault = 168
+	TTLHoursMax     = 48
+	TTLHoursDefault = 48
 )
 
 // Invitations holds the invite-flow knobs.

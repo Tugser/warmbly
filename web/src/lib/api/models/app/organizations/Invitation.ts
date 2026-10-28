@@ -13,4 +13,6 @@ export default interface Invitation {
     created_at: Date
     expires_at: Date
     access?: MemberAccess
+    // Listed so it can be sent again; it grants nothing.
+    expired?: boolean
 }

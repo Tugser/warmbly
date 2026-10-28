@@ -42,6 +42,11 @@ const (
 	MailProbeCleartext = "cleartext"
 	// MailProbeTimeout: the budget ran out before the server answered.
 	MailProbeTimeout = "timeout"
+
+	// MailProbeDetailPrivateHost is the unreachable detail for a server on a non-public address.
+	MailProbeDetailPrivateHost = "the host name points to a private network address, and Warmbly only connects mailboxes to public addresses"
+	// MailProbeDetailPinMismatch starts the TLS detail for a certificate other than the confirmed one.
+	MailProbeDetailPinMismatch = "the server's certificate does not match the one confirmed for this mailbox"
 )
 
 // EmailValidationLeg is one side (SMTP or IMAP) of a worker's verdict.
@@ -56,6 +61,8 @@ type EmailValidationLeg struct {
 	// with STARTTLS. On a passing verdict the mailbox is stored with them.
 	Port     int    `json:"port,omitempty"`
 	Security string `json:"security,omitempty"`
+	// Certificate is what the server presented over TLS, when it got that far.
+	Certificate *MailCertificate `json:"certificate,omitempty"`
 }
 
 // EmailValidationVerdict is the worker's answer to an EventWorkerEmailValidation,

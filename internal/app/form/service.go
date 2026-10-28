@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/warmbly/warmbly/internal/app/customhost"
+	"github.com/warmbly/warmbly/internal/app/owndomain"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/pkg/geo"
@@ -76,8 +78,12 @@ type Service interface {
 	SetGeo(g *geo.Client)
 	SetLinks(r repository.FormLinkRepository)
 	SetEvents(r repository.FormEventRepository)
+	// SetCustomHosts gates a new forms domain on the workspace TXT proof.
+	SetCustomHosts(c *customhost.Checker)
 	SetDomains(d OrgStore)
 	SetCampaigns(k CampaignKeeper)
+	// SetOwnDomains wires the workspace's own domains, the only ones a redirect after submit may go to.
+	SetOwnDomains(r *owndomain.Resolver)
 }
 
 // ContactReader is the slice of the contact repository the link paths need.
@@ -139,6 +145,7 @@ type service struct {
 	links         repository.FormLinkRepository
 	events        repository.FormEventRepository
 	domains       OrgStore
+	own           *owndomain.Resolver
 	contacts      ContactAdder
 	contactReader ContactReader
 	captcha       CaptchaVerifier
@@ -146,6 +153,7 @@ type service struct {
 	realtime      RealtimePublisher
 	webhooks      WebhookDispatcher
 	geo           *geo.Client
+	customHosts   *customhost.Checker
 }
 
 func NewService(repo repository.FormRepository) Service {
@@ -163,14 +171,64 @@ func (s *service) SetLinks(r repository.FormLinkRepository)   { s.links = r }
 func (s *service) SetEvents(r repository.FormEventRepository) { s.events = r }
 func (s *service) SetDomains(d OrgStore)                      { s.domains = d }
 func (s *service) SetCampaigns(k CampaignKeeper)              { s.campaigns = k }
+func (s *service) SetOwnDomains(r *owndomain.Resolver)        { s.own = r }
+func (s *service) SetCustomHosts(c *customhost.Checker)       { s.customHosts = c }
+
+// ownDomains are the workspace's own domains; none when the resolver is not wired, so no redirect is followed.
+func (s *service) ownDomains(ctx context.Context, orgID uuid.UUID) ([]string, *errx.Error) {
+	if s.own == nil {
+		return nil, nil
+	}
+	return s.own.Domains(ctx, orgID)
+}
+
+// markRedirect records whether each form's redirect is on the workspace's own domains, and so followed.
+func (s *service) markRedirect(ctx context.Context, orgID uuid.UUID, forms ...*models.Form) {
+	var own []string
+	loaded := false
+	for _, f := range forms {
+		if f == nil || f.RedirectURL == "" {
+			continue
+		}
+		if !loaded {
+			var xerr *errx.Error
+			if own, xerr = s.ownDomains(ctx, orgID); xerr != nil {
+				return
+			}
+			loaded = true
+		}
+		active := owndomain.Within(owndomain.TargetHost(f.RedirectURL), own)
+		f.RedirectURLActive = &active
+	}
+}
+
+// redirectFor is the redirect a visitor is sent to after submitting, or "" when it is not on the workspace's own domains.
+func (s *service) redirectFor(ctx context.Context, f *models.Form) string {
+	if f.RedirectURL == "" {
+		return ""
+	}
+	own, xerr := s.ownDomains(ctx, f.OrganizationID)
+	if xerr != nil || !owndomain.Within(owndomain.TargetHost(f.RedirectURL), own) {
+		return ""
+	}
+	return f.RedirectURL
+}
 
 // formTrendDays is the sparkline window on the forms list.
 const formTrendDays = 14
 
 func (s *service) List(ctx context.Context, orgID uuid.UUID) ([]models.Form, *errx.Error) {
 	forms, xerr := s.repo.List(ctx, orgID)
-	if xerr != nil || s.events == nil {
+	if xerr != nil {
 		return forms, xerr
+	}
+	ptrs := make([]*models.Form, len(forms))
+	for i := range forms {
+		ptrs[i] = &forms[i]
+	}
+	s.markRedirect(ctx, orgID, ptrs...)
+	if s.events == nil {
+		return forms, nil
 	}
 	// Attach the event rollups; losing them must never fail the list.
 	aggs, aerr := s.events.ListAggregates(ctx, orgID, formTrendDays)
@@ -190,7 +248,11 @@ func (s *service) List(ctx context.Context, orgID uuid.UUID) ([]models.Form, *er
 }
 
 func (s *service) Get(ctx context.Context, orgID, id uuid.UUID) (*models.Form, *errx.Error) {
-	return s.repo.Get(ctx, orgID, id)
+	f, xerr := s.repo.Get(ctx, orgID, id)
+	if xerr == nil {
+		s.markRedirect(ctx, orgID, f)
+	}
+	return f, xerr
 }
 
 func (s *service) Create(ctx context.Context, orgID uuid.UUID, createdBy *uuid.UUID, name string) (*models.Form, *errx.Error) {
@@ -259,6 +321,15 @@ func (s *service) Update(ctx context.Context, orgID, id uuid.UUID, in *models.Fo
 		if xerr != nil {
 			return nil, xerr
 		}
+		if u != "" && u != f.RedirectURL {
+			own, xerr := s.ownDomains(ctx, orgID)
+			if xerr != nil {
+				return nil, xerr
+			}
+			if !owndomain.Within(owndomain.TargetHost(u), own) {
+				return nil, owndomain.Refusal()
+			}
+		}
 		f.RedirectURL = u
 	}
 	if in.CampaignID.Set {
@@ -306,7 +377,11 @@ func (s *service) Update(ctx context.Context, orgID, id uuid.UUID, in *models.Fo
 			return nil, xerr
 		}
 	}
-	return s.repo.Update(ctx, orgID, f)
+	out, xerr := s.repo.Update(ctx, orgID, f)
+	if xerr == nil {
+		s.markRedirect(ctx, orgID, out)
+	}
+	return out, xerr
 }
 
 // publishable refuses to put a form online that cannot collect anything.
@@ -331,7 +406,11 @@ func (s *service) SetAsset(ctx context.Context, orgID, id uuid.UUID, kind, url s
 	default:
 		return nil, errx.New(errx.BadRequest, "kind must be logo, cover or background")
 	}
-	return s.repo.UpdateAssets(ctx, orgID, id, logo, cover, background)
+	f, xerr := s.repo.UpdateAssets(ctx, orgID, id, logo, cover, background)
+	if xerr == nil {
+		s.markRedirect(ctx, orgID, f)
+	}
+	return f, xerr
 }
 
 func (s *service) Delete(ctx context.Context, orgID, id uuid.UUID) *errx.Error {
@@ -371,7 +450,7 @@ func (s *service) Submit(ctx context.Context, publicID string, answers map[strin
 	if xerr != nil {
 		return nil, xerr
 	}
-	ok := &SubmitResult{Message: f.SuccessMessage, RedirectURL: f.RedirectURL}
+	ok := &SubmitResult{Message: f.SuccessMessage, RedirectURL: s.redirectFor(ctx, f)}
 
 	// Traps: pretend success so a bot learns nothing and stops probing.
 	if meta.HoneypotFilled {

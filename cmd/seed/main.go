@@ -38,7 +38,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -74,16 +73,10 @@ var (
 )
 
 func main() {
-	// This seeder plants accounts with published passwords (dev@warmbly.com and
-	// a super-admin with a known API key), which is exactly what it is for. The
-	// binary ships inside the release backend image, so the one thing it must
-	// never do is run against a real deployment by accident.
-	//
-	// APP_ENV unset counts as dev, matching cmd/backend/boot.go, so `make dev`
-	// keeps working with no extra variable.
-	if env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))); env != "" &&
-		env != "dev" && env != "development" && env != "local" {
-		log.Fatalf("Refusing to seed: APP_ENV=%s. This seeder creates accounts with published credentials and is only for local development.", env)
+	// This seeder plants accounts with published passwords and ships inside the
+	// release backend image, so it runs only where APP_ENV says development.
+	if err := seed.DevEnvironment(); err != nil {
+		log.Fatalf("Refusing to seed: %v", err)
 	}
 
 	dsn := os.Getenv("PRIMARY_DB")

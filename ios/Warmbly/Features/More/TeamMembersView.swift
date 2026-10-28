@@ -59,6 +59,7 @@ struct TeamMembersView: View {
     @State private var search = ""
     @State private var showInvite = false
     @State private var memberPendingRemoval: TeamMember?
+    @State private var memberAwaitingReauth: TeamMember?
     @State private var actionError: String?
 
     private var canManage: Bool { env.session.can(.manageTeam) }
@@ -104,6 +105,14 @@ struct TeamMembersView: View {
             }
             .sheet(isPresented: $showInvite) {
                 MoreInviteMemberSheet(store: store)
+            }
+            .sheet(item: $memberAwaitingReauth) { member in
+                ReauthSheet(
+                    reason: "Removing a member needs a recent sign-in.",
+                    actionTitle: "Confirm and remove"
+                ) {
+                    Task { await remove(member) }
+                }
             }
             .confirmationDialog(
                 "Remove member",
@@ -407,6 +416,8 @@ struct TeamMembersView: View {
     private func remove(_ member: TeamMember) async {
         do {
             try await store.removeMember(env.api, userID: member.userID)
+        } catch let error as APIError where error.code == "reauth_required" {
+            memberAwaitingReauth = member
         } catch {
             actionError = error.localizedDescription
         }

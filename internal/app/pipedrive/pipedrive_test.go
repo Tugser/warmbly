@@ -202,17 +202,18 @@ func TestVerifyAppToken(t *testing.T) {
 		return tok
 	}
 	call := AppCall{CompanyID: "77", UserID: "12", Resource: "person", RecordID: "3"}
-	good := sign(jwt.SigningMethodHS256, []byte("secret"), jwt.MapClaims{"userId": float64(12), "companyId": "77"})
+	now := float64(time.Now().Unix())
+	good := sign(jwt.SigningMethodHS256, []byte("secret"), jwt.MapClaims{"userId": float64(12), "companyId": "77", "iat": now})
 	if !s.VerifyAppToken(good, call) {
 		t.Fatal("a token Pipedrive signed for this user and company verifies")
 	}
 	if s.VerifyAppToken(good, AppCall{CompanyID: "77", UserID: "13"}) {
 		t.Fatal("a token names one user; the query cannot swap in another")
 	}
-	if s.VerifyAppToken(sign(jwt.SigningMethodHS256, []byte("other"), jwt.MapClaims{"userId": "12", "companyId": "77"}), call) {
+	if s.VerifyAppToken(sign(jwt.SigningMethodHS256, []byte("other"), jwt.MapClaims{"userId": "12", "companyId": "77", "iat": now}), call) {
 		t.Fatal("a token signed with another secret is refused")
 	}
-	if s.VerifyAppToken(sign(jwt.SigningMethodHS512, []byte("secret"), jwt.MapClaims{"userId": "12", "companyId": "77"}), call) {
+	if s.VerifyAppToken(sign(jwt.SigningMethodHS512, []byte("secret"), jwt.MapClaims{"userId": "12", "companyId": "77", "iat": now}), call) {
 		t.Fatal("only HS256 is accepted")
 	}
 	expired := sign(jwt.SigningMethodHS256, []byte("secret"), jwt.MapClaims{"userId": "12", "companyId": "77", "exp": float64(time.Now().Add(-time.Hour).Unix())})
@@ -221,5 +222,25 @@ func TestVerifyAppToken(t *testing.T) {
 	}
 	if New(Deps{}).VerifyAppToken(good, call) {
 		t.Fatal("without a client secret nothing verifies")
+	}
+
+	at := func(d time.Duration) float64 { return float64(time.Now().Add(d).Unix()) }
+	lifetimes := []struct {
+		name   string
+		claims jwt.MapClaims
+		ok     bool
+	}{
+		{"neither iat nor exp", jwt.MapClaims{}, false},
+		{"stale iat", jwt.MapClaims{"iat": at(-time.Hour)}, false},
+		{"iat in the future", jwt.MapClaims{"iat": at(time.Hour)}, false},
+		{"stale iat with a live exp", jwt.MapClaims{"iat": at(-time.Hour), "exp": at(time.Hour)}, false},
+		{"exp within a day", jwt.MapClaims{"exp": at(time.Hour)}, true},
+		{"exp beyond a day", jwt.MapClaims{"exp": at(48 * time.Hour)}, false},
+	}
+	for _, tc := range lifetimes {
+		tc.claims["userId"], tc.claims["companyId"] = "12", "77"
+		if got := s.VerifyAppToken(sign(jwt.SigningMethodHS256, []byte("secret"), tc.claims), call); got != tc.ok {
+			t.Errorf("%s: verified = %v, want %v", tc.name, got, tc.ok)
+		}
 	}
 }

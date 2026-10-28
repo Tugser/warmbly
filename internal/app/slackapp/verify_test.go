@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -32,6 +34,37 @@ func TestSlackVerifyCallbackOriginIsStateBound(t *testing.T) {
 		if s.OAuthReturnOrigin(ctx, "state") != "" {
 			t.Fatal("untrusted origin must not route")
 		}
+	}
+}
+
+// A verification state is taken at most once, however many callbacks race for it.
+func TestVerifyStateIsTakenOnce(t *testing.T) {
+	g := newGuard(nil)
+	ctx := context.Background()
+	g.put(ctx, verifyKey("state"), "v", time.Minute)
+
+	var wg sync.WaitGroup
+	var got atomic.Int32
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if g.take(ctx, verifyKey("state")) == "v" {
+				got.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if got.Load() != 1 {
+		t.Fatalf("state taken %d times, want 1", got.Load())
+	}
+	if g.take(ctx, verifyKey("state")) != "" || g.get(ctx, verifyKey("state")) != "" {
+		t.Fatal("a taken state must be gone")
+	}
+
+	g.put(ctx, verifyKey("expired"), "v", -time.Second)
+	if g.take(ctx, verifyKey("expired")) != "" {
+		t.Fatal("an expired state must not be taken")
 	}
 }
 

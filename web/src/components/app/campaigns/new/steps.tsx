@@ -7,6 +7,7 @@ import {
     CalendarClockIcon,
     CheckIcon,
     ChevronDownIcon,
+    GaugeIcon,
     Loader2Icon,
     MailIcon,
     PlusIcon,
@@ -46,8 +47,9 @@ import {
 } from "./draft";
 import { ChoiceCard, SectionLabel, SendingWindowFields, StepIntro, SwitchRow, TimezoneField, type Patch } from "./fields";
 import EstimateTimeline from "./EstimateTimeline";
-import { BottleneckNote, SenderList, WarmupNote } from "./EstimateInsights";
-import { estimateHeadline } from "./estimateText";
+import { BottleneckNote, FinishSooner, MailboxMix, SenderList, WarmupNote } from "./EstimateInsights";
+import { estimateHeadline, paceLabel, rampStart } from "./estimateText";
+import { htmlToPlain } from "@/components/app/campaigns/sequences/emailPreview";
 
 export type EstimateState = {
     data: CampaignEstimateResult | undefined;
@@ -286,6 +288,14 @@ function EmailsEditor({
 }) {
     const index = Math.min(selected, draft.emails.length - 1);
     const email = draft.emails[index];
+    // What the prospect has read before this email, for AI follow-ups.
+    const earlier = React.useMemo(
+        () =>
+            draft.emails
+                .slice(0, index)
+                .map((e) => ({ subject: e.subject, body: e.body_plain || htmlToPlain(e.body_html) })),
+        [draft.emails, index],
+    );
     const update = (i: number, p: Partial<Draft["emails"][number]>) =>
         patch((d) => ({ emails: d.emails.map((e, idx) => (idx === i ? { ...e, ...p } : e)) }));
     const add = (wait: number) => {
@@ -414,7 +424,9 @@ function EmailsEditor({
                 bodyCode={email.body_code}
                 onBodyCodeChange={(code) => update(index, { body_code: code })}
                 subjectPlaceholder={index === 0 ? undefined : "Leave blank to reply in the same thread"}
-                bodyPlaceholder={index === 0 ? undefined : "Just bumping this in case it slipped past, {{.FirstName}}."}
+                bodyPlaceholder={index === 0 ? undefined : "One more idea on this, {{.FirstName}}. …"}
+                earlierEmails={earlier}
+                replyInThread={index > 0 && !email.subject.trim()}
             />
         </div>
     );
@@ -657,6 +669,7 @@ export function ReviewStep({
     const hasLeads = draft.segmentIds.length > 0 || existingLeads > 0;
     const headline = estimateHeadline(e, { steps, hasLeads, tz });
     const totalDays = written.slice(1).reduce((n, x) => n + Math.max(0, x.wait_after), 0);
+    const start = e ? rampStart(e) : null;
 
     const rows: { key: StepKey; icon: typeof UsersIcon; title: string; value: string; warn?: boolean }[] = [
         {
@@ -693,7 +706,7 @@ export function ReviewStep({
             value: e
                 ? e.mailboxes === 0
                     ? "No active mailbox"
-                    : `${plural(e.mailboxes, "mailbox", "mailboxes")}, maximum ${draft.dailyLimit}/day each; actual volume follows each mailbox's sending plan${e.held > 0 ? ` (${e.held} held)` : ""}`
+                    : `${plural(e.mailboxes, "mailbox", "mailboxes")}, ${start !== null && start < draft.dailyLimit ? `${start}/day each to start, up to ${draft.dailyLimit} as leads reply` : `up to ${draft.dailyLimit}/day each`}${e.held > 0 ? ` (${e.held} held)` : ""}`
                 : "…",
             warn: !!e && (e.mailboxes === 0 || e.held > 0),
         },
@@ -720,20 +733,30 @@ export function ReviewStep({
                     <>
                         <div className="flex items-start gap-3">
                             <div className="min-w-0 flex-1">
-                                <p className={cn("text-[16px] font-semibold tracking-[-0.01em]", headline.tone === "warn" ? "text-amber-900" : "text-slate-900")}>
-                                    {headline.title}
-                                </p>
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                    <p className={cn("text-[16px] font-semibold tracking-[-0.01em]", headline.tone === "warn" ? "text-amber-900" : "text-slate-900")}>
+                                        {headline.title}
+                                    </p>
+                                    <PaceChip e={e} />
+                                </div>
                                 <p className="text-[12px] text-slate-500 mt-0.5 leading-relaxed">{headline.detail}</p>
                             </div>
                             {estimate.loading && <Loader2Icon className="w-3.5 h-3.5 animate-spin text-slate-300 shrink-0 mt-1" />}
                         </div>
                         {e && e.timeline.some((d) => d.sends > 0) && (
-                            <EstimateTimeline days={e.timeline} showFollowUps={steps > 1} className="mt-4" />
+                            <EstimateTimeline
+                                days={e.timeline}
+                                showFollowUps={steps > 1}
+                                showWarmup
+                                mailboxes={e.mailboxes}
+                                className="mt-4"
+                            />
                         )}
                         {e && (
-                            <div className="mt-4 space-y-2">
-                                <BottleneckNote e={e} tz={tz} />
-                                <WarmupNote e={e} />
+                            <div className="mt-4 space-y-3">
+                                <BottleneckNote e={e} limit={draft.dailyLimit} />
+                                <FinishSooner e={e} tz={tz} className="pt-1" />
+                                <MailboxMix e={e} limit={draft.dailyLimit} />
                             </div>
                         )}
                     </>
@@ -811,6 +834,7 @@ export function LaunchPlanRail({
                                 <p className={cn("text-[13.5px] font-semibold leading-snug", headline.tone === "warn" ? "text-amber-900" : "text-slate-900")}>
                                     {headline.title}
                                 </p>
+                                <PaceChip e={e} className="mt-1" />
                                 <p className="text-[11.5px] text-slate-500 mt-1 leading-relaxed">{headline.detail}</p>
                             </div>
                         )}
@@ -824,12 +848,24 @@ export function LaunchPlanRail({
                             {e.steady_capacity > 0 && <Fact label="Full speed" value={`${e.steady_capacity.toLocaleString()}/day`} />}
                             {e.full_capacity_at && <Fact label="Reached" value={fmtDay(e.full_capacity_at, tz)} />}
                         </dl>
-                        <BottleneckNote e={e} tz={tz} />
+                        <BottleneckNote e={e} limit={draft.dailyLimit} />
+                        <FinishSooner e={e} tz={tz} />
                         <WarmupNote e={e} />
                     </>
                 )}
             </div>
         </aside>
+    );
+}
+
+function PaceChip({ e, className }: { e: CampaignEstimateResult | undefined; className?: string }) {
+    const label = paceLabel(e);
+    if (!label) return null;
+    return (
+        <span className={cn("inline-flex items-center gap-1 h-5 px-1.5 rounded bg-slate-100 text-slate-600 text-[10.5px] font-medium", className)}>
+            <GaugeIcon className="w-3 h-3 text-slate-400" />
+            {label}
+        </span>
     );
 }
 

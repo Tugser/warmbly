@@ -23,6 +23,9 @@ const (
 	projectionExactDays = 56
 	// otherCampaignLookbackDays is the history other campaigns' demand is read from.
 	otherCampaignLookbackDays = 7
+	// replyScenarioPercent is the reply rate the faster-finish scenario assumes,
+	// a common one for cold outreach.
+	replyScenarioPercent = 3
 	// defaultWarmupStartMinute and defaultWarmupEndMinute stand in for a
 	// mailbox with no warmup window of its own.
 	defaultWarmupStartMinute = 8 * 60
@@ -142,9 +145,9 @@ type senderDay struct {
 	graduation, other, health, spacing, behaviorLoss, held int
 }
 
-// warmupOnDay is the warmup mail a mailbox sends on its local day while it
-// backs a live campaign, and the spans it is spread over.
-func warmupOnDay(p *projectedSender, localNoon time.Time) (int, []span) {
+// warmupOnDay is the warmup mail a mailbox sends on its local day, while it
+// backs a live campaign or not, and the spans it is spread over.
+func warmupOnDay(p *projectedSender, localNoon time.Time, inCampaign bool) (int, []span) {
 	a := p.acct
 	if !a.IsWarmingActive() || p.state == models.EstimateSenderHealthHold {
 		return 0, nil
@@ -156,7 +159,7 @@ func warmupOnDay(p *projectedSender, localNoon time.Time) (int, []span) {
 	if a.Warmup != nil {
 		days = max(0, int(localNoon.Sub(*a.Warmup).Hours()/24))
 	}
-	n := warmupramp.Target(true, a.WarmupBase, a.WarmupIncrease, a.WarmupMax, days, true)
+	n := warmupramp.Target(true, a.WarmupBase, a.WarmupIncrease, a.WarmupMax, days, inCampaign)
 	n = warmupramp.Apply(n, warmupramp.HealthVolumeMultiplier(p.health))
 	startMin, endMin := parseTimeOfDay(a.WarmupStartTime), parseTimeOfDay(a.WarmupEndTime)
 	if p.bhv.Enabled {
@@ -187,7 +190,7 @@ func projectSenderDay(p *projectedSender, spans []span, midnight, rampStart time
 	noon := midnight.Add(12 * time.Hour)
 	// Warmup keeps running on the side, on every warmup day, on the same
 	// spacing clock as campaign sends.
-	w, wSpans := warmupOnDay(p, noon.In(p.loc))
+	w, wSpans := warmupOnDay(p, noon.In(p.loc), true)
 	d.warmup = w
 	if len(spans) == 0 {
 		return d
@@ -306,6 +309,7 @@ func (s *schedulerService) ProjectCampaign(ctx context.Context, in CampaignProje
 		Steps:      1 + len(in.StepWaits),
 		Timeline:   []models.CampaignEstimateDay{},
 		Senders:    []models.CampaignEstimateSender{},
+		Scenarios:  []models.CampaignEstimateScenario{},
 	}
 	out.TotalSends = out.Recipients * out.Steps
 
@@ -380,6 +384,7 @@ func (s *schedulerService) ProjectCampaign(ctx context.Context, in CampaignProje
 		senders = append(senders, p)
 	}
 	out.OtherCampaignsPerDay = int(math.Round(otherPerDay))
+	out.Warmup.ReplyRate = warmupramp.BoostedReplyRate
 
 	// The calendar, in the campaign's clock.
 	loc := pass.location(campaign.ClockTimezone())
@@ -408,8 +413,29 @@ func (s *schedulerService) ProjectCampaign(ctx context.Context, in CampaignProje
 
 	exact := make([][]senderDay, projectionExactDays)
 	poolExact := make([]int, projectionExactDays)
+	// openExact is the pool with no reply-earned ceiling, everyExact with the
+	// campaign's window on every day of the week: the two speed-up scenarios.
+	openExact := make([]int, projectionExactDays)
+	everyExact := make([]int, projectionExactDays)
 	warmupExact := make([]int, projectionExactDays)
 	sendingExact := make([]bool, projectionExactDays)
+	everyDay, widened := everyDayWindows(windows)
+	roomOn := func(i int) int {
+		if i == 0 && startsToday {
+			return orgRoomToday
+		}
+		return orgRoom
+	}
+	// capPool applies what holds the whole pool: workspace risk and the plan's daily limit.
+	capPool := func(i, total int) int {
+		if pass.risk.BlocksSending() {
+			return 0
+		}
+		if room := roomOn(i); room >= 0 && total > room {
+			return room
+		}
+		return total
+	}
 	firstFull := -1
 	var lossOrg int
 	for i := 0; i < projectionExactDays; i++ {
@@ -420,40 +446,47 @@ func (s *schedulerService) ProjectCampaign(ctx context.Context, in CampaignProje
 			spans = clipSpans(spans, start)
 		}
 		sendingExact[i] = len(spans) > 0
+		var everySpans []span
+		if !sendingExact[i] && widened {
+			everySpans = campaignSpans(everyDay, mid)
+			if i == 0 {
+				everySpans = clipSpans(everySpans, start)
+			}
+		}
 		row := make([]senderDay, len(senders))
-		total := 0
+		total, open, every := 0, 0, 0
 		for j, p := range senders {
 			row[j] = projectSenderDay(p, spans, mid, startDay, isToday)
 			total += row[j].sends
 			warmupExact[i] += row[j].warmup
-		}
-		if pass.risk.BlocksSending() {
-			total = 0
-		}
-		room := orgRoom
-		if isToday {
-			room = orgRoomToday
-		}
-		if room >= 0 && total > room {
-			if firstFull < 0 && !isToday && sendingExact[i] {
-				lossOrg = total - room
+			if p.hasCold {
+				unramped := *p
+				unramped.hasCold = false
+				open += projectSenderDay(&unramped, spans, mid, startDay, isToday).sends
+			} else {
+				open += row[j].sends
 			}
-			total = room
+			if len(everySpans) > 0 {
+				every += projectSenderDay(p, everySpans, mid, startDay, isToday).sends
+			}
+		}
+		if room := roomOn(i); !pass.risk.BlocksSending() && room >= 0 && total > room && firstFull < 0 && !isToday && sendingExact[i] {
+			lossOrg = total - room
 		}
 		exact[i] = row
-		poolExact[i] = total
+		poolExact[i] = capPool(i, total)
+		openExact[i] = capPool(i, open)
+		everyExact[i] = poolExact[i]
+		if !sendingExact[i] {
+			everyExact[i] = capPool(i, every)
+		}
 		if firstFull < 0 && !isToday && sendingExact[i] {
 			firstFull = i
 		}
 	}
 
 	// Steady state is the last simulated week; later days repeat it.
-	capacityOn := func(i int) int {
-		if i < projectionExactDays {
-			return poolExact[i]
-		}
-		return poolExact[projectionExactDays-7+(i-projectionExactDays)%7]
-	}
+	capacityOn := repeatWeek(poolExact)
 	for i := projectionExactDays - 7; i < projectionExactDays; i++ {
 		out.SteadyCapacity = max(out.SteadyCapacity, poolExact[i])
 	}
@@ -502,20 +535,24 @@ func (s *schedulerService) ProjectCampaign(ctx context.Context, in CampaignProje
 		if p.held {
 			out.Held++
 		}
-		w := 0
+		w, without := 0, 0
 		for i := 0; i < 7 && i < projectionExactDays; i++ {
 			w = max(w, exact[i][j].warmup)
+			mid := time.Date(startDay.Year(), startDay.Month(), startDay.Day()+i, 12, 0, 0, 0, loc)
+			n, _ := warmupOnDay(p, mid.In(p.loc), false)
+			without = max(without, n)
 		}
 		if w > 0 {
 			out.Warmup.Mailboxes++
 			out.Warmup.PerDay += w
+			out.Warmup.PerDayWithout += without
 		}
 		if len(out.Senders) >= models.CampaignEstimateSendersMax {
 			continue
 		}
 		sender := models.CampaignEstimateSender{
 			ID: p.acct.ID, Email: p.acct.Email, Provider: p.acct.Provider, State: p.state,
-			FirstDayCap: first, SteadyCap: steady, WarmupPerDay: w,
+			FirstDayCap: first, SteadyCap: steady, WarmupPerDay: w, WarmupWithout: without,
 		}
 		if firstFull >= 0 && first < steady {
 			for i := firstFull; i < projectionExactDays; i++ {
@@ -543,6 +580,43 @@ func (s *schedulerService) ProjectCampaign(ctx context.Context, in CampaignProje
 		return out, nil
 	}
 	sim := simulateLeads(capacityOn, out.Recipients, in.StepWaits, projectionHorizonDays)
+	dayAt := func(i int) *time.Time {
+		at := time.Date(startDay.Year(), startDay.Month(), startDay.Day()+i, 0, 0, 0, 0, loc)
+		return &at
+	}
+	// Each scenario is offered only when it finishes sooner than the plan as set.
+	offer := func(kind string, value int, alt leadSim) {
+		if alt.finishDay < 0 || (sim.finishDay >= 0 && alt.finishDay >= sim.finishDay) {
+			return
+		}
+		out.Scenarios = append(out.Scenarios, models.CampaignEstimateScenario{Kind: kind, Value: value, FinishAt: dayAt(alt.finishDay)})
+	}
+	if out.Ramping > 0 {
+		openOn := repeatWeek(openExact)
+		ramping := out.Ramping
+		offer(models.EstimateScenarioReplies, replyScenarioPercent, simulateLeadsWith(func(i int, past []simDay) int {
+			base, top := capacityOn(i), openOn(i)
+			if top <= base {
+				return base
+			}
+			// Replies to the last week's first emails each lift one mailbox by one,
+			// and no mailbox climbs faster than ColdRampIncrement a day.
+			firsts := 0
+			for k := max(0, i-7); k < i; k++ {
+				firsts += past[k].first
+			}
+			extra := min(firsts*replyScenarioPercent/100, ramping*warmupramp.ColdRampIncrement*i)
+			return min(top, base+extra)
+		}, out.Recipients, in.StepWaits, projectionHorizonDays))
+	}
+	if n := len(senders); n > 0 {
+		offer(models.EstimateScenarioMoreMailboxes, n, simulateLeads(func(i int) int {
+			return capPool(i, 2*capacityOn(i))
+		}, out.Recipients, in.StepWaits, projectionHorizonDays))
+	}
+	if widened {
+		offer(models.EstimateScenarioEveryDay, 7, simulateLeads(repeatWeek(everyExact), out.Recipients, in.StepWaits, projectionHorizonDays))
+	}
 	for i, d := range sim.days {
 		if i >= models.CampaignEstimateTimelineMax {
 			break
@@ -584,6 +658,40 @@ func fullCapacityEvidenceKnown(senders []*projectedSender) bool {
 	return true
 }
 
+// repeatWeek reads a simulated stretch day by day, then repeats its last week.
+func repeatWeek(days []int) func(int) int {
+	return func(i int) int {
+		if i < len(days) {
+			return days[i]
+		}
+		return days[len(days)-7+(i-len(days))%7]
+	}
+}
+
+// everyDayWindows gives every weekday without a window the first window the
+// campaign has, so a weekdays-only schedule becomes a seven-day one. widened
+// is false when every day already sends.
+func everyDayWindows(w models.ScheduleWindows) (models.ScheduleWindows, bool) {
+	if w.IsEmpty() {
+		return w, false
+	}
+	var tmpl []models.TimeInterval
+	for _, day := range w {
+		if len(day) > 0 {
+			tmpl = day
+			break
+		}
+	}
+	widened := false
+	for d := range w {
+		if len(w[d]) == 0 {
+			w[d] = tmpl
+			widened = true
+		}
+	}
+	return w, widened
+}
+
 type simDay struct{ first, followUps int }
 
 type leadSim struct {
@@ -599,6 +707,12 @@ type leadSim struct {
 // wait of zero can go out the same day. finishDay is -1 when the horizon ends
 // first.
 func simulateLeads(capacity func(day int) int, recipients int, in []int, horizon int) leadSim {
+	return simulateLeadsWith(func(day int, _ []simDay) int { return capacity(day) }, recipients, in, horizon)
+}
+
+// simulateLeadsWith is simulateLeads with a capacity that may read the days
+// already simulated.
+func simulateLeadsWith(capacity func(day int, past []simDay) int, recipients int, in []int, horizon int) leadSim {
 	steps := 1 + len(in)
 	waits := make([]int, len(in))
 	maxWait := 0
@@ -615,7 +729,7 @@ func simulateLeads(capacity func(day int) int, recipients int, in []int, horizon
 	outstanding := recipients * steps
 	res := leadSim{firstTouchDay: -1, finishDay: -1}
 	for i := 0; i < horizon && outstanding > 0; i++ {
-		c := max(0, capacity(i))
+		c := max(0, capacity(i, res.days))
 		var day simDay
 		for k := 1; k < steps; k++ {
 			backlog[k] += due[k][i]

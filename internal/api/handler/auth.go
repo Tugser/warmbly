@@ -235,6 +235,31 @@ func (h *Handler) ResetPasswordStart(c *gin.Context) {
 	c.Status(http.StatusOK)
 }
 
+// ResetPasswordSession exchanges the emailed link token, sent in the body, for
+// the reset session the confirm step takes.
+func (h *Handler) ResetPasswordSession(c *gin.Context) {
+	var data auth.ResetPasswordExchange
+	if err := c.ShouldBindJSON(&data); err != nil {
+		errx.Handle(c, errx.InvalidBody(err))
+		return
+	}
+	if data.Token == "" {
+		errx.Handle(c, errx.ErrToken)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), authRequestTimeout)
+	defer cancel()
+
+	sess, err := h.AuthService.ResetPasswordSession(ctx, data.Token)
+	if err != nil {
+		errx.Handle(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, sess)
+}
+
 func (h *Handler) ResetPasswordConfirm(c *gin.Context) {
 	var data auth.ResetPasswordConfirm
 

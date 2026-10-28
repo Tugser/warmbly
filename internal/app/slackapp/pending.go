@@ -38,12 +38,13 @@ func (s *Service) holdAsk(ctx context.Context, orgID uuid.UUID, code string, q *
 
 // takeAsk returns and forgets the question held under code, if any.
 func (s *Service) takeAsk(ctx context.Context, orgID uuid.UUID, code string) *ask {
-	key := heldAskKey(orgID, code)
-	sealed := s.guard.get(ctx, key)
-	if sealed == "" || s.cipher == nil {
+	if s.cipher == nil {
 		return nil
 	}
-	s.guard.del(ctx, key)
+	sealed := s.guard.take(ctx, heldAskKey(orgID, code))
+	if sealed == "" {
+		return nil
+	}
 	c, err := s.cipher.Cipher(ctx, orgID)
 	if err != nil {
 		return nil

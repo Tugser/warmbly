@@ -240,7 +240,7 @@ func checkSetupLinkOutstanding(ctx context.Context, d Deps, in Input) *Finding {
 	}
 	return result(CategoryAccess, SeverityInfo, "A setup link is outstanding",
 		fmt.Sprintf("This instance has no accounts yet. A single-use setup link is live for %s; "+
-			"find it with `make claim` or in the backend log.", humanizeDuration(ttl)),
+			"`warmblyctl setup-link` prints a fresh one and retires it.", humanizeDuration(ttl)),
 		docsFirstOwner)
 }
 

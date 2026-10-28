@@ -51,6 +51,8 @@ type APIKeyService interface {
 	Update(ctx context.Context, orgID, keyID uuid.UUID, data *models.UpdateAPIKey) (*models.APIKey, *errx.Error)
 	Revoke(ctx context.Context, orgID, keyID uuid.UUID, reason string) *errx.Error
 	Delete(ctx context.Context, orgID, keyID uuid.UUID) *errx.Error
+	// RevokeUserCredentials revokes every active key userID created, in every workspace.
+	RevokeUserCredentials(ctx context.Context, userID uuid.UUID) error
 
 	// Validation
 	ValidateKey(ctx context.Context, rawKey string) (*models.APIKey, *errx.Error)
@@ -230,6 +232,16 @@ func (s *apiKeyService) Update(ctx context.Context, orgID, keyID uuid.UUID, data
 func (s *apiKeyService) Revoke(ctx context.Context, orgID, keyID uuid.UUID, reason string) *errx.Error {
 	// Keys are looked up in the database on every request, so a revoke takes effect on the next one.
 	return s.repo.Revoke(ctx, orgID, keyID, reason)
+}
+
+// userCredentialsRevokedReason is recorded on a key its creator ended with a password change or reset.
+const userCredentialsRevokedReason = "revoked by its creator with a password change or reset"
+
+func (s *apiKeyService) RevokeUserCredentials(ctx context.Context, userID uuid.UUID) error {
+	if _, xerr := s.repo.RevokeCreatedBy(ctx, userID, userCredentialsRevokedReason); xerr != nil {
+		return xerr
+	}
+	return nil
 }
 
 // Delete removes a revoked or expired key from the workspace for good, along

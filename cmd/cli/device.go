@@ -103,9 +103,9 @@ func pollDeviceFlow(ctx context.Context, client *api.Client, start *deviceStart)
 			if api.StatusOf(err) == http.StatusNotFound {
 				return nil, fmt.Errorf("the code %s is no longer valid. Run `warmbly auth login` again.", start.UserCode)
 			}
-			// A rate limit or a blip must not end a sign-in someone is
-			// standing at; back off and keep waiting.
-			if api.StatusOf(err) == http.StatusTooManyRequests || api.StatusOf(err) == 0 {
+			// A rate limit, a brief outage or a blip must not end a sign-in
+			// someone is standing at; back off and keep waiting.
+			if st := api.StatusOf(err); st == http.StatusTooManyRequests || st == http.StatusServiceUnavailable || st == 0 {
 				interval += time.Second
 				continue
 			}

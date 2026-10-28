@@ -83,6 +83,28 @@ func TestAlwaysAskTools(t *testing.T) {
 	}
 }
 
+// A tool whose REST route needs a fresh confirmation needs the same one, for a session; an API key passes.
+func TestFreshAuthTools(t *testing.T) {
+	r := aiGateRegistry()
+	for _, name := range []string{
+		"invite_member", "update_member_role", "remove_member", "create_api_key", "update_api_key",
+		"create_webhook", "update_webhook", "rotate_webhook_secret",
+	} {
+		tool, ok := r.Get(name)
+		if !ok {
+			t.Errorf("%s is not registered", name)
+			continue
+		}
+		if !tool.FreshAuth {
+			t.Errorf("%s runs without a fresh confirmation", name)
+			continue
+		}
+		if _, err := tool.run(context.Background(), Invocation{}, nil); err != ErrToolNeedsFreshAuth {
+			t.Errorf("%s on a stale session = %v", name, err)
+		}
+	}
+}
+
 // Tools that return a secret declare it, so the assistant never holds it.
 func TestSecretFieldsDeclared(t *testing.T) {
 	r := aiGateRegistry()

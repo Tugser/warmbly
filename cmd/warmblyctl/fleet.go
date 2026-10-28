@@ -28,6 +28,14 @@ func fleetUsage(w *os.File) {
   warmblyctl fleet version             What version the fleet should be running.
   warmblyctl fleet version <tag>       Pin the whole fleet to a tag.
   warmblyctl fleet channel <name>      Follow stable, dev, or pinned.
+  warmblyctl fleet rollout start <tag> Move the fleet in stages: one canary, then waves.
+                                       --digests key=sha256:...,... --canary 1 --waves 100
+                                       --bake 30m --deadline 15m
+  warmblyctl fleet rollout status      Stage, admitted nodes, and why it halted.
+  warmblyctl fleet rollout advance     Admit the next stage now, skipping the bake.
+  warmblyctl fleet rollout halt        Stop admitting; admitted nodes return to From.
+  warmblyctl fleet rollout abort       Discard the rollout, leaving the fleet on From.
+  warmblyctl fleet env-status          Whether every node has applied the current env.
 
 Adding a machine is two commands: issue a token here, then on that machine run
 
@@ -61,6 +69,10 @@ func runFleet(ctx context.Context, args []string) error {
 		return runFleetVersion(ctx, args[1:])
 	case "channel":
 		return runFleetChannel(ctx, args[1:])
+	case "rollout":
+		return runFleetRollout(ctx, args[1:])
+	case "env-status":
+		return runFleetEnvStatus(ctx, args[1:])
 	}
 	fleetUsage(os.Stderr)
 	return fmt.Errorf("unknown fleet subcommand %q", args[0])

@@ -13,6 +13,13 @@ interface DeniedDetail {
     code?: string;
 }
 
+const STANDING_TITLES: Record<string, string> = {
+    account_suspended: "Account suspended",
+    account_sending_suspended: "Sending is turned off for your account",
+    account_workspace_create_suspended: "You can't create workspaces",
+    workspace_sending_suspended: "Sending is paused for this workspace",
+};
+
 export default function PermissionDeniedModal() {
     const [open, setOpen] = React.useState(false);
     const [message, setMessage] = React.useState("");
@@ -35,7 +42,10 @@ export default function PermissionDeniedModal() {
     // is fixed under Settings > Security by the person themselves, so the
     // "ask an admin" advice would be wrong; link them there instead.
     const isMFA = code === "admin_mfa_required";
-    const isPlan = !isMFA && /\b(plan|upgrade|trial|subscription|paid)\b/i.test(message);
+    // A restriction on the account or workspace is lifted by support, not by
+    // a role, so the server's own message is the whole explanation.
+    const standing = code ? STANDING_TITLES[code] : undefined;
+    const isPlan = !isMFA && !standing && /\b(plan|upgrade|trial|subscription|paid)\b/i.test(message);
     const close = () => setOpen(false);
 
     return (
@@ -88,11 +98,11 @@ export default function PermissionDeniedModal() {
                                 ? "Upgrade required"
                                 : isMFA
                                   ? "Two-factor authentication required"
-                                  : "You don't have permission"}
+                                  : (standing ?? "You don't have permission")}
                         </h3>
                         <p className="text-[12.5px] text-slate-500 leading-relaxed mt-1.5">
                             {message}
-                            {!isPlan && !isMFA && (
+                            {!isPlan && !isMFA && !standing && (
                                 <>
                                     {" "}
                                     Ask a workspace admin or the owner to grant you access from{" "}

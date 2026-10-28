@@ -48,6 +48,8 @@ type DomainRedirectRepository interface {
 	Due(ctx context.Context, limit int) ([]models.DomainRedirect, error)
 	// Lookup is the target for a verified host this instance serves: the domain itself, or its www when included.
 	Lookup(ctx context.Context, host string) (string, bool, error)
+	// LookupServed is Lookup with the workspace and linked instance the redirect belongs to.
+	LookupServed(ctx context.Context, host string) (*models.DomainRedirectLookup, bool, error)
 
 	// The Cloud side: rows a linked instance asked Cloud to serve.
 	ListLinked(ctx context.Context, instanceID uuid.UUID) ([]models.DomainRedirect, error)
@@ -356,20 +358,28 @@ func (r *domainRedirectRepository) CloudServedElsewhere(ctx context.Context, org
 }
 
 func (r *domainRedirectRepository) Lookup(ctx context.Context, host string) (string, bool, error) {
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	query := `
-		SELECT target_url FROM domain_redirects
-		WHERE verified AND served_by = 'instance' AND (domain = $1 OR (include_www AND 'www.' || domain = $1))
-		LIMIT 1`
-	var target string
-	if err := r.DB.QueryRow(ctx, query, host).Scan(&target); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", false, nil
-		}
-		db.CaptureError(err, query, nil, "queryrow")
+	got, ok, err := r.LookupServed(ctx, host)
+	if err != nil || !ok {
 		return "", false, err
 	}
-	return target, true, nil
+	return got.TargetURL, true, nil
+}
+
+func (r *domainRedirectRepository) LookupServed(ctx context.Context, host string) (*models.DomainRedirectLookup, bool, error) {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	query := `
+		SELECT target_url, organization_id, linked_instance_id FROM domain_redirects
+		WHERE verified AND served_by = 'instance' AND (domain = $1 OR (include_www AND 'www.' || domain = $1))
+		LIMIT 1`
+	var out models.DomainRedirectLookup
+	if err := r.DB.QueryRow(ctx, query, host).Scan(&out.TargetURL, &out.OrganizationID, &out.LinkedInstanceID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, nil
+		}
+		db.CaptureError(err, query, nil, "queryrow")
+		return nil, false, err
+	}
+	return &out, true, nil
 }
 
 func (r *domainRedirectRepository) ListLinked(ctx context.Context, instanceID uuid.UUID) ([]models.DomainRedirect, error) {

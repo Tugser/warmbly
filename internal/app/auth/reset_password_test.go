@@ -1,10 +1,14 @@
 package auth
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+	"github.com/warmbly/warmbly/internal/pkg/crypt"
 )
 
 // A reset link is bound to the password it was requested against: once any
@@ -35,5 +39,55 @@ func TestResetLinkPredatesPassword(t *testing.T) {
 				t.Fatalf("stale = %v, want %v", got, tc.stale)
 			}
 		})
+	}
+}
+
+// The confirm step tells a reset session handle from the emailed link token,
+// so links opened by older clients keep working while new ones send a handle.
+func TestResetSessionIsTellableFromLinkToken(t *testing.T) {
+	a, _ := crypt.Nonce()
+	b, _ := crypt.Nonce()
+	if isResetLinkToken(a + b) {
+		t.Fatal("a reset session handle was read as a link token")
+	}
+	if !isResetLinkToken("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln") {
+		t.Fatal("a link token was read as a reset session handle")
+	}
+}
+
+type fakeRevoker struct {
+	err   error
+	calls int
+}
+
+func (f *fakeRevoker) RevokeUserCredentials(context.Context, uuid.UUID) error {
+	f.calls++
+	return f.err
+}
+
+// Signing out apps and API keys either ends every kind or reports failure, so
+// the password write that asked for it never goes ahead on a partial revoke.
+func TestRevokeAPICredentials(t *testing.T) {
+	ctx, uid := context.Background(), uuid.New()
+
+	if err := (&authService{}).revokeAPICredentials(ctx, uid); err == nil {
+		t.Fatal("no revokers wired, want an error")
+	}
+
+	grants, keys := &fakeRevoker{}, &fakeRevoker{}
+	s := &authService{}
+	s.WireCredentialRevokers(grants, keys)
+	if err := s.revokeAPICredentials(ctx, uid); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if grants.calls != 1 || keys.calls != 1 {
+		t.Fatalf("calls = %d, %d; want 1, 1", grants.calls, keys.calls)
+	}
+
+	failing := &fakeRevoker{err: errors.New("down")}
+	s = &authService{}
+	s.WireCredentialRevokers(failing, keys)
+	if err := s.revokeAPICredentials(ctx, uid); err == nil {
+		t.Fatal("a failing revoker must fail the revoke")
 	}
 }

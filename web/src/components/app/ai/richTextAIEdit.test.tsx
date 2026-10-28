@@ -20,7 +20,7 @@
 
 import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act, fireEvent } from "@testing-library/react";
+import { render, screen, act, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Editor } from "@tiptap/react";
 import { encodeConfig } from "@/lib/aiVariables";
@@ -50,26 +50,24 @@ vi.mock("@/hooks/context/confirm", () => ({
 
 let reply = { text: "", credits_charged: 1, tokens_used: 1700 };
 let sent: { text: string; instruction: string; context?: string } | null = null;
-vi.mock("@/lib/api/hooks/app/generation/useGenerateEdit", () => ({
-    default: () => ({
-        isPending: false,
-        mutate: (
-            vars: { text: string; instruction: string; context?: string },
-            opts?: { onSuccess?: (res: unknown) => void },
-        ) => {
-            sent = vars;
-            opts?.onSuccess?.(reply);
-        },
-    }),
-}));
 let written = { text: "", credits_charged: 1, tokens_used: 10 };
-vi.mock("@/lib/api/hooks/app/generation/useGenerateWrite", () => ({
-    default: () => ({
-        isPending: false,
-        mutate: (_vars: unknown, opts?: { onSuccess?: (res: unknown) => void }) => {
-            opts?.onSuccess?.(written);
-        },
-    }),
+// Both endpoints stream: the answer arrives in two pieces, then done.
+// With hold set, the model writes only the first half and keeps going until stopped.
+let hold = false;
+vi.mock("@/lib/api/client/app/generation/streamWriting", () => ({
+    default: (path: string, body: unknown, handlers: { onDelta: (t: string) => void }, signal?: AbortSignal) => {
+        const res = path === "/generation/edit" ? reply : written;
+        if (path === "/generation/edit") sent = body as typeof sent;
+        const half = Math.ceil(res.text.length / 2);
+        handlers.onDelta(res.text.slice(0, half));
+        if (hold) {
+            return new Promise((_, reject) =>
+                signal?.addEventListener("abort", () => reject(new DOMException("Stopped", "AbortError"))),
+            );
+        }
+        handlers.onDelta(res.text.slice(half));
+        return Promise.resolve({ ...res, model: "test" });
+    },
 }));
 
 import RichTextEditor from "@/components/app/campaigns/sequences/RichTextEditor";
@@ -119,6 +117,7 @@ async function rewrite(instruction = "make it punchier") {
         fireEvent.change(input, { target: { value: instruction } });
         fireEvent.keyDown(input, { key: "Enter" });
     });
+    await screen.findByRole("dialog", { name: "Review the AI text" }, { timeout: 5000 });
 }
 
 describe("Edit with AI in the campaign body", () => {
@@ -168,7 +167,7 @@ describe("Edit with AI in the campaign body", () => {
         await rewrite();
         expect(editor.getHTML()).toBe("<p>New one.</p><p>New two.</p>");
         expect(saved.html).toBe("<p>New one.</p><p>New two.</p>");
-        await screen.findByText("Rewritten");
+        await screen.findByText(/4 words written/, {}, { timeout: 5000 });
     });
 
     it("rewrites a phrase in place instead of splitting the paragraph around it", async () => {
@@ -215,8 +214,8 @@ describe("Edit with AI in the campaign body", () => {
         reply = { text: "Already fine.", credits_charged: 1, tokens_used: 10 };
         await select(editor, 1, editor.state.doc.content.size - 1);
         await rewrite("fix grammar");
-        await screen.findByText("No change");
-        expect(screen.queryByText("Rewritten")).toBeNull();
+        await screen.findByText(/No change/, {}, { timeout: 5000 });
+        expect(screen.queryByText(/words written/)).toBeNull();
     });
 
     it("gives back the space the selection ended on", async () => {
@@ -237,16 +236,51 @@ describe("Edit with AI in the campaign body", () => {
         expect(saved.html).toBe(editor.getHTML());
     });
 
-    it("undoes the rewrite back to the body that was there", async () => {
+    it("discards the rewrite back to the body that was there", async () => {
         const { editor, saved } = mountBody("<p>Original one.</p>");
         reply = { text: "New one.", credits_charged: 1, tokens_used: 10 };
         await select(editor, 1, editor.state.doc.content.size - 1);
         await rewrite();
         await act(async () => {
-            fireEvent.click(screen.getByText("Undo"));
+            fireEvent.click(screen.getByText("Discard"));
         });
         expect(editor.getHTML()).toBe("<p>Original one.</p>");
         expect(saved.html).toBe("<p>Original one.</p>");
+    });
+
+    it("discards with Escape, and a second change refines the rewrite rather than the original", async () => {
+        const { editor, saved } = mountBody("<p>Original one.</p>");
+        reply = { text: "New one.", credits_charged: 1, tokens_used: 10 };
+        await select(editor, 1, editor.state.doc.content.size - 1);
+        await rewrite();
+        reply = { text: "Newer.", credits_charged: 1, tokens_used: 10 };
+        await act(async () => {
+            fireEvent.click(screen.getByText("Make it shorter"));
+        });
+        await screen.findByText(/1 word written/, {}, { timeout: 5000 });
+        expect(sent?.text).toBe("New one.");
+        expect(editor.getHTML()).toBe("<p>Newer.</p>");
+        await act(async () => {
+            fireEvent.keyDown(document, { key: "Escape" });
+        });
+        expect(editor.getHTML()).toBe("<p>Original one.</p>");
+        expect(saved.html).toBe("<p>Original one.</p>");
+    });
+
+    it("keeps the rewrite as one undo step", async () => {
+        const { editor } = mountBody("<p>Original one.</p>");
+        reply = { text: "New one.", credits_charged: 1, tokens_used: 10 };
+        await select(editor, 1, editor.state.doc.content.size - 1);
+        await rewrite();
+        await act(async () => {
+            fireEvent.click(screen.getByText("Keep it"));
+        });
+        await waitFor(() => expect(screen.queryByRole("dialog", { name: "Review the AI text" })).toBeNull());
+        expect(editor.getHTML()).toBe("<p>New one.</p>");
+        await act(async () => {
+            editor.commands.undo();
+        });
+        expect(editor.getHTML()).toBe("<p>Original one.</p>");
     });
 });
 
@@ -256,6 +290,7 @@ describe("Edit with AI in the campaign body", () => {
 describe("Write with AI at the caret", () => {
     beforeEach(() => {
         captured = null;
+        hold = false;
         written = { text: "", credits_charged: 1, tokens_used: 10 };
     });
 
@@ -269,6 +304,7 @@ describe("Write with AI at the caret", () => {
             fireEvent.change(input, { target: { value: instruction } });
             fireEvent.keyDown(input, { key: "Enter" });
         });
+        await screen.findByRole("dialog", { name: "Review the AI text" }, { timeout: 5000 });
     }
 
     it("extends the sentence it was asked to write into", async () => {
@@ -295,5 +331,32 @@ describe("Write with AI at the caret", () => {
         written = { text: "Hi {{.FirstName}}.", credits_charged: 1, tokens_used: 10 };
         await writeAtCaret(editor, 1, "greet them");
         expect(editor.getHTML()).toBe('<p>Hi <span data-var="">{{.FirstName}}</span>.Hello.</p>');
+    });
+
+    it("shows the words as they arrive, and Escape stops it keeping what was written", async () => {
+        hold = true;
+        const { editor, saved } = mountBody("<p>Hello.</p>");
+        written = { text: "Quick note for you. ", credits_charged: 1, tokens_used: 10 };
+        await act(async () => {
+            editor.commands.setTextSelection(1);
+            fireEvent.keyDown(editor.view.dom, { key: "j", metaKey: true });
+        });
+        const input = await screen.findByPlaceholderText("Ask AI to write…");
+        await act(async () => {
+            fireEvent.change(input, { target: { value: "open warmly" } });
+            fireEvent.keyDown(input, { key: "Enter" });
+        });
+        await waitFor(() => expect(editor.getText()).toBe("Quick noteHello."));
+        await screen.findByText("Writing…");
+        await act(async () => {
+            fireEvent.keyDown(document, { key: "Escape" });
+        });
+        await screen.findByRole("dialog", { name: "Review the AI text" }, { timeout: 5000 });
+        expect(editor.getText()).toBe("Quick noteHello.");
+        expect(saved.html).toBe(editor.getHTML());
+        await act(async () => {
+            fireEvent.keyDown(document, { key: "Escape" });
+        });
+        expect(editor.getHTML()).toBe("<p>Hello.</p>");
     });
 });

@@ -150,7 +150,8 @@ export default function ReauthModal() {
         } catch (err) {
             if (attempt.current !== mine) return;
             const { code: errCode, message } = errorOf(err);
-            if (errCode === "reauth_no_factor" || errCode === "reauth_limited") {
+            // These say nothing about which factor matched, so their own words are safe to show.
+            if (errCode === "reauth_no_factor" || errCode === "reauth_limited" || errCode === "attempt_check_unavailable") {
                 setError(message ?? "That did not work. Try again.");
             } else {
                 // One message for both factors: which one matched is not something

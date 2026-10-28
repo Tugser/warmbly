@@ -1,7 +1,7 @@
 // /admin/organizations/* — workspace admin (read-only). List/detail/members
 // only in this slice; write paths (overrides, ban scope) land in slice 2.
 
-import { Request } from "@/lib/api/client";
+import { APIError, Request } from "@/lib/api/client";
 import { buildSearchQuery } from "@/lib/api/client/admin/query";
 import type {
     AdminOrgDetail,
@@ -13,6 +13,9 @@ import type {
     SetOrgRiskOverrideRequest,
     AdminPlan,
     ManagedPlan,
+    PlanOffer,
+    SelfExecutedMailbox,
+    SelfExecutionStatus,
     UpdateOrgOverridesRequest,
 } from "@/lib/api/models/admin";
 
@@ -107,6 +110,80 @@ export function revokeOrganizationManagedPlan(id: string): Promise<ManagedPlan> 
         url: `/admin/organizations/${id}/managed-plan`,
         authorization: true,
     });
+}
+
+/** Private plans offered to a workspace, lapsed ones included. */
+export function listOrganizationPlanOffers(id: string): Promise<{ offers: PlanOffer[] }> {
+    return Request({
+        method: "GET",
+        url: `/admin/organizations/${id}/plan-offers`,
+        authorization: true,
+    });
+}
+
+export function grantOrganizationPlanOffer(
+    id: string,
+    planId: string,
+    body: { reason: string; expires_at?: string | null },
+): Promise<PlanOffer> {
+    return Request({
+        method: "PUT",
+        url: `/admin/organizations/${id}/plan-offers/${planId}`,
+        authorization: true,
+        data: body,
+    });
+}
+
+export function withdrawOrganizationPlanOffer(id: string, planId: string): Promise<void> {
+    return Request({
+        method: "DELETE",
+        url: `/admin/organizations/${id}/plan-offers/${planId}`,
+        authorization: true,
+    });
+}
+
+/** Whether the workspace's linked instances may warm mailboxes without handing Cloud their credentials. */
+export function getOrganizationSelfExecution(id: string): Promise<SelfExecutionStatus> {
+    return Request({
+        method: "GET",
+        url: `/admin/organizations/${id}/self-execution`,
+        authorization: true,
+    });
+}
+
+export function grantOrganizationSelfExecution(
+    id: string,
+    body: { reason: string; expires_at?: string | null },
+): Promise<SelfExecutionStatus> {
+    return Request({
+        method: "PUT",
+        url: `/admin/organizations/${id}/self-execution`,
+        authorization: true,
+        data: body,
+    });
+}
+
+export function revokeOrganizationSelfExecution(id: string): Promise<void> {
+    return Request({
+        method: "DELETE",
+        url: `/admin/organizations/${id}/self-execution`,
+        authorization: true,
+    });
+}
+
+/** Per-mailbox reporter trust for credential-free mailboxes; null from a backend that predates the endpoint. */
+export async function listOrganizationSelfExecutedMailboxes(id: string): Promise<SelfExecutedMailbox[] | null> {
+    try {
+        const res = await Request<SelfExecutedMailbox[] | { mailboxes?: SelfExecutedMailbox[] }>({
+            method: "GET",
+            url: `/admin/organizations/${id}/self-execution/mailboxes`,
+            authorization: true,
+        });
+        return Array.isArray(res) ? res : (res?.mailboxes ?? []);
+    } catch (e) {
+        if (e instanceof APIError && (e.status === 404 || e.status === 501)) return null;
+        throw e;
+    }
 }
 
 /** The posture with its evidence. The customer endpoint withholds the signal

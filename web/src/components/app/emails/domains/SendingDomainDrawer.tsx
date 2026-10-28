@@ -48,6 +48,8 @@ import { ReachFix, RedirectStatusBanner, ServedByPicker } from "./RedirectServin
 import { defaultServer, useCloudServing } from "./cloudServing";
 import CloudConnectDialog from "@/components/app/cloud/CloudConnectDialog";
 import {
+    OWN_DOMAIN_HINT,
+    REDIRECT_NOT_OWN_DOMAIN,
     authPill,
     domainVendor,
     redirectBlocked,
@@ -673,6 +675,9 @@ function TrackingTab({
                                 </span>
                             </p>
                         )}
+                        {result && !result.tracking_domain_verified && result.txt_name && result.txt_value && (
+                            <DnsRecordsTable records={[{ key: "txt", type: "TXT", name: result.txt_name, value: result.txt_value }]} />
+                        )}
                     </>
                 )}
             </div>
@@ -996,6 +1001,8 @@ function DnsRedirect({
     const cloud = useCloudServing();
     const [checked, setChecked] = React.useState<DomainRedirect | null>(null);
     const [tried, setTried] = React.useState(false);
+    // The API's refusal of the destination, shown under the field until it is edited.
+    const [refused, setRefused] = React.useState("");
     // "serve" came from a redirect visitors do not reach, so linking moves it; "pick" only selects Cloud.
     const [connecting, setConnecting] = React.useState<"pick" | "serve" | null>(null);
 
@@ -1012,6 +1019,7 @@ function DnsRedirect({
     const toCloud = server === "cloud";
 
     function resetDrafts() {
+        setRefused("");
         setUrlDraft(null);
         setWwwDraft(null);
         setServedDraft(null);
@@ -1038,7 +1046,9 @@ function DnsRedirect({
             try {
                 await persist(url.trim(), www, server);
             } catch (e) {
-                toast.error(buildError(e as AppError));
+                const err = e as AppError;
+                if (err.code === REDIRECT_NOT_OWN_DOMAIN) setRefused(err.message);
+                toast.error(buildError(err));
             }
         };
         // Moving a redirect changes its records, so a live one stops until the new ones are in place.
@@ -1135,15 +1145,30 @@ function DnsRedirect({
                     <Label>Website</Label>
                     <TextInput
                         value={url}
-                        onChange={setUrlDraft}
+                        onChange={(v) => {
+                            setRefused("");
+                            setUrlDraft(v);
+                        }}
                         placeholder="https://yourcompany.com"
                         className="w-full"
-                        invalid={tried && !!problem}
+                        invalid={(tried && !!problem) || refused !== ""}
                         onKeyDown={(e) => {
                             if (e.key === "Enter") void submit();
                         }}
                     />
-                    {tried && problem && <p className="mt-1 text-[11px] text-rose-700">{problem}</p>}
+                    {tried && problem ? (
+                        <p className="mt-1 text-[11px] text-rose-700">{problem}</p>
+                    ) : refused ? (
+                        <p className="mt-1 text-[11px] text-rose-700" role="alert">
+                            {refused}
+                        </p>
+                    ) : redirect?.target_active === false && url.trim() === redirect.target_url ? (
+                        <p className="mt-1 text-[11px] text-amber-800 leading-relaxed">
+                            {redirect.target_inactive_reason ||
+                                "Not in use: the destination is no longer on one of this workspace's own domains, so visitors get the domain's default page instead. This happens when the mailbox or verified domain it relied on was removed; point it at one of your own domains or reconnect that domain."}
+                        </p>
+                    ) : null}
+                    <p className="mt-1 text-[11px] text-slate-500 leading-relaxed">{OWN_DOMAIN_HINT}</p>
                 </div>
                 <div className="flex items-center gap-2">
                     <div className="min-w-0 flex-1">

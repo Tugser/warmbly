@@ -128,7 +128,9 @@ defmodule RealtimeWeb.UserChannel do
   end
 
   defp reread_event_authorization(socket, event, key, cache, now) do
-    case lookup_event_authorization(socket.assigns.user_id, key) do
+    case socket.assigns.user_id
+         |> lookup_event_authorization(key)
+         |> Auth.confine(socket.assigns[:credential]) do
       {:ok, member} ->
         if ChannelGuard.fresh?(now, System.monotonic_time(:millisecond)) do
           cache =

@@ -18,7 +18,7 @@ const (
 	mailboxResealPassEvery = 6 * time.Hour
 )
 
-// StartMailboxCredentialReseal moves stored mailbox credentials onto their organization's key, resuming from where it stopped.
+// StartMailboxCredentialReseal reseals stored mailbox credentials under the configured sealing, resuming from where it stopped.
 func (s *JobsService) StartMailboxCredentialReseal(ctx context.Context) {
 	resealer, ok := s.EmailRepository.(repository.MailboxCredentialResealer)
 	if !ok {
@@ -43,7 +43,7 @@ func (s *JobsService) StartMailboxCredentialReseal(ctx context.Context) {
 			return nil
 		}
 		if resealed > 0 || failed > 0 {
-			log.Info().Int("resealed", resealed).Int("unreadable", failed).Msg("mailbox credentials: pass moved stored credentials onto organization keys")
+			log.Info().Int("resealed", resealed).Int("unreadable", failed).Msg("mailbox credentials: pass resealed stored credentials")
 		}
 		resealed, failed = 0, 0
 		nextPass = time.Now().Add(mailboxResealPassEvery)

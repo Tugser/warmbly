@@ -69,8 +69,13 @@ func (e *Error) Error() string {
 	if e.RequestID != "" {
 		out += " (request " + e.RequestID + ")"
 	}
-	if e.Status == http.StatusTooManyRequests && e.RetryAfter != "" {
-		out += ". Rate limited; retry after " + e.RetryAfter + "s."
+	if e.RetryAfter != "" {
+		switch e.Status {
+		case http.StatusTooManyRequests:
+			out += ". Rate limited; retry after " + e.RetryAfter + "s."
+		case http.StatusServiceUnavailable:
+			out += ". Temporarily unavailable; retry after " + e.RetryAfter + "s."
+		}
 	}
 	return out
 }
@@ -321,12 +326,18 @@ func (c *Client) Paginate(ctx context.Context, req Request, maxPages int) ([]byt
 	return json.Marshal(envelope)
 }
 
-// retryAfter reports how long a rate-limited response asked the caller to
-// wait. The wait is capped so a hostile or misconfigured Retry-After cannot
-// park the CLI for an hour.
+// retryAfter reports how long a rate-limited or briefly unavailable (503 with
+// Retry-After) response asked the caller to wait. The wait is capped so a
+// hostile or misconfigured Retry-After cannot park the CLI for an hour.
 func retryAfter(err error) (time.Duration, bool) {
 	var apiErr *Error
-	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusTooManyRequests {
+	if !errors.As(err, &apiErr) {
+		return 0, false
+	}
+	switch {
+	case apiErr.Status == http.StatusTooManyRequests:
+	case apiErr.Status == http.StatusServiceUnavailable && apiErr.RetryAfter != "":
+	default:
 		return 0, false
 	}
 	seconds, perr := strconv.Atoi(strings.TrimSpace(apiErr.RetryAfter))

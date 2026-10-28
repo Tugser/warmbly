@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 	"github.com/warmbly/warmbly/internal/app/behavior"
 	"github.com/warmbly/warmbly/internal/bitmask"
 	"github.com/warmbly/warmbly/internal/models"
@@ -29,7 +30,7 @@ func findNextValidDay(from time.Time, daysBitmask uint8, tz *time.Location) time
 		if bitmask.HasWeekday(daysBitmask, candidate.Weekday()) {
 			return candidate
 		}
-		candidate = candidate.Add(24 * time.Hour)
+		candidate = candidate.AddDate(0, 0, 1)
 	}
 
 	// If no valid day found in 7 days, just return the input
@@ -57,8 +58,7 @@ func ensureTimeWindow(t time.Time, startTime, endTime string, tz *time.Location)
 
 	if minutesOfDay > end {
 		// Too late, move to tomorrow's start time
-		next := tLocal.Add(24 * time.Hour)
-		return time.Date(next.Year(), next.Month(), next.Day(),
+		return time.Date(tLocal.Year(), tLocal.Month(), tLocal.Day()+1,
 			start/60, start%60, 0, 0, tz)
 	}
 
@@ -98,33 +98,67 @@ func effectiveWindows(c *models.Campaign) models.ScheduleWindows {
 // empty schedule means "unconstrained" and returns from unchanged. When from is
 // already inside a window its exact instant is preserved (so jitter/min-wait
 // adjustments survive); otherwise it advances to the next interval's start.
+//
+// Days are walked by calendar date, so a 23- or 25-hour day is stepped like any
+// other, and a search that finds no window never answers "now".
 func nextScheduleSlot(from time.Time, sw models.ScheduleWindows, tz *time.Location) time.Time {
 	if sw.IsEmpty() {
 		return from
 	}
-	cur := from.In(tz)
+	local := from.In(tz)
+	y, m, d := local.Date()
+	nowMin := local.Hour()*60 + local.Minute()
 	for i := 0; i < 8; i++ {
-		y, m, d := cur.Date()
-		nowMin := cur.Hour()*60 + cur.Minute()
+		// Noon exists on every date, so it names the day even where midnight does not.
+		day := time.Date(y, m, d+i, 12, 0, 0, 0, tz)
+		dy, dm, dd := day.Date()
 
-		ivs := append([]models.TimeInterval(nil), sw[int(cur.Weekday())]...)
+		ivs := append([]models.TimeInterval(nil), sw[int(day.Weekday())]...)
 		sort.Slice(ivs, func(a, b int) bool { return ivs[a].Start < ivs[b].Start })
 
 		for _, iv := range ivs {
-			if nowMin < iv.Start {
-				return time.Date(y, m, d, iv.Start/60, iv.Start%60, 0, 0, tz)
+			if i == 0 && nowMin >= iv.End {
+				continue
 			}
-			if nowMin < iv.End {
-				if i == 0 {
-					return from // already inside a window — keep the exact instant
-				}
-				return cur
+			if i == 0 && nowMin >= iv.Start {
+				return from // already inside a window — keep the exact instant
 			}
+			at, ok := wallClockAt(dy, dm, dd, iv.Start, tz)
+			if ok && at.Before(from) {
+				// from is in the repeated hour after the clocks went back: take the second pass.
+				_, before := at.Zone()
+				_, end := at.ZoneBounds()
+				_, after := end.Zone()
+				at = at.Add(time.Duration(before-after) * time.Second)
+			}
+			if !ok || at.Before(from) || at.In(tz).Hour()*60+at.In(tz).Minute() >= iv.End {
+				continue // the whole interval falls in time the clocks skipped
+			}
+			return at
 		}
-		// No interval left today — jump to the start of the next day.
-		cur = time.Date(y, m, d, 0, 0, 0, 0, tz).Add(24 * time.Hour)
 	}
-	return from
+	log.Warn().Str("tz", tz.String()).Time("from", from).Msg("scheduler: no sending window within 8 days of a non-empty schedule")
+	return from.AddDate(0, 0, 8)
+}
+
+// wallClockAt is the first instant on the local date y-m-d whose wall clock
+// reads minute or later; when the clocks skip over minute, that is the instant
+// they resume. ok is false when no such instant is left on that date.
+func wallClockAt(y int, m time.Month, d, minute int, tz *time.Location) (time.Time, bool) {
+	t := time.Date(y, m, d, minute/60, minute%60, 0, 0, tz)
+	ly, lm, ld := t.In(tz).Date()
+	got := time.Date(ly, lm, ld, t.In(tz).Hour(), t.In(tz).Minute(), 0, 0, time.UTC)
+	want := time.Date(y, m, d, minute/60, minute%60, 0, 0, time.UTC)
+	switch start, end := t.ZoneBounds(); {
+	case got.After(want): // resolved past the gap: the gap ends where this zone begins
+		t = start
+	case got.Before(want): // resolved before the gap: it ends where this zone ends
+		t = end
+	}
+	if ty, tm, td := t.In(tz).Date(); ty != y || tm != m || td != d {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 // ensureBusinessHours ensures time is within business hours (8am-8pm)
@@ -168,8 +202,7 @@ func calculateFirstSlotTomorrowAt(timezone, startTime string) time.Time {
 	if startMinutes == 0 {
 		startMinutes = 8 * 60 // fallback to 8am
 	}
-	tomorrow := now.Add(24 * time.Hour)
-	firstSlot := time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(),
+	firstSlot := time.Date(now.Year(), now.Month(), now.Day()+1,
 		startMinutes/60, startMinutes%60, 0, 0, loc)
 	jitter := randomJitter(0, 60)
 	return finalSlot(firstSlot.Add(time.Minute * time.Duration(jitter)))

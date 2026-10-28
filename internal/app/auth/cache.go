@@ -219,6 +219,38 @@ func (s *authService) getResetPasswordSession(ctx context.Context, sessionID uui
 	return val, nil
 }
 
+// getResetHandleKey stores a reset session under its hash, so the cache never holds a usable handle.
+func getResetHandleKey(handle string) string {
+	return "reset_password_handle:" + crypt.SHA256(handle)
+}
+
+// saveResetHandle maps an opaque reset session to the link token it was opened with.
+func (s *authService) saveResetHandle(ctx context.Context, handle, linkToken string, ttl time.Duration) *errx.Error {
+	if err := s.cache.SetEx(ctx, getResetHandleKey(handle), linkToken, ttl).Err(); err != nil {
+		errs.CaptureException(err)
+		return errx.InternalError()
+	}
+	return nil
+}
+
+func (s *authService) getResetHandle(ctx context.Context, handle string) (string, *errx.Error) {
+	val, err := s.cache.Get(ctx, getResetHandleKey(handle)).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return "", errx.ErrToken
+		}
+		errs.CaptureException(err)
+		return "", errx.InternalError()
+	}
+	return val, nil
+}
+
+func (s *authService) deleteResetHandle(ctx context.Context, handle string) {
+	if err := s.cache.Del(ctx, getResetHandleKey(handle)).Err(); err != nil {
+		errs.CaptureException(err)
+	}
+}
+
 func (s *authService) deletePasswordResetSession(ctx context.Context, sessionID uuid.UUID) *errx.Error {
 	val, err := s.cache.Del(ctx, getResetPasswordSessionKey(sessionID)).Result()
 	if err != nil {
@@ -234,16 +266,15 @@ func (s *authService) deletePasswordResetSession(ctx context.Context, sessionID 
 }
 
 // reserveAttempt charges one attempt before a credential is compared, so
-// concurrent guesses cannot all pass a read-only check. It fails OPEN on a
-// cache error: the budget is a brake on guessing, and a Redis outage must not
-// lock every customer out of their own account.
-func (s *authService) reserveAttempt(ctx context.Context, key string, limit int64, window time.Duration) bool {
+// concurrent guesses cannot all pass a read-only check. A cache error refuses
+// with a retryable 503: no credential is compared without a charged attempt.
+func (s *authService) reserveAttempt(ctx context.Context, key string, limit int64, window time.Duration) (bool, *errx.Error) {
 	ok, err := s.cache.ReserveAttempt(ctx, key, limit, window)
 	if err != nil {
 		errs.CaptureException(err)
-		return true
+		return false, errx.ErrAttemptCheckUnavailable
 	}
-	return ok
+	return ok, nil
 }
 
 // releaseAttempt refunds a reserved attempt that ended before any credential
@@ -255,7 +286,7 @@ func (s *authService) releaseAttempt(ctx context.Context, key string) {
 }
 
 // reserveLoginAttempt charges one password attempt to the address.
-func (s *authService) reserveLoginAttempt(ctx context.Context, email string) bool {
+func (s *authService) reserveLoginAttempt(ctx context.Context, email string) (bool, *errx.Error) {
 	return s.reserveAttempt(ctx, getLoginFailureKey(email), LoginFailureLimit, LoginFailureTTL)
 }
 
@@ -266,7 +297,7 @@ func (s *authService) releaseLoginAttempt(ctx context.Context, email string) {
 
 // reserveCodeAttempt charges one try to an emailed-code session before the
 // code is compared; the counter lives no longer than the session.
-func (s *authService) reserveCodeAttempt(ctx context.Context, sessionKey string, ttl time.Duration) bool {
+func (s *authService) reserveCodeAttempt(ctx context.Context, sessionKey string, ttl time.Duration) (bool, *errx.Error) {
 	return s.reserveAttempt(ctx, sessionKey+":tries", AuthAttempts, ttl)
 }
 
@@ -292,7 +323,7 @@ func (s *authService) clearLoginFailures(ctx context.Context, email string) {
 
 // ReserveReauthAttempt charges one attempt to the account before the proof is
 // checked. The signed-in password change spends the same budget.
-func (s *authService) ReserveReauthAttempt(ctx context.Context, userID uuid.UUID) bool {
+func (s *authService) ReserveReauthAttempt(ctx context.Context, userID uuid.UUID) (bool, *errx.Error) {
 	return s.reserveAttempt(ctx, getReauthFailureKey(userID), LoginFailureLimit, LoginFailureTTL)
 }
 

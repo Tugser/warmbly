@@ -19,7 +19,7 @@ const (
 	replyBackMaxDelay = 5 * time.Hour
 )
 
-func (s *JobsService) scheduleWarmupReplyBack(ctx context.Context, token *models.WarmupToken, senderRecovering bool, recipientAccountID uuid.UUID, receivedIDs ...uuid.UUID) error {
+func (s *JobsService) scheduleWarmupReplyBack(ctx context.Context, token *models.WarmupToken, senderBoosted bool, recipientAccountID uuid.UUID, receivedIDs ...uuid.UUID) error {
 	lineage, ok := s.TaskRepo.(repository.WarmupLineageRepository)
 	if !ok || len(receivedIDs) != 1 {
 		return nil
@@ -41,7 +41,7 @@ func (s *JobsService) scheduleWarmupReplyBack(ctx context.Context, token *models
 		return nil
 	}
 
-	if int(binary.BigEndian.Uint32(token.Token[:4])%100) >= recoveryReplyChance(recipient.WarmupReplyRate, senderRecovering) {
+	if int(binary.BigEndian.Uint32(token.Token[:4])%100) >= recoveryReplyChance(recipient.WarmupReplyRate, senderBoosted) {
 		return nil
 	}
 

@@ -21,3 +21,10 @@ func TestRenderTemplateRefusesRangeOverNumber(t *testing.T) {
 		t.Fatal("ValidExpression accepted a range over a number")
 	}
 }
+
+func TestNaiveRenderNeverExpandsSubstitutedValues(t *testing.T) {
+	data := map[string]any{"a": "{{.a}}{{.a}}", "b": "B"}
+	if got := naiveRenderTemplate(`{{if}} {{.a}}|{{b}}`, data); got != "{{.a}}{{.a}}|B" {
+		t.Fatalf("got %q", got)
+	}
+}

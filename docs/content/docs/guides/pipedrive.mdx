@@ -258,7 +258,7 @@ On a deal page the panel shows the deal's person. The panel acts as the Warmbly 
 | Add to campaign | Manage campaigns and manage contacts |
 | Pause or resume | Manage campaigns |
 
-A Pipedrive user with no matched member, or whose member is still invited, is banned from signing in, or lacks the permission, sees why in the panel and changes nothing. The panel needs the Pipedrive company to be in Pipedrive mode in exactly one Warmbly workspace. On a self-hosted instance the panel is part of your own Pipedrive app; see [self-hosting](#self-hosting).
+A Pipedrive user with no matched member, or whose member is still invited, is banned from signing in, or lacks the permission, sees why in the panel and changes nothing. Every panel and modal request must carry the token Pipedrive signs for it with your app's client secret, issued within the last 15 minutes or expiring within a day; a token without either is refused. The panel needs the Pipedrive company to be in Pipedrive mode in exactly one Warmbly workspace. On a self-hosted instance the panel is part of your own Pipedrive app; see [self-hosting](#self-hosting).
 
 </Fold>
 

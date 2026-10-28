@@ -25,7 +25,7 @@ const SETTINGS_KEY = ["admin", "instance", "settings"];
 // The backend clamps to the same band; matching it here keeps the operator
 // from spending a round-trip to learn the range.
 const TTL_MIN_HOURS = 1;
-const TTL_MAX_HOURS = 720;
+const TTL_MAX_HOURS = 48;
 
 // Sending-domain authentication grace, mirroring internal/app/instancesettings.
 const AUTH_GRACE_MIN_HOURS = 1;
@@ -561,7 +561,7 @@ export function SettingsTab({ onDirtyChange, onSwitchTab }: SettingsTabProps) {
                             id="ttl-hours"
                             label="Invitation validity (hours)"
                             help="Existing invitations keep the expiry they were issued with."
-                            range={`Between ${TTL_MIN_HOURS} and ${TTL_MAX_HOURS} hours (30 days).`}
+                            range={`Between ${TTL_MIN_HOURS} and ${TTL_MAX_HOURS} hours (2 days).`}
                             value={form.ttlHours}
                             onChange={(v) => setForm({ ...form, ttlHours: v })}
                             valid={ttlValid}

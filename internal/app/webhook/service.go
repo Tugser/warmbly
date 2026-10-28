@@ -17,13 +17,13 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
+	"github.com/warmbly/warmbly/internal/config"
 	"github.com/warmbly/warmbly/internal/infrastructure/cache"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/pkg/safehttp"
@@ -551,16 +551,16 @@ func generateChallenge() (string, error) {
 // ValidateOutboundURL is the exported SSRF/HTTPS guard reused by any subsystem
 // that stores a user-supplied URL we will later POST to (e.g. third-party
 // integration actions such as Discord/generic webhooks). Same policy as the
-// customer-webhook endpoints: HTTPS + publicly-routable host, unless
-// WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS=true for local/self-hosted development.
+// customer-webhook endpoints: HTTPS + publicly-routable host, unless a
+// self-hosted or development instance sets WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS=true.
 func ValidateOutboundURL(raw string) error {
 	return validateURL(raw)
 }
 
 // validateURL keeps malformed entries and obvious SSRF targets out of the
 // table. Public webhook endpoints must use HTTPS and route to public hosts.
-// Local/self-hosted development can set WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS=true
-// to permit HTTP and private targets.
+// A self-hosted or development instance can set WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS=true
+// to permit HTTP and private targets; hosted production ignores it.
 func validateURL(raw string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -570,9 +570,9 @@ func validateURL(raw string) error {
 	if err != nil {
 		return invalidInput("invalid url: %v", err)
 	}
-	allowUnsafe := strings.EqualFold(os.Getenv("WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS"), "true")
+	allowUnsafe := config.UnsafeWebhookURLsAllowed()
 	if u.Scheme != "https" && !(allowUnsafe && u.Scheme == "http") {
-		return invalidInput("url scheme must be https")
+		return invalidInput("the URL must start with https://")
 	}
 	if u.Host == "" {
 		return invalidInput("url must have a host")
@@ -580,10 +580,10 @@ func validateURL(raw string) error {
 	// Reject userinfo (user:pass@host) — a classic URL-parser-confusion SSRF
 	// bypass and never legitimate on a webhook endpoint.
 	if u.User != nil {
-		return invalidInput("url must not contain credentials")
+		return invalidInput("the URL must not contain a username or password")
 	}
 	if !allowUnsafe && isPrivateWebhookHost(u.Hostname()) {
-		return invalidInput("url host must be publicly routable")
+		return invalidInput("the URL must point at a public address: localhost, private, loopback and link-local hosts are refused")
 	}
 	return nil
 }

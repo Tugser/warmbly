@@ -120,7 +120,7 @@ If the user denies, the redirect carries `?error=access_denied&state=...` instea
 
 ### 3. Exchange the code for tokens
 
-Verify `state` matches, then `POST` to the token endpoint. The request is `application/x-www-form-urlencoded`; send your `client_secret` (in the body or via HTTP Basic auth), plus the original `code_verifier` if you used PKCE. A public client omits `client_secret` and always sends `code_verifier`.
+Verify `state` matches, then `POST` to the token endpoint. The request is `application/x-www-form-urlencoded`; send your `client_secret` (in the body or via HTTP Basic auth), plus the original `code_verifier` if you used PKCE. A public client omits `client_secret` and always sends `code_verifier`. Send each parameter once: a repeated one is refused with `400` `invalid_request`, here and on the revoke endpoint.
 
 ```bash
 curl -X POST "https://api.warmbly.com/v1/oauth/token" \

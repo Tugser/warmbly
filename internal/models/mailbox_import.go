@@ -397,6 +397,10 @@ type DomainRedirect struct {
 	ServeHost string `json:"serve_host,omitempty"`
 	// Reach is the last HTTP check of the domain; nil until DNS verifies.
 	Reach *RedirectReach `json:"reach,omitempty"`
+	// TargetActive is false when the destination is not on one of the workspace's own domains, so the redirect is not served.
+	TargetActive *bool `json:"target_active,omitempty"`
+	// TargetInactiveReason says why, when TargetActive is false.
+	TargetInactiveReason string `json:"target_inactive_reason,omitempty"`
 	// VerifyToken is written into the TXT record; never serialized on its own.
 	VerifyToken    string     `json:"-"`
 	OrganizationID uuid.UUID  `json:"-"`
@@ -406,6 +410,13 @@ type DomainRedirect struct {
 	RemoteHost    string      `json:"-"`
 	// LinkedInstanceID marks, on Cloud, a row served for a linked instance.
 	LinkedInstanceID *uuid.UUID `json:"-"`
+}
+
+// DomainRedirectLookup is what serving a host needs: the destination and whose rule it answers to.
+type DomainRedirectLookup struct {
+	TargetURL        string
+	OrganizationID   uuid.UUID
+	LinkedInstanceID *uuid.UUID
 }
 
 // RedirectServer is where a redirect is served from.

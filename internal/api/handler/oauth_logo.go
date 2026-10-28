@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"image"
 	"image/jpeg"
 	"image/png"
@@ -39,11 +40,11 @@ const (
 func reencodeLogo(body []byte) ([]byte, string, string, *errx.Error) {
 	img, format, err := image.Decode(bytes.NewReader(body))
 	if err != nil {
-		return nil, "", "", errx.New(errx.BadRequest, "image could not be parsed")
+		return nil, "", "", appLogoLimits.unreadable()
 	}
 	b := img.Bounds()
 	if b.Dx() < appLogoMinSide || b.Dy() < appLogoMinSide {
-		return nil, "", "", errx.New(errx.BadRequest, "the logo must be at least 32px on each side")
+		return nil, "", "", errx.NewWithIdentifier(errx.BadRequest, "image_too_small", fmt.Sprintf("The logo must be at least %dpx on each side. Upload a larger image.", appLogoMinSide))
 	}
 	var out bytes.Buffer
 	switch format {
@@ -58,7 +59,7 @@ func reencodeLogo(body []byte) ([]byte, string, string, *errx.Error) {
 		}
 		return out.Bytes(), "image/jpeg", ".jpg", nil
 	}
-	return nil, "", "", errx.New(errx.BadRequest, "the logo must be a PNG or JPG")
+	return nil, "", "", appLogoLimits.wrongFormat()
 }
 
 // appOwnLogoPrefix is the key prefix of images stored for one app. Only those
@@ -189,7 +190,7 @@ func (h *Handler) UploadOAuthApplicationLogo(c *gin.Context) {
 		errx.JSON(c, oauthAppWriteError(err))
 		return
 	}
-	raw, _, _, xerr := readAvatarUpload(c)
+	raw, _, _, xerr := readImageUpload(c, appLogoLimits)
 	if xerr != nil {
 		errx.JSON(c, xerr)
 		return

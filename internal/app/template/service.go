@@ -2,6 +2,7 @@ package template
 
 import (
 	"context"
+	"html"
 	"strings"
 
 	"github.com/google/uuid"
@@ -145,7 +146,7 @@ func (s *templateService) Render(ctx context.Context, orgID, templateID uuid.UUI
 
 	return &models.RenderedReplyTemplate{
 		Subject:   RenderString(t.Subject, vars),
-		BodyHTML:  RenderString(t.BodyHTML, vars),
+		BodyHTML:  RenderHTMLString(t.BodyHTML, vars),
 		BodyPlain: RenderString(t.BodyPlain, vars),
 	}, nil
 }
@@ -153,34 +154,31 @@ func (s *templateService) Render(ctx context.Context, orgID, templateID uuid.UUI
 // RenderString replaces {{.Key}} placeholders in s with values from vars.
 // Unknown keys are dropped (rendered as empty string) so previews don't
 // leak the placeholder syntax to recipients.
-func RenderString(s string, vars map[string]string) string {
-	if s == "" {
-		return s
-	}
+func RenderString(s string, vars map[string]string) string { return renderVars(s, vars, false) }
 
-	out := s
-	for k, v := range vars {
-		out = strings.ReplaceAll(out, "{{."+k+"}}", v)
-	}
+// RenderHTMLString is RenderString for an HTML body: every value is HTML-escaped.
+func RenderHTMLString(s string, vars map[string]string) string { return renderVars(s, vars, true) }
 
-	// Drop any remaining {{.X}} placeholders so users never see raw syntax.
-	out = stripPlaceholders(out)
-	return out
-}
-
-// stripPlaceholders removes any leftover {{.Anything}} tokens. It is
-// intentionally permissive — anything between {{. and the next }} (no
-// nested braces) is treated as a placeholder.
-func stripPlaceholders(s string) string {
+// renderVars replaces each {{.Key}} once, left to right; an inserted value is never rescanned.
+func renderVars(s string, vars map[string]string, escape bool) string {
+	var b strings.Builder
 	for {
 		start := strings.Index(s, "{{.")
 		if start < 0 {
-			return s
+			break
 		}
 		end := strings.Index(s[start:], "}}")
 		if end < 0 {
-			return s
+			break
 		}
-		s = s[:start] + s[start+end+2:]
+		v := vars[s[start+3:start+end]]
+		if escape {
+			v = html.EscapeString(v)
+		}
+		b.WriteString(s[:start])
+		b.WriteString(v)
+		s = s[start+end+2:]
 	}
+	b.WriteString(s)
+	return b.String()
 }

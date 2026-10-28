@@ -110,11 +110,8 @@ var funcs = template.FuncMap{
 	},
 	// List helpers: {{has .ai_labels "Meeting"}} is whole-item membership, so
 	// "Interested" does not match "Not interested"; {{join .ai_labels ", "}}.
-	"has": ListHas,
-	"join": func(list, sep any) string {
-		items, _ := ListStrings(list)
-		return strings.Join(items, valueString(sep))
-	},
+	"has":       ListHas,
+	"join":      boundedJoin,
 	"hasPrefix": func(s, p any) bool { return strings.HasPrefix(valueString(s), valueString(p)) },
 	"hasSuffix": func(s, p any) bool { return strings.HasSuffix(valueString(s), valueString(p)) },
 	// Fallback: {{.FirstName | default "there"}} -> "there" when the field is blank.
@@ -124,6 +121,12 @@ var funcs = template.FuncMap{
 		}
 		return v
 	},
+}
+
+func init() {
+	for name, fn := range boundedBuiltins {
+		funcs[name] = fn
+	}
 }
 
 // FuncMap returns the shared template function set. The returned map is shared

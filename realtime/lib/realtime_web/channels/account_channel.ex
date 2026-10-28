@@ -31,7 +31,9 @@ defmodule RealtimeWeb.AccountChannel do
       # Verify user has access to this email account via organization membership
       checked_at = System.monotonic_time(:millisecond)
 
-      case Auth.check_email_account_access(user_id, account_id) do
+      case user_id
+           |> Auth.check_email_account_access(account_id)
+           |> Auth.confine(socket.assigns[:credential]) do
         {:ok, member} ->
           Logger.debug("User #{user_id} joined account:#{account_id}")
 
@@ -90,7 +92,9 @@ defmodule RealtimeWeb.AccountChannel do
     ChannelGuard.refresh_authorization(
       socket,
       fn ->
-        Auth.check_email_account_access(socket.assigns.user_id, socket.assigns.account_id)
+        socket.assigns.user_id
+        |> Auth.check_email_account_access(socket.assigns.account_id)
+        |> Auth.confine(socket.assigns[:credential])
       end,
       force
     )

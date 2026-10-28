@@ -57,12 +57,22 @@ func (s *service) VerifyLogin(ctx context.Context, pendingToken, code, ipaddr, u
 	}
 	// Every budget is charged before the code is compared, so parallel guesses
 	// cannot share a slot. The account budget spans every challenge it is sent.
-	if !s.reserveAttempt(ctx, pendingTriesKey(claims.SessionID), maxTries, pendingTTL) {
+	ok, xerr := s.reserveAttempt(ctx, pendingTriesKey(claims.SessionID), maxTries, pendingTTL)
+	if xerr != nil {
+		return nil, xerr
+	}
+	if !ok {
 		s.deletePending(ctx, claims.SessionID)
 		return nil, errx.New(errx.BadRequest, "Too many attempts, please sign in again")
 	}
-	if !s.ipAllowed(ctx, ipaddr) || !s.reserveAttempt(ctx, userTriesKey(claims.UserID), userLimit, userWindow) {
+	if ok, xerr = s.ipAllowed(ctx, ipaddr); xerr == nil && ok {
+		ok, xerr = s.reserveAttempt(ctx, userTriesKey(claims.UserID), userLimit, userWindow)
+	}
+	if xerr != nil || !ok {
 		s.releaseAttempt(ctx, pendingTriesKey(claims.SessionID))
+		if xerr != nil {
+			return nil, xerr
+		}
 		return nil, errx.New(errx.BadRequest, "Too many attempts, try again later")
 	}
 
@@ -87,6 +97,17 @@ func (s *service) VerifyLogin(ctx context.Context, pendingToken, code, ipaddr, u
 	// session (delete-then-mint closes a double-spend race).
 	if !s.deletePending(ctx, claims.SessionID) {
 		return nil, errx.New(errx.BadRequest, "Invalid or expired session")
+	}
+	// A ban imposed while the challenge was open refuses it; an unreadable ban state refuses too.
+	if s.users != nil {
+		scope, berr := s.users.GetBanState(ctx, claims.UserID)
+		if berr != nil {
+			errs.CaptureException(berr)
+			return nil, errx.InternalError()
+		}
+		if models.BanScope(scope).Has(models.BanScopeLogin) {
+			return nil, errx.ErrAccountSuspended
+		}
 	}
 	// A carried identity links only here, once both factors have passed.
 	if pend.LinkIdentity != nil {

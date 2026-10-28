@@ -199,24 +199,19 @@ func (s *smtpEmailNotificationService) authMechanism(client *smtp.Client) (smtp.
 		return smtp.CRAMMD5Auth(s.cfg.Username, s.cfg.Password), nil
 	}
 
-	// auto: pick from what the server advertises. LOGIN is listed before PLAIN
-	// because the relays that only speak one of them (Exchange Online and most
-	// appliances) speak LOGIN.
-	ok, ext := client.Extension("AUTH")
-	if !ok {
+	// auto: the mailbox send path's rule, which picks from what the server
+	// advertises over the link it is on (LOGIN, then PLAIN, CRAM-MD5 last).
+	if ok, _ := client.Extension("AUTH"); !ok {
 		return nil, fmt.Errorf("smtp: %s advertises no AUTH extension but SMTP_USERNAME is set", s.cfg.Host)
 	}
-	mechs := strings.ToUpper(ext)
-	switch {
-	case strings.Contains(mechs, "CRAM-MD5"):
-		return smtp.CRAMMD5Auth(s.cfg.Username, s.cfg.Password), nil
-	case strings.Contains(mechs, "LOGIN"):
-		return wsmtp.NewLoginAuth(s.cfg.Username, s.cfg.Password, s.cfg.Host), nil
-	case strings.Contains(mechs, "PLAIN"):
-		return smtp.PlainAuth("", s.cfg.Username, s.cfg.Password, s.cfg.Host), nil
-	default:
-		return nil, fmt.Errorf("smtp: no supported AUTH mechanism in %q", ext)
+	auth, err := wsmtp.NegotiateAuth(client, s.cfg.Username, s.cfg.Password, s.cfg.Host)
+	if errors.Is(err, wsmtp.ErrSMTPCleartextAuth) {
+		return nil, ErrSMTPCleartextAuth
 	}
+	if err != nil {
+		return nil, fmt.Errorf("smtp: %w", err)
+	}
+	return auth, nil
 }
 
 func (s *smtpEmailNotificationService) ehloName() string {

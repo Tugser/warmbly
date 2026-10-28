@@ -17,8 +17,8 @@ import (
 )
 
 // ErrSalesforceSourceRefs means an import source, its connection or its target
-// campaign is not in the organization.
-var ErrSalesforceSourceRefs = errors.New("import source, connection or campaign not found")
+// campaign or categories are not in the organization.
+var ErrSalesforceSourceRefs = errors.New("import source, connection, campaign or category not found")
 
 // SalesforceConnectionRef is a live Salesforce connection the loops work on.
 type SalesforceConnectionRef struct {
@@ -531,6 +531,7 @@ func (r *salesforceRepository) CreateSource(ctx context.Context, s *models.Sales
 		SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 		WHERE EXISTS (SELECT 1 FROM integration_connections WHERE id = $2 AND organization_id = $1)
 		  AND ($9::uuid IS NULL OR EXISTS (SELECT 1 FROM campaigns WHERE id = $9 AND organization_id = $1))
+		  AND NOT EXISTS (SELECT 1 FROM unnest($10::uuid[]) c(id) WHERE NOT EXISTS (SELECT 1 FROM categories cat WHERE cat.id = c.id AND cat.organization_id = $1))
 		RETURNING `+sourceColumns,
 		s.OrganizationID, s.ConnectionID, s.CreatedByUserID, s.Name, s.SourceKind, s.SObject, s.SourceID,
 		s.SourceLabel, s.CampaignID, s.CategoryIDs, s.Recurring, s.Enabled)
@@ -578,7 +579,8 @@ func (r *salesforceRepository) UpdateSource(ctx context.Context, s *models.Sales
 		UPDATE salesforce_import_sources SET
 			name = $3, campaign_id = $4, category_ids = $5, recurring = $6, enabled = $7, updated_at = NOW()
 		WHERE organization_id = $1 AND id = $2
-		  AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM campaigns WHERE id = $4 AND organization_id = $1))`,
+		  AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM campaigns WHERE id = $4 AND organization_id = $1))
+		  AND NOT EXISTS (SELECT 1 FROM unnest($5::uuid[]) c(id) WHERE c.id <> ALL(category_ids) AND NOT EXISTS (SELECT 1 FROM categories cat WHERE cat.id = c.id AND cat.organization_id = $1))`,
 		s.OrganizationID, s.ID, s.Name, s.CampaignID, s.CategoryIDs, s.Recurring, s.Enabled)
 	if err != nil {
 		return err

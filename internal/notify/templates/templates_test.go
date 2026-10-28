@@ -342,7 +342,7 @@ func TestPreview(t *testing.T) {
 		}},
 		{"trial-expired.html", func() (string, error) { return GenerateTrialExpiredHTML() }},
 		{"invitation.html", func() (string, error) {
-			return GenerateInvitationHTML("Jane Doe", "Acme Inc", AppURL()+"/invite?token=abc123")
+			return GenerateInvitationHTML("Jane Doe", "Acme Inc", AppURL()+"/invite?token=abc123", 48*time.Hour)
 		}},
 		{"notification.html", func() (string, error) {
 			return GenerateNotificationHTML("New sign-in to your account", "Signed in from Chrome on macOS (London, GB).", AppURL()+"/app/settings/security", "")
@@ -402,7 +402,7 @@ func TestGenerateTrialExpiredHTML(t *testing.T) {
 
 func TestGenerateInvitationHTML(t *testing.T) {
 	url := AppURL() + "/invite?token=abc123"
-	html, err := GenerateInvitationHTML("Jane Doe", "Acme Inc", url)
+	html, err := GenerateInvitationHTML("Jane Doe", "Acme Inc", url, 48*time.Hour)
 	if err != nil {
 		t.Fatalf("GenerateInvitationHTML returned error: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestGenerateInvitationHTML(t *testing.T) {
 		"Acme Inc",
 		"Accept invitation</a>",
 		url,
-		"expires in 7 days",
+		"expires in 48 hours",
 	}
 	for _, s := range checks {
 		if !strings.Contains(html, s) {
@@ -422,7 +422,7 @@ func TestGenerateInvitationHTML(t *testing.T) {
 }
 
 func TestGenerateInvitationHTML_EscapesNames(t *testing.T) {
-	html, err := GenerateInvitationHTML("<script>evil()</script>", "Acme & Co", AppURL()+"/invite?token=x")
+	html, err := GenerateInvitationHTML("<script>evil()</script>", "Acme & Co", AppURL()+"/invite?token=x", time.Hour)
 	if err != nil {
 		t.Fatalf("GenerateInvitationHTML returned error: %v", err)
 	}
@@ -591,10 +591,12 @@ func TestTemplatesUseTheConfiguredName(t *testing.T) {
 	t.Setenv("APP_URL", "https://app.acme.example")
 
 	cases := map[string]func() (string, error){
-		"welcome":           func() (string, error) { return GenerateWelcomeHTML("Jane") },
-		"digest":            func() (string, error) { return GenerateDigestHTML(3, []DigestItem{{Title: "One"}}) },
-		"trial expired":     func() (string, error) { return GenerateTrialExpiredHTML() },
-		"invitation":        func() (string, error) { return GenerateInvitationHTML("Jane", "Acme Inc", "https://x/invite") },
+		"welcome":       func() (string, error) { return GenerateWelcomeHTML("Jane") },
+		"digest":        func() (string, error) { return GenerateDigestHTML(3, []DigestItem{{Title: "One"}}) },
+		"trial expired": func() (string, error) { return GenerateTrialExpiredHTML() },
+		"invitation": func() (string, error) {
+			return GenerateInvitationHTML("Jane", "Acme Inc", "https://x/invite", 48*time.Hour)
+		},
 		"notification":      func() (string, error) { return GenerateNotificationHTML("Hi", "Body", "https://x", "") },
 		"registration code": func() (string, error) { return GenerateRegistrationCodeHTML("123456") },
 		"user deletion":     func() (string, error) { return GenerateUserDeletionScheduledHTML("Jane", previewTime, 30, "https://x") },

@@ -1,48 +1,122 @@
 name: Deploy AWS control plane
 
+# A stable release reaches this on its own from release.yml when the
+# AWS_DEPLOY_ENABLED variable is "true". Dispatch it by hand to redeploy,
+# roll back, or roll out a changed third-party secret.
 on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to deploy (vX.Y.Z)
+        required: true
+        type: string
+      mode:
+        description: deploy, rollback, redeploy or refresh-secrets
+        default: deploy
+        type: string
+      services:
+        description: all, or a comma-separated list of backend,consumer,forms,tracking,realtime
+        default: all
+        type: string
   workflow_dispatch:
     inputs:
-      migration_task_definition:
-        description: Terraform migration task definition ARN with an explicit revision
-        required: true
+      tag:
+        description: Release tag (vX.Y.Z); leave empty with refresh-secrets to keep the live images
+        required: false
         type: string
-      backend_task_definition:
-        description: Terraform backend task definition ARN with an explicit revision
-        required: true
+      mode:
+        description: What to do
+        type: choice
+        default: redeploy
+        options: [deploy, rollback, redeploy, refresh-secrets]
+      services:
+        description: all, or a comma-separated list of backend,consumer,forms,tracking,realtime
+        default: all
         type: string
-      consumer_task_definition:
-        description: Terraform consumer task definition ARN with an explicit revision
-        required: true
+      bake_seconds:
+        description: Seconds each service is watched against its alarms after it is stable
+        default: "300"
         type: string
-      backend_desired_count:
-        description: Backend desired count (preserve or 0 through 5)
-        default: preserve
-        type: string
-      consumer_desired_count:
-        description: Consumer desired count (preserve or 0 through 5)
-        default: preserve
-        type: string
+      fleet:
+        description: Start a canary rollout of the workers and consumers after the services
+        default: true
+        type: boolean
+      require_attestation:
+        description: Refuse images without build provenance (only releases before provenance need false)
+        default: true
+        type: boolean
+      allow_dropped_secrets:
+        description: Allow a revision that stops referencing a secret the live service reads
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
-concurrency:
-  group: aws-production-control-plane
-  cancel-in-progress: false
-
 jobs:
   deploy:
+    name: ${{ inputs.mode || 'deploy' }} ${{ inputs.tag || 'live release' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     environment: aws-production
+    # One change to production at a time, queued rather than cancelled. The key
+    # rotation workflow takes the same group.
+    concurrency:
+      group: aws-production
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
+      attestations: read
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify the release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          MODE: ${{ inputs.mode || 'deploy' }}
+          REQUIRE_ATTESTATION: ${{ inputs.require_attestation != false }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TAG" ]; then
+            [ "$MODE" = refresh-secrets ] || { echo "::error::$MODE needs a tag"; exit 1; }
+            echo "images=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf '%s\n' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "::error::$TAG is not a stable vX.Y.Z tag; prereleases never deploy"; exit 1; }
+          git rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null || {
+            echo "::error::tag $TAG does not exist"; exit 1; }
+          git merge-base --is-ancestor "refs/tags/$TAG^{commit}" origin/main || {
+            echo "::error::$TAG is not on main"; exit 1; }
+          state=$(gh release view "$TAG" --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"')
+          [ "$state" = "false false" ] || { echo "::error::$TAG is a draft or a prerelease"; exit 1; }
+          mkdir -p /tmp/release
+          gh release download "$TAG" --pattern images.json --dir /tmp/release --clobber
+          jq -e --arg tag "$TAG" '.tag == $tag' /tmp/release/images.json >/dev/null || {
+            echo "::error::images.json does not describe $TAG"; exit 1; }
+          registry=$(jq -r .registry /tmp/release/images.json)
+          for key in backend backend-kafka consumer consumer-kafka worker worker-kafka forms tracking tracking-kafka realtime; do
+            digest=$(jq -r --arg k "$key" '.images[$k] // empty' /tmp/release/images.json)
+            if [ -z "$digest" ]; then
+              case "$key" in *-kafka) echo "$key has no digest in $TAG; skipping it"; continue ;; esac
+              echo "::error::images.json has no $key digest"; exit 1
+            fi
+            if [ "$REQUIRE_ATTESTATION" = true ]; then
+              gh attestation verify "oci://$registry/${key%-kafka}@$digest" \
+                --repo "$GITHUB_REPOSITORY" \
+                --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+                --source-ref "refs/tags/$TAG" >/dev/null
+              echo "verified provenance of $key"
+            fi
+          done
+          echo "images=/tmp/release/images.json" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -52,14 +126,16 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
-      - name: Migrate, verify and deploy
+      - name: Gate, migrate and roll out
         env:
           NODE_PATH: ${{ github.workspace }}/.github/aws-deploy/node_modules
           AWS_ECS_CLUSTER: ${{ vars.AWS_ECS_CLUSTER }}
           AWS_ECS_SERVICE_PREFIX: ${{ vars.AWS_ECS_SERVICE_PREFIX }}
-          AWS_MIGRATION_TASK_DEFINITION: ${{ inputs.migration_task_definition }}
-          AWS_BACKEND_TASK_DEFINITION: ${{ inputs.backend_task_definition }}
-          AWS_CONSUMER_TASK_DEFINITION: ${{ inputs.consumer_task_definition }}
-          AWS_BACKEND_DESIRED_COUNT: ${{ inputs.backend_desired_count }}
-          AWS_CONSUMER_DESIRED_COUNT: ${{ inputs.consumer_desired_count }}
+          DEPLOY_TAG: ${{ inputs.tag }}
+          DEPLOY_MODE: ${{ inputs.mode || 'deploy' }}
+          DEPLOY_SERVICES: ${{ inputs.services || 'all' }}
+          DEPLOY_BAKE_SECONDS: ${{ inputs.bake_seconds || vars.AWS_DEPLOY_BAKE_SECONDS || '300' }}
+          DEPLOY_FLEET: ${{ inputs.fleet != false }}
+          DEPLOY_ALLOW_DROPPED_SECRETS: ${{ inputs.allow_dropped_secrets == true }}
+          DEPLOY_IMAGES_JSON: ${{ steps.release.outputs.images }}
         run: node .github/scripts/aws-deploy.cjs

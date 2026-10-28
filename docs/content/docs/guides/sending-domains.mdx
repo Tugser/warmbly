@@ -79,7 +79,7 @@ Each domain shows:
 
 A tracking host is normally set per mailbox. From the domain you can set one for every mailbox on it in one step, or clear it for all of them.
 
-Warmbly suggests a host: one a verified mailbox on the domain already uses, else one whose DNS already points at this instance (it tries `link`, `links`, `track`, `t`, `click`, `go`, `email` and `trk`), else `link.<domain>`. The suggestion comes with the `CNAME` value to add. `link` is the default because it reads as an ordinary link when a recipient hovers one.
+Warmbly suggests a host: one a verified mailbox on the domain already uses, else one whose DNS already points at this instance (it tries `link`, `links`, `track`, `t`, `click`, `go`, `email` and `trk`), else `link.<domain>`. The suggestion comes with the `CNAME` value to add. A host the workspace has not verified before also needs the ownership `TXT` record; the `_warmbly.<domain>` record a root redirect uses on the same domain covers it, and the result of saving the host shows the record when it is missing. `link` is the default because it reads as an ordinary link when a recipient hovers one.
 
 The host is saved even before its DNS record exists. Until the record resolves, links keep using the shared tracking host, so nothing breaks; the hourly tracking check verifies the host by itself, and new sends switch to it from then on. Setting the same host again changes nothing.
 
@@ -126,7 +126,7 @@ Warmbly serves the redirect from this instance's tracking service once DNS prove
 
 ### Set one up
 
-Enter the website to send visitors to, such as `https://yourcompany.com`. It must be an `http` or `https` address on another host; a redirect back to the same domain or its `www` is refused. **Include www** is on by default. Warmbly then lists the records to add at your DNS provider:
+Enter the website to send visitors to, such as `https://yourcompany.com`. It must be an `http` or `https` address on one of your workspace's own domains: a domain you have a mailbox on, a verified tracking host, your verified [forms domain](/guides/forms/), or a subdomain of one of them. Any other address is refused with `redirect_target_not_own_domain`, and so is a redirect back to the same domain or its `www`. A destination saved earlier that no longer qualifies, for example after the last mailbox on its domain is removed, is kept but shows **Not in use**, and the domain answers as if it had no redirect until you change it. **Include www** is on by default. Warmbly then lists the records to add at your DNS provider:
 
 | Purpose | Type | Name | Value | Needed to verify |
 | --- | --- | --- | --- | --- |
@@ -193,6 +193,7 @@ On a self-hosted instance [linked to Warmbly Cloud](/guides/warmbly-cloud/), a r
 - While the instance is linked, the dashboard picks Warmbly Cloud for a new redirect (the API keeps this instance unless `served_by` says otherwise). Bulk setup has the same choice; there, a domain that already has a redirect keeps where it is served from unless you pick a server, and the dashboard asks before moving a live one.
 - Cloud checks the records and opens the domain on its own schedule, the same one described above. Your instance shows Cloud's verdict, records and last visit, and reads them again on its own schedule and on **Check now**.
 - Moving a redirect between this server and Cloud changes its root records, so a live redirect pauses until the new records are in place. The dashboard asks before it moves one.
+- Your instance checks the website against your workspace's own domains, both when you save and on every check. A redirect Cloud serves whose website no longer qualifies is released from Cloud and stops until you change it.
 - Only the domain, the website and the `www` setting go to Cloud. See [data control](/development/data-control/#outbound-calls).
 - If Cloud cannot be reached when you save, the redirect is kept as waiting for Cloud and sent as soon as it answers. A redirect Cloud still serves that no workspace here has any more, after a workspace is deleted for example, is released within about half an hour.
 - Disconnecting the instance, or unlinking it from Warmbly Cloud, stops every redirect Cloud served for it. Each one then says so and can be moved back to this server. A redirect Cloud no longer has while the link is still up is put back by the next check.
@@ -200,6 +201,7 @@ On a self-hosted instance [linked to Warmbly Cloud](/guides/warmbly-cloud/), a r
 ### Limits
 
 - The workspace must have a mailbox on the domain.
+- The website must be on one of the workspace's own domains, as described in [set one up](#set-one-up).
 - Domains of shared email providers, such as `gmail.com` or `outlook.com`, are refused.
 - One workspace per domain on an instance. While one workspace's redirect for a domain is verified, another workspace's redirect for it is refused with `domain_redirect_taken` and does not verify.
 - The instance needs a tracking host (`TRACKING_DOMAIN`), because the tracking service is what answers. Without one, redirects are not offered, except from Warmbly Cloud on a linked instance.
@@ -213,8 +215,8 @@ On a self-hosted instance [linked to Warmbly Cloud](/guides/warmbly-cloud/), a r
 
 A domain bought from an [inbox vendor](/guides/mailbox-import/#import-from-an-inbox-vendor) usually has its DNS hosted by that vendor, and most vendors can forward the domain themselves. When one of the workspace's connected vendor accounts holds a domain, the domain shows that vendor, and two shortcuts replace the DNS work above:
 
-- **Forward through the vendor.** Enter the website, and Warmbly asks the vendor to forward the domain's root to it. Nothing needs adding at a DNS provider and nothing is served by this instance. The website has the same rules as a redirect: an `http` or `https` address on another host. Clearing the website removes the forwarding where the vendor allows it.
-- **Write the tracking record through the vendor.** Pick a tracking host under the domain, and Warmbly writes its `CNAME` at the vendor, then sets the host on every mailbox on the domain. It is the only record Warmbly writes. A record of the same name and type is replaced, and one the vendor manages itself is left alone and the write refused.
+- **Forward through the vendor.** Enter the website, and Warmbly asks the vendor to forward the domain's root to it. Nothing needs adding at a DNS provider and nothing is served by this instance. The website has the same rules as a redirect: an `http` or `https` address on one of your workspace's own domains, other than the domain itself. Clearing the website removes the forwarding where the vendor allows it.
+- **Write the tracking record through the vendor.** Pick a tracking host under the domain, and Warmbly writes its `CNAME` at the vendor, then sets the host on every mailbox on the domain. Where the vendor can write `TXT` records, Warmbly writes the host's ownership record there too; those are the only records it writes. A record of the same name and type is replaced, and one the vendor manages itself is left alone and the write refused.
 
 What each vendor's API allows:
 
@@ -240,7 +242,7 @@ The vendor's domain list is read with the workspace's own API key, only for conn
 
 ## What travels in an export
 
-Redirects travel in a [workspace export](/guides/workspace-export-import/). They arrive unverified and are served once the destination's own check sees both records. One Warmbly Cloud served for the source arrives served by the destination itself. The ownership value belongs to the workspace on the instance that issued it, so the destination lists its own value: publish that value in the `TXT` record, and point the root at the destination. A tracking host is part of each mailbox's settings and travels with the mailbox; it arrives unverified, and the destination's hourly check verifies it once the `CNAME` points at the destination. Forwarding set through a vendor lives at the vendor and is unaffected by a move.
+Redirects travel in a [workspace export](/guides/workspace-export-import/). They arrive unverified and are served once the destination's own check sees both records. One Warmbly Cloud served for the source arrives served by the destination itself. The ownership value belongs to the workspace on the instance that issued it, so the destination lists its own value: publish that value in the `TXT` record, and point the root at the destination. A tracking host is part of each mailbox's settings and travels with the mailbox; it arrives unverified, and the destination's hourly check verifies it once the `CNAME` points at the destination and the destination's ownership value is published. Forwarding set through a vendor lives at the vendor and is unaffected by a move.
 
 </Fold>
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"regexp"
 	"strings"
 	"time"
@@ -451,7 +452,7 @@ func BuildAIVariablePrompt(vc generation.VoiceContext, contact models.Contact, i
 }
 
 // substituteAIVariables replaces resolved blocks in all three strings. In HTML
-// the WHOLE span is swapped for the text (config never ships to the recipient);
+// the WHOLE span is swapped for the escaped text (config never ships to the recipient);
 // in plain text and subject the bare [[ai:ID]] token is swapped. Any leftover
 // [[ai:ID]] with no resolved entry is replaced with "" (missingkey=zero).
 func substituteAIVariables(subject, bodyHTML, bodyPlain string, resolved map[string]string) (string, string, string) {
@@ -460,7 +461,7 @@ func substituteAIVariables(subject, bodyHTML, bodyPlain string, resolved map[str
 		if len(m) < 2 {
 			return ""
 		}
-		return resolved[m[1]] // "" when unresolved
+		return html.EscapeString(resolved[m[1]]) // "" when unresolved
 	})
 	bodyPlain = replaceAIVarTokens(bodyPlain, resolved)
 	subject = replaceAIVarTokens(subject, resolved)

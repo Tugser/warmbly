@@ -3,10 +3,10 @@ package instancesettings
 import (
 	"net"
 	"net/url"
-	"os"
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/warmbly/warmbly/internal/config"
 	"github.com/warmbly/warmbly/internal/pkg/safehttp"
 )
 
@@ -201,18 +201,18 @@ func ValidateChannelURL(raw string) error {
 	if err != nil {
 		return errChannelURL("invalid url")
 	}
-	allowUnsafe := strings.EqualFold(os.Getenv("WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS"), "true")
+	allowUnsafe := config.UnsafeWebhookURLsAllowed()
 	if u.Scheme != "https" && !(allowUnsafe && u.Scheme == "http") {
-		return errChannelURL("url scheme must be https")
+		return errChannelURL("the URL must start with https://" + unsafeURLHint())
 	}
 	if u.Host == "" {
 		return errChannelURL("url must have a host")
 	}
 	if u.User != nil {
-		return errChannelURL("url must not contain credentials")
+		return errChannelURL("the URL must not contain a username or password")
 	}
 	if !allowUnsafe && isPrivateHost(u.Hostname()) {
-		return errChannelURL("url host must be publicly routable")
+		return errChannelURL("the URL must point at a public address: localhost, private, loopback and link-local hosts are refused" + unsafeURLHint())
 	}
 	return nil
 }
@@ -227,6 +227,14 @@ func isPrivateHost(host string) bool {
 		return false
 	}
 	return safehttp.IsBlockedIP(ip)
+}
+
+// unsafeURLHint names the operator's opt-out where it is honoured, so a LAN chat server is one setting away.
+func unsafeURLHint() string {
+	if config.HostedProduction() {
+		return ""
+	}
+	return " (set WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS=true on the backend to allow a target on your own network)"
 }
 
 type channelURLError string

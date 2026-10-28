@@ -7,7 +7,10 @@ export default interface FormsDomainStatus {
     forms_domain_verified_at?: Date;
     /** The value to put in the CNAME: this install's forms host. */
     cname_target: string;
-    /** verified | unset | no_target | not_found | wrong_target | lookup_error | pending */
+    /** The ownership TXT record a new verification needs beside the CNAME. */
+    txt_name?: string;
+    txt_value?: string;
+    /** verified | unset | no_target | not_found | wrong_target | proof_missing | lookup_error | pending */
     status: string;
     message: string;
     /** What DNS actually returned, so a typo is visible. */

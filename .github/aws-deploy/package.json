@@ -3,6 +3,9 @@
   "private": true,
   "version": "1.0.0",
   "dependencies": {
-    "@aws-sdk/client-ecs": "3.1155.0"
+    "@aws-sdk/client-cloudwatch": "3.1155.0",
+    "@aws-sdk/client-cloudwatch-logs": "3.1155.0",
+    "@aws-sdk/client-ecs": "3.1155.0",
+    "@aws-sdk/client-secrets-manager": "3.1155.0"
   }
 }

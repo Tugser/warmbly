@@ -43,10 +43,12 @@ export function acquireDashboardImage(src: string): ImageLease {
             responseType: "blob",
             data: { url: src },
             signal: controller.signal,
-        }).then((blob) => {
+        }).then(async (blob) => {
             if (controller.signal.aborted) throw new DOMException("Image preview cancelled", "AbortError");
             if (!blob.type.startsWith("image/")) throw new Error("Not an image");
-            created.url = URL.createObjectURL(blob);
+            const image = blob.type === "image/svg+xml" ? await rasterizeSvg(blob) : blob;
+            if (controller.signal.aborted) throw new DOMException("Image preview cancelled", "AbortError");
+            created.url = URL.createObjectURL(image);
             return created.url;
         });
         entry = created;
@@ -66,4 +68,31 @@ export function acquireDashboardImage(src: string): ImageLease {
             }
         },
     };
+}
+
+const SVG_RASTER_MAX = 512;
+
+// Drawn to a PNG so no URL this origin hands out is an SVG document.
+function rasterizeSvg(svg: Blob): Promise<Blob> {
+    const source = URL.createObjectURL(svg);
+    return new Promise<Blob>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+            const ratio = img.naturalWidth > 0 && img.naturalHeight > 0 ? img.naturalWidth / img.naturalHeight : 1;
+            const width = ratio >= 1 ? SVG_RASTER_MAX : Math.max(1, Math.round(SVG_RASTER_MAX * ratio));
+            const height = ratio >= 1 ? Math.max(1, Math.round(SVG_RASTER_MAX / ratio)) : SVG_RASTER_MAX;
+            const canvas = document.createElement("canvas");
+            canvas.width = width;
+            canvas.height = height;
+            const context = canvas.getContext("2d");
+            if (!context) {
+                reject(new Error("Not an image"));
+                return;
+            }
+            context.drawImage(img, 0, 0, width, height);
+            canvas.toBlob((png) => (png ? resolve(png) : reject(new Error("Not an image"))), "image/png");
+        };
+        img.onerror = () => reject(new Error("Not an image"));
+        img.src = source;
+    }).finally(() => URL.revokeObjectURL(source));
 }

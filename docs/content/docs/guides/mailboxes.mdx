@@ -37,7 +37,7 @@ To bring in many at once, choose **Import mailboxes**: up to 5,000 from a CSV, T
 
 ## Good to know
 
-- A mailbox sends at most `50` cold emails a day by default. New mailboxes start on a sending plan of about `30` a day.
+- A mailbox sends at most `50` cold emails a day by default (`20` for a newly connected free Gmail or Outlook.com account). New mailboxes start on a sending plan of about `30` a day.
 - Mailboxes are unlimited on every paid plan, with a fair-use allowance of one mailbox for every send a day the plan includes.
 - When a provider stops accepting a mailbox's sign-in, the mailbox stops sending and its drawer shows the fix.
 - You never pick a sending worker. Warmbly assigns one.
@@ -151,7 +151,21 @@ The same holds for a server that answers but refuses what Warmbly asked. The dra
 
 With two-factor authentication on, generate an app password in your provider's security settings and use that.
 
-Warmbly signs in with whichever method your server offers, preferring CRAM-MD5, then LOGIN, then PLAIN. Servers that accept only one of these, which includes Microsoft 365 relays and most appliance relays, work without any setting to change.
+Warmbly signs in with whichever method your server offers, preferring LOGIN, then PLAIN, and using CRAM-MD5 only when the server offers neither. Every one of them is sent over the established TLS connection, never before it: a server that offers to sign in without encryption is refused with an error that says so and asks for the server's SSL/TLS port (usually 465) or a port that offers STARTTLS (usually 587), except a relay on the worker's own machine with the **None** mode. A server that offers none of the three methods is refused with the methods it does offer, so you can tell whether another host or port is needed. Servers that accept only one of these, which includes Microsoft 365 relays and most appliance relays, work without any setting to change.
+
+### Servers with their own certificate
+
+Warmbly checks every server's certificate against a recognised certificate authority, for the host name you entered, on every connection. A server with a self-signed or company certificate fails that check, and the connection test says so and names the certificate it saw: who it is for, who issued it, and its SHA-256 fingerprint.
+
+When that happens the form offers **Trust this server's own certificate**. It is off until you tick it, and it is only offered after a test failed on the certificate. With it ticked, the next test records the fingerprint of each server's public key and from then on Warmbly connects to that server only while it presents the same key. Sending and receiving are pinned separately, and the choice is stored on the mailbox, so a teammate sees it too. Ask the server's owner for the fingerprint and compare it before you trust it.
+
+- A server whose certificate does verify keeps normal checking even when you ticked the box: the choice only applies to a server that needs it, and it switches itself off if the server later gets a certificate from an authority
+- Changing the password or username of the same server keeps the choice; moving to another host name asks again
+- A connected mailbox whose server stops presenting a verifiable certificate (expired, or for another host name) shows **Server certificate not verified** in the drawer. Correct the host name with **Update credentials**, or trust the server's own certificate when the test offers it
+- When the certificate changes, for example when it is renewed with a new key, the mailbox stops connecting and shows **Server certificate changed** in the drawer. It is not deactivated and its password is not marked wrong. Open **Settings > Server certificates** on the mailbox and choose **Re-confirm**: Warmbly tests the servers, shows what they present now, and pins the new fingerprints once you confirm
+- **Settings > Server certificates** always shows, per server, whether it is verified by a certificate authority or which fingerprint it is trusted on
+
+The choice and the fingerprints are part of the mailbox and travel with a [workspace export](/guides/workspace-export-import/), since they describe the same server wherever the workspace is imported.
 
 ### Gmail and Google Workspace
 
@@ -212,6 +226,8 @@ Warmbly connects to one of these with the **None** security mode, under two cond
 Both are about the same thing: the credentials never leave the machine, so there is no wire to intercept them on. On hosted Warmbly the worker is in our infrastructure, never on your computer, so a local relay is not reachable from it and the mode is not offered. Run a [self-hosted instance](/development/install/) on the machine the Bridge is on if you need it.
 
 Set the Bridge's own username and password, which it shows in its interface, not your Proton account password. The same applies to any relay on the machine: a Dovecot sharing a host with its worker, or a local sink used for testing.
+
+More generally, hosted Warmbly connects only to mail servers at public addresses, checked against the address each connection actually reaches. A self-hosted instance can reach servers on its own network, and an operator can refuse those too with [`MAIL_ALLOW_PRIVATE_HOSTS=false`](/development/configuration/#workers). A refused server fails the connection test, and a connected mailbox shows **Server address is not public** in the drawer, both saying the host name points to a private network address. Use the host name your provider gives for connecting from outside your network; on a self-hosted instance the message also says the operator can allow private addresses.
 
 </Fold>
 
@@ -290,6 +306,8 @@ The Sync card distinguishes a completed history import from a recent successful 
 
 Sync respects an explicit provider retry window for temporary service failures as well as rate limits. On IMAP, an incomplete folder-status response or a temporary status failure keeps the existing folders and their sync positions for the next pass. Missing status metadata is requested separately, not treated as proof that a folder was deleted.
 
+A temporary IMAP connection failure while a worker loads an existing mailbox does not prevent SMTP sending. The mailbox stays loaded and sync retries with backoff, keeping the last successful sync time unchanged until a pass succeeds. An explicit IMAP sign-in lockout waits at least five minutes before another login attempt. If the provider explicitly bans the worker's IP, other mailboxes using the same IMAP endpoint and outgoing IP in that worker process wait too. These temporary limits do not require reconnecting the mailbox; an actual credential rejection still requires the recovery steps above.
+
 The IMAP folder cap limits which folders are opened, not which folders exist. Folders outside the cap keep their saved sync positions. A capped pass cannot establish a rename or refresh the last successful live check. Folder retirement requires a complete name listing showing absence, an explicit provider not-found response, or your folder exclusion setting. On Outlook, an explicit retry window stops the remaining folder requests in that pass, even if an earlier folder failed without a retry window.
 
 If Gmail rejects an ordinary import continuation token, the import restarts inside its original fixed date window. Already mapped mail is deduplicated, and the existing message cap and sync budgets still apply. Outlook recovers an expired delta checkpoint by replaying the configured recent-history window, reconciling known messages and following changes from a fresh checkpoint only after recovery completes. Older messages never imported are outside that recovery window. Authentication failures, throttles and transport errors are not treated as expired checkpoints.
@@ -334,10 +352,12 @@ Set these on the mailbox's **Settings** tab. They apply to the next scheduled se
 
 | Control | Default | Range |
 |---------|---------|-------|
-| Daily campaign cap | `50`/day | `0` to `5000` |
-| Minimum gap between sends | `600s` (10 minutes) | A hard floor, with jitter added on top |
+| Daily campaign cap | `50`/day (`20`/day on a free Gmail or Outlook.com account) | `0` to `5000` |
+| Minimum gap between sends | `600s` (10 minutes; `900s` on a free Gmail or Outlook.com account) | A hard floor, with jitter added on top |
 
 The `50` default is a safety ceiling, not a daily target. Newly connected mailboxes use a configurable [variable sending plan](/guides/sending-behavior/) with a target range of `28` to `32` per local working day, about `30`. Existing mailboxes keep their settings. Tune or disable the plan in the **Sending** tab; raise the separate ceiling only with proven reputation and low complaint and bounce rates. A fresh mailbox should start lower and ramp; randomized volume does not replace warmup or guarantee deliverability.
+
+A free Gmail (`gmail.com`, `googlemail.com`) or Outlook.com (`outlook.com`, `hotmail.com`, `live.com`) account connected from now on starts lower: `20` cold emails a day, at least `900s` apart, and a `25`/day warmup ceiling. A personal account carries far less sender trust than a mailbox on your own domain, and Outlook.com locks one that sends like a business mailbox. Mailboxes already connected keep their settings, and you can raise these on the **Settings** tab.
 
 The range goes up to `5000` so a high-capacity mailbox (a warmed Google Workspace account allows `2000`/day, Microsoft 365 more) is not artificially blocked, and the dashboard shows a warning on anything above `100`. A high cap only raises the ceiling: the campaign's own daily limit, the ramp, sending behaviour, and your workspace's daily send limit all still apply, and the smallest one wins. The minimum gap is a throughput bound of its own: at the default `600s` a mailbox tops out around `144` sends in a `24`-hour window, so a cap above that only takes effect together with a shorter gap.
 
@@ -359,9 +379,28 @@ The same tab sets the **display name**, **reply-to** (empty uses the mailbox add
 
 The HTML signature is placed in a block of its own one line below the body, so it arrives without the stack of blank lines above it that Apple Mail and Outlook used to show. Put any extra spacing you want inside the signature itself. On a body laid out in HTML it goes inside the container the email was built in, so it lines up with the copy it signs off rather than sitting under it at the left edge of the window (the same placement as the [opt-out line](/guides/unsubscribe/#where-it-appears)). The plain-text signature follows the body after a single blank line.
 
-The signature editor has four views. **HTML** is the visual surface with bold, italic, underline, links and images. The `</>` button next to it swaps that for the raw markup, which is sent exactly as written, so a table-based signature from another tool can be pasted in whole. **Preview** renders it the way a mail client will, in its own frame. **Plain** holds the plain-text version, generated from the HTML while **Sync** is on.
+The signature editor has four views. **HTML** is the visual surface with bold, italic, underline, links and images. The `</>` button next to it swaps that for the raw markup, which is sent exactly as written, so a table-based signature from another tool can be pasted in whole. **Preview** renders it the way a mail client will, in its own frame. **Plain** holds the plain-text version, generated from the HTML while **Sync** is on; turn Sync off to write it separately.
+
+**Add to every email this mailbox sends**, above the editor, is what decides whether the signature goes out at all. It is on by default and covers campaign steps, replies and new emails alike. Turn it off to keep a signature stored without adding it to mail.
 
 A signature carrying a `<style>` block, a whole HTML document, or an event handler is always edited as markup and the visual toggle is greyed out. The visual surface works by putting the markup into the page, and a signature is workspace data your teammates also see, so that markup is never given a live element to run in. Preview is how you look at it. Any `<style>` block in a signature is inlined onto the elements it matches when the email sends, the same as a campaign body.
+
+### One signature on many mailboxes
+
+To give several mailboxes the same signature, tick their rows on the Accounts page and press **Signature** in the selection bar. You write the signature once, in the same editor, using the [sender fields](/guides/expressions/#sender-fields-emails) a campaign email uses, and each mailbox gets its own values:
+
+| Field | Filled in with |
+|---|---|
+| `{{.Sender.FirstName}}` | The first word of the mailbox's display name |
+| `{{.Sender.LastName}}` | Everything after the first word of the display name |
+| `{{.Sender.Name}}` | The whole display name |
+| `{{.Sender.Email}}` | The From address: the send-as alias when one is set, otherwise the mailbox address |
+
+The values are the ones a campaign email would render for that mailbox, so a mailbox with no display name gets empty name fields. The preview flags those mailboxes, and shows the finished signature for one selected mailbox at a time; switch between them with the picker or the arrows.
+
+The fields are filled in when you press **Apply**, and each mailbox stores its finished signature, not the template. A signature is added to mail as it is stored, so contact fields such as `{{.FirstName}}`, other sender fields and spintax are not filled in inside one; the editor points out any it finds. Changing a mailbox's display name later does not change its signature; apply it again, or edit that mailbox's signature on its own.
+
+**Add signature to sends**, on by default, applies to every selected mailbox. Apply replaces the signature on each selected mailbox, and asks first when any of them already has one. A mailbox that could not be saved is listed with the reason, and **Retry** tries just those again.
 
 ### A shared reply inbox
 
@@ -420,11 +459,14 @@ Verification resolves the record live and reports what it finds:
 | **Verified** | The subdomain resolves to the tracking host. New sends use it. |
 | No DNS record yet | The name does not exist. The record has not been added, or has not propagated; usually minutes, up to an hour. |
 | Points at something else | The record exists but its value is another host. The message names what it found so you can compare it with what you typed. |
+| Ownership record missing | The `CNAME` is right, but the `TXT` record proving the domain is your workspace's is not there yet. |
 | Nothing to point at | This install has no tracking host configured. Nothing can verify until an operator sets `TRACKING_DOMAIN`. |
 
 A provider that flattens `CNAME` records (ALIAS records, apex flattening, proxied records) still verifies: Warmbly compares the addresses when there is no `CNAME` to read.
 
-A tracking domain belongs to one workspace on an instance. Once a workspace has verified it, on a mailbox or as a campaign's override, no other workspace on the same instance can save or verify it (`409 tracking_domain_taken`). The workspace's own mailboxes and campaigns can all share it.
+A new tracking domain also needs an ownership record: a `TXT` record at `_warmbly.<tracking domain>` holding the `warmbly-verify=...` value Warmbly shows once the domain is saved (`txt_name` and `txt_value` in the API). The value is unique to your workspace on this instance. The same record on a parent domain counts too, so the `_warmbly.<domain>` record a [root redirect](/guides/sending-domains/) already uses covers `link.<domain>`. A host the workspace already verified, on any of its mailboxes or campaigns, or as its forms domain or a redirect, verifies on the `CNAME` alone, and so does saving a mailbox's current verified host again. When an inbox vendor writes the `CNAME` for you, Warmbly asks it to write the ownership record as well.
+
+A tracking domain belongs to one workspace on an instance. Once a workspace has verified it, on a mailbox, as a campaign's override, or as its forms domain, no other workspace on the same instance can save or verify it (`409 tracking_domain_taken`). The workspace's own mailboxes and campaigns can all share it. On the domain, only that workspace's tracked links resolve; another workspace's link opened there answers 404, like an unknown one. The shared tracking host resolves every workspace's links as before.
 
 Press **Check again** any time to re-resolve without changing the value. Warmbly also re-checks every custom tracking domain on its own, hourly, so a record that finishes propagating after you saved starts being used without you doing anything, and one that later stops pointing at the tracking host stops being used instead of quietly breaking every link.
 
@@ -458,7 +500,7 @@ Tracking uses the same host as everything else, so a [custom tracking domain](#c
 
 ## Warmup
 
-New mailboxes should warm up before carrying campaign volume. Defaults are `10`/day starting volume, `+1`/day ramp, and a `40`/day ceiling.
+New mailboxes should warm up before carrying campaign volume. Defaults are `10`/day starting volume, `+1`/day ramp, and a `40`/day ceiling (`25`/day for a free Gmail or Outlook.com account).
 
 Start, pause, resume, or stop from the mailbox's **Warmup** tab, or for several mailboxes at once from the Accounts selection bar. Pausing keeps your ramp progress and stops new warmup sending. Stopping also disables warmup receiving and engagement without deleting the mailbox or its history.
 

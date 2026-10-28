@@ -13,6 +13,7 @@ import { DashboardImage } from "@/components/ui/dashboard-image";
 // validation. Read data: /analytics/accounts/:id and /analytics/warmup?email_id=.
 
 import React, { useMemo, useState } from "react";
+import { signatureToPlain } from "@/lib/email/signaturePlain";
 import useBrowseState from "@/hooks/useBrowseState";
 import { mailboxTab, type MailboxTab } from "@/lib/browse-accounts-analytics";
 import { diagnosticSendingAllowed, diagnosticWarmupActive } from "@/lib/diagnosticParticipation";
@@ -100,6 +101,7 @@ import useCurrentOrganization from "@/lib/api/hooks/app/organizations/useCurrent
 import { timezoneOptions } from "@/lib/timezone";
 import { utcDay } from "@/lib/campaignPeriod";
 import SyncStatusCard from "./SyncStatusCard";
+import ServerCertificatesCard from "./ServerCertificatesCard";
 import CloudWarmupCard from "./CloudWarmupCard";
 import WarmupPartnerDiversity from "./WarmupPartnerDiversity";
 import useCloudPool from "@/hooks/useCloudPool";
@@ -1822,17 +1824,25 @@ function TrackingDomainCard({ mailbox }: { mailbox: Inbox }) {
     const busy = mutation.isPending || verify.isPending;
     // Show the diagnostic while something is wrong, not once it is fixed.
     const message = !verified && status.data?.message && !dirty ? status.data.message : "";
+    // The ownership record is bound to the saved host, so it shows once that host is saved and until it verifies.
+    const proof =
+        !verified && !dirty && status.data?.txt_name && status.data.txt_value
+            ? { name: status.data.txt_name, value: status.data.txt_value }
+            : null;
+    const [copiedProof, setCopiedProof] = useState(false);
 
-    const copyTarget = async () => {
-        if (!target) return;
+    const copyText = async (text: string, mark: (v: boolean) => void) => {
+        if (!text) return;
         try {
-            await navigator.clipboard.writeText(target);
-            setCopied(true);
-            window.setTimeout(() => setCopied(false), 1500);
+            await navigator.clipboard.writeText(text);
+            mark(true);
+            window.setTimeout(() => mark(false), 1500);
         } catch {
             // clipboard may be unavailable (insecure context); ignore
         }
     };
+
+    const copyTarget = () => copyText(target, setCopied);
 
     const save = async () => {
         if (problem) return;
@@ -1917,7 +1927,7 @@ function TrackingDomainCard({ mailbox }: { mailbox: Inbox }) {
             {!problem && normalized && target && (
                 <div className="rounded-md border border-slate-200 bg-slate-50/70 p-3 space-y-2">
                     <div className="text-[11px] text-slate-500 leading-relaxed">
-                        Add this CNAME record at your DNS provider, then save to verify:
+                        {proof ? "Add these records at your DNS provider, then check again:" : "Add this CNAME record at your DNS provider, then save to verify:"}
                     </div>
                     <div className="grid grid-cols-[56px_1fr] gap-x-3 gap-y-1.5 text-[11.5px] items-center">
                         <span className="text-slate-400">Type</span>
@@ -1936,6 +1946,26 @@ function TrackingDomainCard({ mailbox }: { mailbox: Inbox }) {
                                 {copied ? <CheckIcon className="w-3 h-3 text-emerald-600" /> : <CopyIcon className="w-3 h-3" />}
                             </button>
                         </span>
+                        {proof && (
+                            <>
+                                <span className="text-slate-400">Type</span>
+                                <span className="font-mono text-slate-700">TXT</span>
+                                <span className="text-slate-400">Name</span>
+                                <span className="font-mono text-slate-700 truncate">{proof.name}</span>
+                                <span className="text-slate-400">Value</span>
+                                <span className="font-mono text-slate-700 inline-flex items-center gap-1.5 min-w-0">
+                                    <span className="truncate">{proof.value}</span>
+                                    <button
+                                        type="button"
+                                        onClick={() => void copyText(proof.value, setCopiedProof)}
+                                        className="shrink-0 text-slate-400 hover:text-slate-700 transition-colors"
+                                        aria-label="Copy TXT value"
+                                    >
+                                        {copiedProof ? <CheckIcon className="w-3 h-3 text-emerald-600" /> : <CopyIcon className="w-3 h-3" />}
+                                    </button>
+                                </span>
+                            </>
+                        )}
                     </div>
                 </div>
             )}
@@ -2310,6 +2340,11 @@ function SettingsTab({ form, update, mailbox, onDisconnected }: { form: Inbox; u
         [timezones, workspaceZone, form.timezone],
     );
     const mirrorTarget = mailbox.provider === "gmail" ? "Gmail" : mailbox.provider === "outlook" ? "Outlook" : "the mailbox";
+    // Whether the plain version follows the HTML is the editor's business;
+    // signature_sync is whether the signature is added to sends at all.
+    const [plainFollowsHtml, setPlainFollowsHtml] = useState(
+        () => !form.signature_plain.trim() || signatureToPlain(form.signature_html) === form.signature_plain.trim(),
+    );
     return (
         <div className="divide-y divide-slate-200/60">
             <div className="px-5 py-5 space-y-4">
@@ -2364,6 +2399,8 @@ function SettingsTab({ form, update, mailbox, onDisconnected }: { form: Inbox; u
                 </div>
             )}
 
+            {mailbox.provider === "smtp_imap" && <ServerCertificatesCard mailboxId={mailbox.id} />}
+
             <div className="px-5 py-5 space-y-3">
                 <Eyebrow>Unibox</Eyebrow>
                 <div className="flex items-start justify-between gap-3">
@@ -2395,6 +2432,22 @@ function SettingsTab({ form, update, mailbox, onDisconnected }: { form: Inbox; u
 
             <div className="px-5 py-5 space-y-2">
                 <Eyebrow>Signature</Eyebrow>
+                <div className="flex items-start justify-between gap-3 pb-1">
+                    <div className="min-w-0">
+                        <div className="text-[12.5px] font-medium text-slate-900">Add to every email this mailbox sends</div>
+                        <div className="text-[11px] text-slate-400">
+                            Campaign steps, replies and new emails get this signature under the body, so it never has to be
+                            typed into the copy.
+                        </div>
+                    </div>
+                    <div className="shrink-0">
+                        <Toggle
+                            value={form.signature_sync}
+                            onChange={(v) => update({ signature_sync: v })}
+                            ariaLabel="Add the signature to every email this mailbox sends"
+                        />
+                    </div>
+                </div>
                 <div className="overflow-x-auto">
                     <EmailEditor
                         id="inbox-signature"
@@ -2402,8 +2455,8 @@ function SettingsTab({ form, update, mailbox, onDisconnected }: { form: Inbox; u
                         setHtmlText={(v) => update({ signature_html: v })}
                         plainText={form.signature_plain}
                         setPlainText={(v) => update({ signature_plain: v })}
-                        sync={form.signature_sync}
-                        setSync={(v) => update({ signature_sync: v })}
+                        sync={plainFollowsHtml}
+                        setSync={setPlainFollowsHtml}
                         code={form.signature_code}
                         setCode={(v) => update({ signature_code: v })}
                     />

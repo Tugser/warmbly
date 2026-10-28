@@ -83,6 +83,10 @@ func reportError(io *iostreams.IOStreams, err error) int {
 		case apiErr.IsUnauthorized():
 			fmt.Fprintln(io.ErrOut, io.Gray("The credential was rejected. Run `warmbly auth status` to see which one was used, or `warmbly auth login` to replace it."))
 			return 4
+		case apiErr.Code == "account_suspended" || apiErr.Code == "account_sending_suspended" ||
+			apiErr.Code == "account_workspace_create_suspended" || apiErr.Code == "workspace_sending_suspended":
+			// A standing on the account or workspace, not a missing scope; the message says what to do.
+			return 4
 		case apiErr.Status == 403:
 			fmt.Fprintln(io.ErrOut, io.Gray("The key is missing a scope for this call. `warmbly auth refresh` re-runs the sign-in and can ask for more."))
 			return 4

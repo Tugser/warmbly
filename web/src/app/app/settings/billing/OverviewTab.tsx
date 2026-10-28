@@ -18,6 +18,7 @@ import {
     CreditCardIcon,
     FileTextIcon,
     FlameIcon,
+    GiftIcon,
     InfoIcon,
     Loader2Icon,
     PlayIcon,
@@ -29,6 +30,9 @@ import useFeatureAccess from "@/hooks/useFeatureAccess";
 import useUpgradeFlow from "@/hooks/useUpgradeFlow";
 import { useConfirm } from "@/hooks/context/confirm";
 import useSubscription from "@/lib/api/hooks/app/subscription/useSubscription";
+import usePlanOffers from "@/lib/api/hooks/app/subscription/usePlanOffers";
+import type PlanOffer from "@/lib/api/models/app/subscription/PlanOffer";
+import OfferedPlanDialog from "@/components/app/billing/OfferedPlanDialog";
 import useTrialStatus from "@/lib/api/hooks/app/subscription/useTrialStatus";
 import useCancelSubscription from "@/lib/api/hooks/app/subscription/useCancelSubscription";
 import useOrganizationLimits from "@/lib/api/hooks/app/organizations/useOrganizationLimits";
@@ -58,6 +62,10 @@ export default function OverviewTab({ onChangePlan, onWarmupPlan }: { onChangePl
     const cancel = useCancelSubscription();
     const flow = useUpgradeFlow();
     const confirm = useConfirm();
+    const offers = usePlanOffers();
+    const [offerOpen, setOfferOpen] = React.useState<PlanOffer | null>(null);
+    // The plan already in force is not offered back.
+    const visibleOffers = (offers.data ?? []).filter((o) => o.plan_id !== sub.data?.plan?.id);
 
     const plan = getPlan(access.plan);
     const accent = PLAN_ACCENT_CLASSES[plan.accent];
@@ -304,6 +312,33 @@ export default function OverviewTab({ onChangePlan, onWarmupPlan }: { onChangePl
                         <ArrowRightIcon className="w-3.5 h-3.5 text-slate-400 group-hover:text-sky-600 shrink-0 transition-colors" />
                     </button>
                 )}
+
+                {/* Private plans Warmbly offered this workspace; not in the grid. */}
+                {!sub.isPending &&
+                    visibleOffers.map((o) => (
+                        <button
+                            key={o.plan_id}
+                            type="button"
+                            onClick={() => setOfferOpen(o)}
+                            className="mt-3 w-full rounded-lg border border-sky-200 hover:border-sky-300 bg-sky-50/40 px-4 py-3 flex items-center gap-3 text-left transition-colors group"
+                        >
+                            <span className="size-8 rounded-md bg-sky-50 text-sky-600 inline-flex items-center justify-center shrink-0">
+                                <GiftIcon className="w-4 h-4" />
+                            </span>
+                            <span className="min-w-0 flex-1">
+                                <span className="block text-[12.5px] font-medium text-slate-900">
+                                    Offered to you: {o.name} plan, ${o.monthly_usd}/mo
+                                </span>
+                                <span className="block text-[12px] text-slate-500 leading-relaxed">
+                                    {o.warmup_only
+                                        ? "The premium warmup pool and no mailbox cap, for mailboxes connected here or on a linked instance."
+                                        : "A plan Warmbly has made available to this workspace."}
+                                    {o.available ? "" : " Not purchasable yet."}
+                                </span>
+                            </span>
+                            <ArrowRightIcon className="w-3.5 h-3.5 text-slate-400 group-hover:text-sky-600 shrink-0 transition-colors" />
+                        </button>
+                    ))}
             </Section>
 
             {/* ── Usage against real limits ────────────────────────────── */}
@@ -392,7 +427,7 @@ export default function OverviewTab({ onChangePlan, onWarmupPlan }: { onChangePl
                         "A meter with no cap means the limit is unmetered on this plan. Warmup volume is governed per mailbox and is not capped here."
                     ) : (
                         <span>
-                            {access.warmupOnly ? "The Warmup plan" : "A free workspace"} warms mailboxes and does not send.
+                            {access.warmupOnly ? `The ${plan.label} plan` : "A free workspace"} warms mailboxes and does not send.
                             Campaigns, contacts, the unified inbox and the team come with a{" "}
                             <button type="button" onClick={onChangePlan} className="font-medium text-slate-600 hover:text-slate-900 underline-offset-2 hover:underline">
                                 plan that sends
@@ -403,6 +438,7 @@ export default function OverviewTab({ onChangePlan, onWarmupPlan }: { onChangePl
                 </p>
             </Section>
 
+            <OfferedPlanDialog offer={offerOpen} onClose={() => setOfferOpen(null)} switching={flow.hasStripeSubscription} />
         </>
     );
 }

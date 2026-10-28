@@ -174,6 +174,20 @@ docker exec -i warmbly-postgres-1 psql -U warmbly -d warmbly_qa_<worktree> < fix
 QA_MEMBER_ACCESS_FIXTURES=1 pnpm proof member-access
 ```
 
+## Campaign estimate proof fixtures
+
+`flows/campaign-estimate.flow.ts` is opt-in: apply `fixtures/campaign-estimate.sql`
+to this worktree's rich-seed database, which adds a 300-lead **Agencies** list on
+the reserved `.example` TLD, gives any active sender without warmup history three
+weeks of it, and marks the owner's product tour finished so it does not cover the
+page. Clear the stack's private Redis afterwards so the cached user is re-read.
+
+```bash
+docker exec -i warmbly-postgres-1 psql -U warmbly -d warmbly_qa_<worktree> < fixtures/campaign-estimate.sql
+docker exec wqa-<worktree>-redis redis-cli FLUSHDB
+QA_CAMPAIGN_ESTIMATE_FIXTURES=1 pnpm proof campaign-estimate
+```
+
 ## Tester sample data proof
 
 The `tester-sample-data` flow uses the real local tester-provisioning and sample-data endpoints. Start the worktree's lite stack, then serve `admin/` separately against its API. Set `QA_WEB_URL` to that localhost admin origin. Prepare a seeded admin holding `view_users` and `manage_testers`, with a locally MFA-verified session; clear only that user's and session's isolated Redis entries after SQL fixture changes. These authentication fixtures are not proof of real MFA. Run `QA_TESTER_SAMPLE_FIXTURES=1 pnpm proof tester-sample-data`.

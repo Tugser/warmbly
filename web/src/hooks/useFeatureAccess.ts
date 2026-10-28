@@ -26,9 +26,11 @@ import { useAppStore } from "@/stores";
 import { PERMISSION_BITS, hasPermission } from "@/lib/permissions";
 import {
     WARMUP_PLAN_ID,
+    PARTNERSHIP_PLAN_ID,
     TEST_PLAN_ID,
     getPlan,
     isAtLeast,
+    isWarmupOnlyPlan,
     type PlanID,
 } from "@/lib/plans";
 
@@ -43,7 +45,7 @@ export interface FeatureAccess {
     billing: boolean;
     /** Active subscription on any paid tier, the Warmup plan included. */
     paid: boolean;
-    /** On the Warmup plan: the premium pool and no mailbox cap, nothing else.
+    /** On a warming-only plan (Warmup, Partnership): the premium pool and no mailbox cap, nothing else.
      *  Every surface a free workspace cannot use stays locked. */
     warmupOnly: boolean;
     /** Hosted workspace without a plan that sends (free, or the Warmup plan):
@@ -112,6 +114,8 @@ export default function useFeatureAccess(): FeatureAccess {
         ? "business"
         : sub.data?.plan?.id === WARMUP_PLAN_ID
         ? "warmup"
+        : sub.data?.plan?.id === PARTNERSHIP_PLAN_ID
+        ? "partnership"
         : ((sub.data?.plan?.name ?? currentOrg?.plan ?? "free").toLowerCase()) as PlanID;
     const plan = getPlan(planId).id;
     const status = sub.data?.status;
@@ -129,9 +133,9 @@ export default function useFeatureAccess(): FeatureAccess {
     const orgImpliesPaid =
         sub.isPending && !!currentOrg?.plan && currentOrg.plan.toLowerCase() !== "free";
     const isPaid = subSaysPaid || managed || orgImpliesPaid;
-    // The Warmup plan is paid, but pays for warming only; the server refuses
-    // sending, the inbox and AI to it exactly as it does to a free workspace.
-    const warmupOnly = isPaid && plan === "warmup";
+    // The Warmup and Partnership plans are paid, but pay for warming only; the
+    // server refuses sending, the inbox and AI to them as it does to a free workspace.
+    const warmupOnly = isPaid && isWarmupOnlyPlan(plan);
     const productPaid = isPaid && !warmupOnly;
 
     return {

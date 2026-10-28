@@ -31,6 +31,16 @@ func (s *tokenService) saveSession(ctx context.Context, session *models.Session,
 	return nil
 }
 
+// fillSession caches a row read from the database only when nothing is cached,
+// so it can never overwrite a revoked tombstone written while the row was read.
+func (s *tokenService) fillSession(ctx context.Context, session *models.Session) {
+	data, err := json.Marshal(session)
+	if err != nil {
+		return
+	}
+	_ = s.cache.SetNX(ctx, getSessionKey(session.ID), data, SessionTTL).Err()
+}
+
 func (s *tokenService) getSession(ctx context.Context, sessionID uuid.UUID) (*models.Session, *errx.Error) {
 	data, err := s.cache.Get(ctx, getSessionKey(sessionID)).Bytes()
 	if err != nil {

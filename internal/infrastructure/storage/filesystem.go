@@ -163,7 +163,7 @@ func (s *FilesystemStore) Has(_ context.Context, key string) (bool, error) {
 // PresignedGetURL is not supported by the filesystem backend — there's no
 // authority to sign URLs against. Callers should fall back to streaming the
 // object through the application.
-func (s *FilesystemStore) PresignedGetURL(_ context.Context, _ string, _ time.Duration) (string, error) {
+func (s *FilesystemStore) PresignedGetURL(_ context.Context, _ string, _ time.Duration, _ Download) (string, error) {
 	return "", ErrUnsupported
 }
 

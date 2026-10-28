@@ -16,6 +16,9 @@ import useCampaigns from "@/lib/api/hooks/app/campaigns/useCampaigns";
 
 import Section from "./SettingsSection";
 
+/** The API's code for a redirect destination outside the workspace's own domains. */
+export const REDIRECT_NOT_OWN_DOMAIN = "redirect_target_not_own_domain";
+
 export interface FormSettingsDraft {
     success_message: string;
     redirect_url: string;
@@ -28,11 +31,17 @@ export interface FormSettingsDraft {
 
 export default function SettingsPanel({
     draft,
+    redirectError = "",
+    redirectInactive = false,
     captchaAvailable,
     triageAvailable,
     onChange,
 }: {
     draft: FormSettingsDraft;
+    /** The API's refusal of the redirect destination, shown under the field. */
+    redirectError?: string;
+    /** The saved destination is not on the workspace's own domains, so visitors see the success message. */
+    redirectInactive?: boolean;
     captchaAvailable: boolean;
     triageAvailable: boolean;
     onChange: (patch: Partial<FormSettingsDraft>) => void;
@@ -73,10 +82,24 @@ export default function SettingsPanel({
                     <TextInput
                         value={draft.redirect_url}
                         onChange={(v) => onChange({ redirect_url: v })}
-                        placeholder="https://example.com/thanks (optional)"
+                        placeholder="https://yourcompany.com/thanks (optional)"
+                        invalid={redirectError !== ""}
                     />
+                    {redirectError ? (
+                        <p className="text-[11px] text-rose-600 mt-1" role="alert">
+                            {redirectError}
+                        </p>
+                    ) : redirectInactive ? (
+                        <p className="text-[11px] text-amber-700 mt-1">
+                            Not in use: this page is no longer on one of your workspace's own domains, so visitors see
+                            the success message instead. This happens when the mailbox or verified domain it relied on
+                            was removed. Point it at one of your own domains, or reconnect that domain.
+                        </p>
+                    ) : null}
                     <p className="text-[11px] text-slate-500 mt-1">
-                        Leave empty to show the success message instead.
+                        Must be a page on one of your workspace's own domains: a domain you have a mailbox on (not
+                        gmail.com or another shared provider), your verified tracking domain, your verified forms
+                        domain, or a subdomain of one. Leave empty to show the success message instead.
                     </p>
                 </div>
             </Section>

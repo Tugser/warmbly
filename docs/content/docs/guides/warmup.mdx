@@ -41,7 +41,7 @@ Pause to stop both sending and receiving warmup mail, or Stop to also turn diagn
 
 - Warmup is a paid feature: free organizations can connect mailboxes, but no warmup traffic is scheduled for them.
 - New mailboxes start with warmup off. Once on, it starts at `10` emails a day by default and climbs by `+1` a day to a ceiling of `40`.
-- Keep warmup on after campaigns start. A mailbox backing a live campaign drops to at most five warmup messages a day.
+- Keep warmup on after campaigns start. A mailbox backing a live campaign drops to at most five warmup messages a day, and the pool replies to more of them.
 - Warmup mail never appears in the unibox, and it is removed from the mailbox after 30 days by default.
 - Spam placement is judged at Google, Microsoft and Yahoo only. It slows a mailbox down but does not, on its own, quarantine or block it.
 
@@ -145,7 +145,7 @@ Outside-workspace partners broaden observations; unlinked self-hosted instances 
 Within that order, partners are picked by weight rather than at random. Three things move the weight:
 
 - **Host and domain coverage.** Eligible mail hosts start with balanced total weight, so a host with many custom domains does not crowd out a consumer host sharing one domain, such as Gmail. Recently used domains are downweighted within each host; partner no-repeat rules and daily receiving caps still apply. Gmail and Google Workspace are distinct hosts, as are Outlook.com and Microsoft 365.
-- **Where you are landing.** Warmbly tracks your spam-placement rate separately for each recipient mail host over the last seven days: who actually runs that recipient's mail (Google Workspace, Microsoft 365, Zoho Mail, Hostinger and so on), read from the partner's mail servers rather than its address, so two custom domains on different hosts are judged apart. A mailbox landing in spam at one host but not the others is sent fewer partners on that host until the rate falls, without waiting for an overall health band to trip.
+- **Where you are landing.** Warmbly tracks your spam-placement rate separately for each recipient mail host over the last seven days: who actually runs that recipient's mail (Google Workspace, Microsoft 365, Zoho Mail, Hostinger and so on), read from the partner's mail servers rather than its address, so two custom domains on different hosts are judged apart. A mailbox landing in spam at one host but not the others is sent fewer partners on that host until the rate falls, without waiting for an overall health band to trip. A free Gmail or Outlook.com mailbox works the other way at Google, Microsoft and Yahoo: it is sent more partners where it lands in spam (up to twice as many), because the pool rescues its mail at the [recovery](#recovery-engagement) rate and that rescue is what repairs its standing with that provider. Other hosts still get fewer.
 - **Your routing rules**, when you have configured any. A rule's weight multiplies a partner's chance; a weight of `0` is not a weight but an exclusion, so that pairing never happens.
 
 Balanced starting weights are not a fixed sending ratio. Available recipients, health, daily caps, recent pairings, placement feedback and routing rules still determine the actual split. More traffic to a host does not establish improved inbox placement.
@@ -206,7 +206,7 @@ Filter by provider to distinguish observations from gaps. Confirmed out of spam 
 |---------|---------|---------|
 | Start volume | `10`/day | Warmup emails on day one |
 | Daily increase | `+1`/day | How much the target grows daily |
-| Ceiling | `40`/day | Where the ramp stops climbing |
+| Ceiling | `40`/day (`25`/day on a free Gmail or Outlook.com account) | Where the ramp stops climbing |
 
 Configured diagnostic targets start at 10/day and rise by one toward 40/day before other constraints. These are product pacing defaults, not universal safe volumes or readiness evidence.
 
@@ -239,7 +239,7 @@ Nothing needs to be switched on and no health band has to trip first. That matte
 Placement slowdown and ramp pause have different windows. The drawer shows observed targets/holds. Lifecycle actions retain ramp history and restrictive holds rather than erasing negative evidence.
 
 <Callout type="info" title="Warmup and campaigns coexist">
-  Keep warmup on after campaigns start. A mailbox backing a live campaign drops to at most five warmup messages per day, leaving the campaign as primary traffic. Warmup does not make repetitive or unwanted copy safe: you still need real targeting, personalization, suppression, and unsubscribe support.
+  Keep warmup on after campaigns start. A mailbox backing a live campaign drops to at most five warmup messages per day, leaving the campaign as primary traffic, and gets [recovery engagement](#recovery-engagement) on them, so it keeps receiving replies while most cold recipients do not answer. Five a day is also what keeps its [inbox placement](#pool-safety) measured, which needs 20 delivered warmup emails in seven days. When no live campaign uses the mailbox, warmup returns to its own ramp. Warmup does not make repetitive or unwanted copy safe: you still need real targeting, personalization, suppression, and unsubscribe support.
 </Callout>
 
 </Fold>
@@ -252,7 +252,7 @@ Configured diagnostic turns continue disclosed scenarios, not organic relationsh
 
 Replies thread properly with a real `Re:` subject and `In-Reply-To` header, and candidates must be between 45 minutes and seven days old, so nothing is answered instantly or revived indefinitely.
 
-Receiving warmup mail can also prompt an answer directly. When a verified warmup email arrives, the recipient sometimes points its next scheduled send back at whoever wrote, 45 minutes to 5 hours later and inside its own warmup hours. That is a re-pointing, not extra work: each mailbox has one warmup send queued at a time, so a reply-back moves that send earlier and aims it, and can never push a send the mailbox had already planned sooner. When that send is already answering someone, the new email is not answered, so replies never crowd out new threads. The chance is the recipient's own reply rate (raised for a sender in [recovery](#recovery-engagement)), drawn once when the reply is scheduled rather than again when it sends, and it stops before a thread reaches its message cap so replies cannot answer replies indefinitely. A reply crosses the free and paid tiers like the mail it answers: a paid mailbox answers a free partner that wrote to it, and a free mailbox answers a paid one while it is healthy and its workspace is in good standing.
+Receiving warmup mail can also prompt an answer directly. When a verified warmup email arrives, the recipient sometimes points its next scheduled send back at whoever wrote, 45 minutes to 5 hours later and inside its own warmup hours. That is a re-pointing, not extra work: each mailbox has one warmup send queued at a time, so a reply-back moves that send earlier and aims it, and can never push a send the mailbox had already planned sooner. When that send is already answering someone, the new email is not answered, so replies never crowd out new threads. A reply is held to the same daily receiving cap as any other warmup email: when the inbox it answers is full for the day, the thread ends there and the mailbox goes on with its normal schedule, so one busy partner never stops a mailbox's warmup. The chance is the recipient's own reply rate (raised for a sender in [recovery](#recovery-engagement), which includes every free Gmail and Outlook.com mailbox and every mailbox backing a live campaign), drawn once when the reply is scheduled rather than again when it sends, and it stops before a thread reaches its message cap so replies cannot answer replies indefinitely. A reply crosses the free and paid tiers like the mail it answers: a paid mailbox answers a free partner that wrote to it, and a free mailbox answers a paid one while it is healthy and its workspace is in good standing.
 
 Scheduling respects windows, provider feedback, shared limits and spacing. Jitter distributes load, not human identities. Receiving participation allows probabilistic spam rescue, reads, importance and stars or flags on verified warmup messages. Filing and selected spam rescues are requested immediately; reads, importance and stars are durably scheduled after a randomized dwell. Current receiving permission and worker assignment are checked again at execution time. These actions are automation, not human feedback or a guaranteed reputation improvement.
 
@@ -354,6 +354,8 @@ Spam placement is a folder outcome, not misconduct or evidence of diagnostic rep
 ### Recovery engagement
 
 While a mailbox is on watch or throttled, the pool works harder for it instead of only slowing it down. Recipients that take part in engagement move nearly every copy of its warmup mail that lands in spam back out of spam (each mailbox at its own rate, so none does it every time) and mark more of it important, and each email has at least a `60%` chance of a reply when the recipient's next warmup send is free to answer it (unless the recipient's owner turned warmup replies off). Replies take the place of the recipient's next scheduled warmup send, so the extra engagement adds no volume. It stops on its own when the band lifts.
+
+A free Gmail (`gmail.com`, `googlemail.com`) or Outlook.com (`outlook.com`, `hotmail.com`, `live.com` and the other Microsoft consumer domains) mailbox gets recovery engagement all the time, whatever its standing. A personal account starts with far less sender trust than a Google Workspace or Microsoft 365 mailbox on your own domain, so the pool rescues, marks important and answers its mail at the recovery rates from the first day. Workspace and Microsoft 365 mailboxes get it while on watch or throttled, and while they back a live campaign: cold mail draws few replies, so the pool answers at least `60%` of the reduced warmup those mailboxes still send. Those replies never count as campaign replies and never raise campaign volume.
 
 Placement uses today and the preceding six UTC dates, matching the seven-day inbox rate on Deliverability and Emails. Older placement results stop affecting volume at the same boundary as the displayed rate. Complaints and mailbox tampering keep their separate rolling windows.
 

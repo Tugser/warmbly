@@ -319,7 +319,7 @@ func (h *Handler) UploadOAuthAppLogo(c *gin.Context) {
 		errx.JSON(c, oauthAppWriteError(err))
 		return
 	}
-	raw, _, _, xerr := readAvatarUpload(c)
+	raw, _, _, xerr := readImageUpload(c, appLogoLimits)
 	if xerr != nil {
 		errx.JSON(c, xerr)
 		return
@@ -447,8 +447,26 @@ func clientCredentials(c *gin.Context) (string, string) {
 	return c.PostForm("client_id"), c.PostForm("client_secret")
 }
 
+// refuseRepeatedParams answers a form that sends any parameter twice (RFC 6749 section 3.2).
+func refuseRepeatedParams(c *gin.Context) bool {
+	if err := c.Request.ParseForm(); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "error_description": "The request body could not be read as a form."})
+		return true
+	}
+	for _, values := range c.Request.PostForm {
+		if len(values) > 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "error_description": "Each parameter may be included only once."})
+			return true
+		}
+	}
+	return false
+}
+
 // OAuthToken is the token endpoint. It dispatches on grant_type.
 func (h *Handler) OAuthToken(c *gin.Context) {
+	if refuseRepeatedParams(c) {
+		return
+	}
 	grantType := c.PostForm("grant_type")
 	clientID, clientSecret := clientCredentials(c)
 	switch grantType {
@@ -479,6 +497,9 @@ func (h *Handler) OAuthToken(c *gin.Context) {
 // OAuthRevoke is the token-revocation endpoint (RFC 7009). It succeeds even for
 // an unknown token, so the response never confirms a token's existence.
 func (h *Handler) OAuthRevoke(c *gin.Context) {
+	if refuseRepeatedParams(c) {
+		return
+	}
 	clientID, clientSecret := clientCredentials(c)
 	token := c.PostForm("token")
 	if err := h.OAuthService.RevokeToken(c.Request.Context(), clientID, clientSecret, token); err != nil {

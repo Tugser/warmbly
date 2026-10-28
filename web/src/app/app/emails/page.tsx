@@ -42,6 +42,7 @@ import buildError from "@/lib/helper/buildError";
 import type { AppError } from "@/lib/api/client/normalizeError";
 import BulkWarmupDialog from "@/components/app/emails/BulkWarmupDialog";
 import BulkTagPopover from "@/components/app/emails/BulkTagPopover";
+import BulkSignatureDialog from "@/components/app/emails/BulkSignatureDialog";
 import MailboxImportsMenu from "@/components/app/emails/import/MailboxImportsMenu";
 import MailboxSourceChip from "@/components/app/emails/MailboxSourceChip";
 import ProviderLogo from "@/components/app/emails/ProviderLogo";
@@ -67,6 +68,7 @@ import {
     Loader2Icon,
     MoonIcon,
     PauseIcon,
+    PenLineIcon,
     PlayIcon,
     PlusIcon,
     PowerIcon,
@@ -146,6 +148,7 @@ export default function AddressesPage() {
     const consumeTabIntent = React.useCallback(() => setViewTab(undefined), []);
     const [removing, setRemoving] = React.useState(false);
     const [bulkStart, setBulkStart] = React.useState(false);
+    const [bulkSignature, setBulkSignature] = React.useState(false);
     const [searchParams, setSearchParams] = useSearchParams();
     const queryClient = useQueryClient();
 
@@ -354,6 +357,10 @@ export default function AddressesPage() {
         }
         return out;
     }, [selected, boxStatusById]);
+    const selectedMailboxes = useMemo(() => {
+        const ids = new Set(selected);
+        return (emailsData.emails ?? []).filter((e) => ids.has(e.id));
+    }, [selected, emailsData.emails]);
 
     const openDetail = (id: string, tab?: string) => {
         const parsed = mailboxTab.safeParse(tab);
@@ -711,6 +718,14 @@ export default function AddressesPage() {
                             </button>
                         )}
                         <BulkTagPopover ids={selected} />
+                        <button
+                            type="button"
+                            onClick={() => setBulkSignature(true)}
+                            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded text-[12px] font-medium text-slate-600 hover:bg-slate-100 transition-colors"
+                        >
+                            <PenLineIcon className="w-3.5 h-3.5" />
+                            Signature
+                        </button>
                         <div className="w-px h-4 bg-slate-200 mx-0.5" />
                         <button
                             type="button"
@@ -756,6 +771,12 @@ export default function AddressesPage() {
                 ids={selected}
                 onClose={() => setBulkStart(false)}
                 onComplete={() => setSelected([])}
+            />
+
+            <BulkSignatureDialog
+                open={bulkSignature}
+                mailboxes={selectedMailboxes}
+                onClose={() => setBulkSignature(false)}
             />
         </Page>
     );
@@ -1216,6 +1237,8 @@ function MailboxRow({
                                                     ? `Remove ${box.email} from this instance and stop its Cloud warmup sending and receiving? Its mailbox, sign-in and history stay in your Warmbly Cloud workspace; campaigns here stop sending from it.`
                                                     : cloud?.independent_smtp || cloud?.cloud?.managed
                                                     ? `Disconnect Cloud warmup for ${box.email}? Its Cloud mailbox, credentials and warmup history stay on Cloud. Campaigns here keep their existing app-password connection. Cloud warmup sending and receiving stop until you restart them there.`
+                                                    : cloud?.executor === "instance"
+                                                    ? `Stop warming ${box.email} in the Warmbly pool? Its credential never left this server.`
                                                     : `Stop warming ${box.email} in the Warmbly pool? The cloud deletes its credential right away.`,
                                                 async () => {
                                                     await cloudRun(() => cloudUnenroll.mutateAsync(box.id), cloud?.managed ? `${box.email} removed from this instance` : `${box.email} removed from the pool`);

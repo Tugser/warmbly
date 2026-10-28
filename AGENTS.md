@@ -418,7 +418,7 @@ Web conventions:
 
 ### Developer WebSocket
 
-API keys with the `REALTIME_SUBSCRIBE` permission (bit 11) can connect to the same socket, presenting the key (or a `wmat_` OAuth token) in the `x-warmbly-token` header; the query-string form for them is deprecated and kept only for existing clients, while the 10-minute ws ticket rides the query string. Connection spam is bounded by per-user concurrent-connection caps (plan-based, default 10), per-IP (50), a global cap, join rate limits, and per-key IP restrictions. Documented in `docs/content/docs/api/realtime.mdx` — keep that page in sync with channel/limit changes.
+API keys with the `REALTIME_SUBSCRIBE` permission (bit 11) can connect to the same socket, presenting the key (or a `wmat_` OAuth token) in the `x-warmbly-token` header; in the query string they are refused unless the realtime service sets `REALTIME_ALLOW_QUERY_CREDENTIALS=true`. Such a socket reaches only the credential's own workspace, with member permissions narrowed to its read scopes (`Auth.confine`). The 10-minute ws ticket rides the query string, opens one socket, and names its session, which must still be live; `admin:platform` additionally requires that session to have verified a second factor. Connection spam is bounded by per-user concurrent-connection caps (plan-based, default 10), per-IP (50), a global cap, join rate limits, and per-key IP restrictions. Documented in `docs/content/docs/api/realtime.mdx` — keep that page in sync with channel/limit changes.
 
 ## System Shape
 
@@ -520,9 +520,10 @@ Two rules that follow from those:
 - **systemd runs no shell.** No `$(...)`, no globbing, no word splitting in a unit. A value that has to vary comes from an `EnvironmentFile` as `${VAR}`, which expands to exactly one argument
 - **What the node may write and what root reads are different directories.** The container runs as uid 1000; it gets `/var/lib/warmbly/node` and nothing else. `image-ref` lives one level up, root-owned, because systemd feeds it to a root `docker run --network host` and a node that could rewrite it would choose the image root executes
 
-The env the join endpoint hands a node is rendered from the backend's own environment (`nodeEnvKeys` in `internal/api/handler/fleet_nodes.go`). Three things are decided rather than copied:
+The env the join endpoint hands a node is rendered from the backend's own environment (`fleetnode.RenderEnv` in `internal/app/fleetnode/nodeenv.go`). Three things are decided rather than copied:
 
-- **`PRIMARY_DB` reaches a consumer and never a worker.** A worker gets relational data through the internal API and nothing else; a consumer opens Postgres itself and cannot boot without the DSN. Role is known at render time, so the exclusion lives exactly where it belongs
+- **`PRIMARY_DB` reaches a consumer and never a worker.** A worker gets relational data through the internal API and nothing else; a consumer opens Postgres itself and cannot boot without the DSN. Role is known at render time, so the exclusion lives exactly where it belongs. The same holds for `CREDENTIALS_ENCRYPTION_KEY`, its read keys and `KMS_LOCAL_MASTER_KEY`: a worker's KMS is always brokered
+- **A node receives only its own env.** `GET /fleet/node-env` checks the per-node `NODE_CREDENTIAL` issued at join (stored hashed on `fleet_nodes.credential_hash`), and the rendered env carries the resolved `DEPLOYMENT_MODE` so a node never has to guess whether it is hosted
 - **The crypto and blob providers are translated, not copied** (`nodeProviders`), so no machine in the fleet carries a cloud credential
 - **Every name sent must be one the node's own code reads.** `S3_BUCKET` and `KMS_KEY_ID` were sent for a while and read by nothing, against a storage layer reading `BLOB_BUCKET` and a KMS factory reading `KMS_AWS_KEY_ID`, so an AWS-backed node silently used the default bucket and the default key alias. `internal/api/handler/fleet_nodes_test.go` asserts on the rendered file
 

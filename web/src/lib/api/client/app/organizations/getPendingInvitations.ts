@@ -8,7 +8,7 @@ interface RawResponse {
 export default async function getPendingInvitations(): Promise<Invitation[]> {
     const res = await Request<RawResponse | Invitation[]>({
         method: "GET",
-        url: `/organization/invitations`,
+        url: `/organization/invitations?include_expired=true`,
         authorization: true,
     });
     if (Array.isArray(res)) return res;

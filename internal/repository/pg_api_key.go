@@ -22,6 +22,8 @@ type APIKeyRepository interface {
 	List(ctx context.Context, orgID uuid.UUID, limit int, cursor *uuid.UUID) (*models.APIKeysResult, *errx.Error)
 	Update(ctx context.Context, orgID, keyID uuid.UUID, data *models.UpdateAPIKey) (*models.APIKey, *errx.Error)
 	Revoke(ctx context.Context, orgID, keyID uuid.UUID, reason string) *errx.Error
+	// RevokeCreatedBy revokes every active key userID created, in any workspace.
+	RevokeCreatedBy(ctx context.Context, userID uuid.UUID, reason string) (int64, *errx.Error)
 	Delete(ctx context.Context, orgID, keyID uuid.UUID) *errx.Error
 	UpdateLastUsed(ctx context.Context, keyID uuid.UUID, ip string) error
 	LogUsage(ctx context.Context, log *models.APIKeyUsageLog) error
@@ -285,6 +287,23 @@ func (r *apiKeyRepository) Revoke(ctx context.Context, orgID, keyID uuid.UUID, r
 	}
 
 	return nil
+}
+
+func (r *apiKeyRepository) RevokeCreatedBy(ctx context.Context, userID uuid.UUID, reason string) (int64, *errx.Error) {
+	query := `
+		UPDATE api_keys
+		SET status = 'revoked', revoked_at = now(), revoked_reason = $2, updated_at = now()
+		WHERE user_id = $1 AND status = 'active'
+	`
+
+	params := []any{userID, reason}
+
+	cmd, err := r.DB.Exec(ctx, query, params...)
+	if err != nil {
+		db.CaptureError(err, query, params, "exec")
+		return 0, errx.InternalError()
+	}
+	return cmd.RowsAffected(), nil
 }
 
 // Delete removes a key row for good. It refuses a key that can still

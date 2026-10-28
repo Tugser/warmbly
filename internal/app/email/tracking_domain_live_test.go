@@ -3,13 +3,16 @@ package email
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/warmbly/warmbly/internal/app/customhost"
 	"github.com/warmbly/warmbly/internal/infrastructure/db"
+	"github.com/warmbly/warmbly/internal/pkg/domainproof"
 	"github.com/warmbly/warmbly/internal/pkg/trackdns"
 	"github.com/warmbly/warmbly/internal/repository"
 )
@@ -85,7 +88,19 @@ func newTrackingFixture(t *testing.T) *trackingFixture {
 
 	handle := &db.DB{Pool: pool}
 	f.svc = NewService(repository.NewEmailRepostory(handle, nil), nil, nil, nil, nil)
+	prover := domainproof.New("live-test")
+	f.svc.(CustomHostsAware).WireCustomHosts(customhost.New(nil, prover, publishedProof{prover, f.org}))
 	return f
+}
+
+// publishedProof answers every TXT lookup with the workspace's proof, as if the owner had added the record.
+type publishedProof struct {
+	prover *domainproof.Prover
+	org    uuid.UUID
+}
+
+func (p publishedProof) LookupTXT(_ context.Context, name string) ([]string, error) {
+	return []string{p.prover.Value(p.org, strings.TrimPrefix(name, domainproof.Label+"."))}, nil
 }
 
 func (f *trackingFixture) stored(t *testing.T) (string, bool) {

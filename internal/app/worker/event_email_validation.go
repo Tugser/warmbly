@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
+	"github.com/warmbly/warmbly/internal/client/mailtls"
 	"github.com/warmbly/warmbly/internal/email"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/observability/errs"
@@ -134,10 +135,10 @@ func (w *WorkerService) runEmailValidation(parent context.Context, data models.E
 		}()
 	}
 	probe(imapDone, func() email.ProbeResult {
-		return email.VerifyImap(probeCtx, imapCreds.Host, imapCreds.Port, imapCreds.Username, imapCreds.Password, imapCreds.Security)
+		return email.VerifyImap(probeCtx, imapCreds.Host, imapCreds.Port, imapCreds.Username, imapCreds.Password, imapCreds.Security, probePolicy(&imapCreds))
 	})
 	probe(smtpDone, func() email.ProbeResult {
-		return email.VerifySMTP(probeCtx, smtpCreds.Host, smtpCreds.Port, smtpCreds.Username, smtpCreds.Password, smtpCreds.Security)
+		return email.VerifySMTP(probeCtx, smtpCreds.Host, smtpCreds.Port, smtpCreds.Username, smtpCreds.Password, smtpCreds.Security, probePolicy(&smtpCreds))
 	})
 
 	verdict := validationVerdict(<-smtpDone, <-imapDone)
@@ -168,6 +169,15 @@ func (w *WorkerService) publishValidationVerdict(parent context.Context, process
 	if err := w.Cache.Publish(replyCtx, channel, legacy).Err(); err != nil {
 		errs.CaptureException(err)
 	}
+}
+
+// probePolicy is the leg's stored TLS policy, except that a server the owner
+// opted out of verifying with no certificate confirmed yet is accepted once so
+// the test can report the fingerprint that will be pinned.
+func probePolicy(svc *models.Service) mailtls.Policy {
+	p := mailtls.PolicyFor(svc)
+	p.Record = true
+	return p
 }
 
 // validationVerdict folds the two probes into the reply the backend reads.

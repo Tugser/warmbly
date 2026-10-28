@@ -4,7 +4,7 @@ import (
 	"crypto/subtle"
 	"html/template"
 	"net/http"
-	"net/url"
+	"os"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -33,7 +33,7 @@ var brokerConsentPage = template.Must(template.New("broker-consent").Parse(`<!do
   .h{font-size:15px;font-weight:600;margin:0 0 10px}
   .t{font-size:13px;color:#334155;margin:0 0 10px}
   .w{font-size:12.5px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:8px 10px;margin:12px 0 16px}
-  .b{display:inline-block;background:#0284c7;color:#fff;text-decoration:none;font-size:13px;font-weight:500;padding:8px 14px;border-radius:6px}
+  .b{display:inline-block;background:#0284c7;color:#fff;border:0;cursor:pointer;font:inherit;font-size:13px;font-weight:500;padding:8px 14px;border-radius:6px}
   .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;background:#f1f5f9;padding:1px 5px;border-radius:4px;word-break:break-all}
 </style></head>
 <body><div class="wrap"><div class="card">
@@ -41,7 +41,7 @@ var brokerConsentPage = template.Must(template.New("broker-consent").Parse(`<!do
   <p class="t">The self-hosted Warmbly instance at <span class="m">{{.Host}}</span>{{if .Name}} ({{.Name}}){{end}} asked to connect a mailbox through Warmbly Cloud.</p>
   <p class="t">If you continue and sign in, the mailbox is added to the Warmbly Cloud workspace <strong>{{if .Workspace}}{{.Workspace}}{{else}}linked to that instance{{end}}</strong>, and that instance can send and read mail as it.</p>
   <p class="w">Only continue if you started this yourself, from that instance. If someone sent you this link, close this tab.</p>
-  <a class="b" href="{{.ContinueURL}}">Continue to {{.Provider}}</a>
+  <form method="post" action="{{.ContinueURL}}"><input type="hidden" name="state" value="{{.State}}"><input type="hidden" name="t" value="{{.Token}}"><button class="b" type="submit">Continue to {{.Provider}}</button></form>
 </div></div></body></html>`))
 
 func brokerProviderName(p models.InboxProvider) string {
@@ -62,8 +62,17 @@ func renderBrokerNotice(c *gin.Context, xerr *errx.Error) {
 	renderNotice(c, status, "Sign-in not started", body)
 }
 
+// brokerCookieSecure is always true outside development; plain-http dev may omit it.
+func brokerCookieSecure(r *http.Request) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))) {
+	case "", "dev", "development", "local":
+		return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	}
+	return true
+}
+
 func setBrokerCookie(c *gin.Context, value string, maxAge int) {
-	secure := c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https")
+	secure := brokerCookieSecure(c.Request)
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name: brokerCookieName, Value: value, Path: brokerCookiePath, MaxAge: maxAge,
 		HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode,
@@ -94,14 +103,17 @@ func (h *Handler) PoolLinkOAuthConsentPage(c *gin.Context) {
 		}
 	}
 	setBrokerCookie(c, token, 15*60)
-	data := struct{ Provider, Host, Name, Workspace, ContinueURL string }{
+	// The binding value is posted in the form body, never put in a URL.
+	data := struct{ Provider, Host, Name, Workspace, ContinueURL, State, Token string }{
 		Provider:    brokerProviderName(consent.Provider),
 		Host:        consent.InstanceHost,
 		Name:        consent.InstanceName,
 		Workspace:   consent.WorkspaceName,
-		ContinueURL: poollink.BrokerConsentPath + "/continue?" + url.Values{"state": {state}, "t": {token}}.Encode(),
+		ContinueURL: poollink.BrokerConsentPath + "/continue",
+		State:       state,
+		Token:       token,
 	}
-	c.Header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+	c.Header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	c.Status(http.StatusOK)
 	_ = brokerConsentPage.Execute(c.Writer, data)
@@ -115,16 +127,25 @@ func (h *Handler) PoolLinkOAuthContinue(c *gin.Context) {
 		renderBrokerNotice(c, nil)
 		return
 	}
-	// The link carries the cookie's value, which only the consent page rendered in this browser knows.
+	// The form posts the cookie's value, which only the consent page rendered in this browser knows.
+	// A GET with query values is still taken for a page rendered by the previous release.
+	state, sent := c.Query("state"), c.Query("t")
+	if c.Request.Method == http.MethodPost {
+		state, sent = c.PostForm("state"), c.PostForm("t")
+	}
 	cookie, _ := c.Cookie(brokerCookieName)
-	if cookie == "" || subtle.ConstantTimeCompare([]byte(cookie), []byte(c.Query("t"))) != 1 {
+	if cookie == "" || subtle.ConstantTimeCompare([]byte(cookie), []byte(sent)) != 1 {
 		renderBrokerNotice(c, poollink.ErrOAuthBrowser)
 		return
 	}
-	to, xerr := h.PoolLinkService.ContinueOAuth(c.Request.Context(), c.Query("state"), cookie)
+	to, xerr := h.PoolLinkService.ContinueOAuth(c.Request.Context(), state, cookie)
 	if xerr != nil {
 		renderBrokerNotice(c, xerr)
 		return
 	}
-	c.Redirect(http.StatusFound, to)
+	code := http.StatusFound
+	if c.Request.Method == http.MethodPost {
+		code = http.StatusSeeOther
+	}
+	c.Redirect(code, to)
 }

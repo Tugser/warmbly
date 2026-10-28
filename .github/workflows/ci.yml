@@ -69,8 +69,11 @@ jobs:
             aws-deployment:
               - '.github/workflows/ci.yml'
               - '.github/workflows/deploy-aws.yml'
+              - '.github/workflows/rotate-keys.yml'
               - '.github/scripts/aws-deploy*.cjs'
+              - '.github/scripts/aws-rotate*.cjs'
               - '.github/aws-deploy/**'
+              - 'deploy/terraform/aws/runtime/rotate/**'
             tracking:
               - 'tracking/**'
             realtime:
@@ -222,8 +225,8 @@ jobs:
         run: |
           set -o pipefail
           go run ./cmd/migrate
-          go test -race -v -p 1 ./internal/repository ./internal/app/analytics -run '^TestLive(WarmupPartnerCountsMatchIndividualCandidates|WarmupSummariesMatchIndividualReads|LinkedMailboxStatusBatchPreservesDetails|WarmupPartnerWeekCacheMatchesExactReadAndKeepsTheCapLive|WarmupPartnerWeekCacheRefreshesDetachedAndServesStale|WarmupPartnerCandidatesCarryReciprocityAndHonourTheCap|AccountStatusPageMatchesSingleReadsInBoundedQueries|WarmupOffMailboxReceivesNothing|WarmupPauseRetiresIncomingWork)$' -count=1 | tee linked-mailbox-batch.log
-          for test in TestLiveWarmupPartnerCountsMatchIndividualCandidates TestLiveWarmupSummariesMatchIndividualReads TestLiveLinkedMailboxStatusBatchPreservesDetails TestLiveWarmupPartnerWeekCacheMatchesExactReadAndKeepsTheCapLive TestLiveWarmupPartnerWeekCacheRefreshesDetachedAndServesStale TestLiveWarmupPartnerCandidatesCarryReciprocityAndHonourTheCap TestLiveAccountStatusPageMatchesSingleReadsInBoundedQueries TestLiveWarmupOffMailboxReceivesNothing TestLiveWarmupPauseRetiresIncomingWork; do
+          go test -race -v -p 1 ./internal/repository ./internal/app/analytics -run '^TestLive(WarmupPartnerCountsMatchIndividualCandidates|WarmupSummariesMatchIndividualReads|LinkedMailboxStatusBatchPreservesDetails|WarmupPartnerWeekCacheMatchesExactReadAndKeepsTheCapLive|WarmupPartnerWeekCacheRefreshesDetachedAndServesStale|WarmupPartnerCandidatesCarryReciprocityAndHonourTheCap|AccountStatusPageMatchesSingleReadsInBoundedQueries|WarmupOffMailboxReceivesNothing|WarmupPauseRetiresIncomingWork|WarmupInboxHasRoomMatchesTheReservation)$' -count=1 | tee linked-mailbox-batch.log
+          for test in TestLiveWarmupPartnerCountsMatchIndividualCandidates TestLiveWarmupSummariesMatchIndividualReads TestLiveLinkedMailboxStatusBatchPreservesDetails TestLiveWarmupPartnerWeekCacheMatchesExactReadAndKeepsTheCapLive TestLiveWarmupPartnerWeekCacheRefreshesDetachedAndServesStale TestLiveWarmupPartnerCandidatesCarryReciprocityAndHonourTheCap TestLiveAccountStatusPageMatchesSingleReadsInBoundedQueries TestLiveWarmupOffMailboxReceivesNothing TestLiveWarmupPauseRetiresIncomingWork TestLiveWarmupInboxHasRoomMatchesTheReservation; do
             grep -q -- "--- PASS: $test " linked-mailbox-batch.log
           done
           if grep -q -- '--- SKIP:' linked-mailbox-batch.log; then exit 1; fi
@@ -333,6 +336,29 @@ jobs:
           go test -race -v ./internal/infrastructure/db -run '^TestLiveWarmupDispatchUsageIndexUpgradePreservesEvidenceAndHolds$' -count=1 | tee warmup-query-upgrade.log
           if grep -q -- '--- SKIP:' warmup-query-upgrade.log; then exit 1; fi
           grep -q -- '--- PASS: TestLiveWarmupDispatchUsageIndexUpgradePreservesEvidenceAndHolds ' warmup-query-upgrade.log
+
+      - name: Workspace isolation regressions (PostgreSQL)
+        env:
+          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
+        run: |
+          set -euo pipefail
+          go test -race -v -p 1 ./internal/api/handler ./internal/app/email ./internal/app/contact ./internal/app/contactimport ./internal/app/orgtransfer ./internal/app/form ./internal/app/websitetracking ./internal/repository ./internal/scheduler -run '^TestLive(SharedCampaignAccess|ContactTimelineAccess|TrackingDomain(WriteIsOrgScoped|VerifyRoundTrip|Sweep|BelongsToOneOrganization)|ImportLeavesAnotherWorkspaceAlone|ContactImportIsScopedToItsWorkspace|ImportRefuses(RowsOwnedByAnotherWorkspace|ReferencesIntoAnotherWorkspace)|TenantFamiliesRefuseAnotherOrganization|CampaignChildrenRefuseAnotherWorkspace|CRMSyncIntegrationsRefuseAnotherOrganization|FormLinkTokenIsBoundToItsForm|IdentifyTicketStaysInItsWorkspace|TenantMatrixRefusesAnotherOrganization|SenderResolutionStaysInsideTheCampaignOrg|SenderSchedulerNeverPicksAnotherOrgMailbox|SenderScopeWithoutAnOrganizationReachesNothing|ActiveCampaignLookupIsOrgScoped|OwnConversationDoesNotCrossWorkspaces|UniboxGetBySenderIsScopedToTheOrganization|UniboxMoveFolderIsOrgScoped|UniboxScopeMoveThreadsIsOrgScoped|ScheduledSendsAreScopedToTheMailboxOrganization|NoLabelIsReferencedAcrossWorkspaces|CampaignAudienceIsScoped)$' -count=1 | tee workspace-isolation.log
+          if grep -q -- '--- SKIP:' workspace-isolation.log; then
+            echo "Workspace isolation regressions must execute without skips"
+            exit 1
+          fi
+          for test in TestLiveSharedCampaignAccess \
+            TestLiveTenantFamiliesRefuseAnotherOrganization \
+            TestLiveCampaignChildrenRefuseAnotherWorkspace \
+            TestLiveCRMSyncIntegrationsRefuseAnotherOrganization \
+            TestLiveFormLinkTokenIsBoundToItsForm \
+            TestLiveIdentifyTicketStaysInItsWorkspace \
+            TestLiveTenantMatrixRefusesAnotherOrganization \
+            TestLiveImportRefusesReferencesIntoAnotherWorkspace \
+            TestLiveSenderSchedulerNeverPicksAnotherOrgMailbox \
+            TestLiveTrackingDomainWriteIsOrgScoped; do
+            grep -q "^--- PASS: $test " workspace-isolation.log
+          done
 
       - name: Monitoring database observation regressions (PostgreSQL)
         env:
@@ -903,10 +929,10 @@ jobs:
           node-version: "22"
       - name: Install deployment client
         run: npm ci --prefix .github/aws-deploy --omit=dev --ignore-scripts --no-audit --no-fund
-      - name: Check migration and rollback gates
+      - name: Check deploy, rollback and rotation gates
         env:
           NODE_PATH: ${{ github.workspace }}/.github/aws-deploy/node_modules
-        run: node --test .github/scripts/aws-deploy.test.cjs
+        run: node --test .github/scripts/aws-deploy.test.cjs .github/scripts/aws-rotate.test.cjs deploy/terraform/aws/runtime/rotate/rotate.test.cjs
 
   ci-status:
     name: CI Status

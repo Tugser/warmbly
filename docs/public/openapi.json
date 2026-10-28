@@ -3123,6 +3123,95 @@
         }
       }
     },
+    "/emails/{id}/certificates": {
+      "get": {
+        "operationId": "mailboxes_certificates",
+        "summary": "Get certificate policy",
+        "description": "Reports, for an SMTP/IMAP mailbox, each server's host, port, whether it is trusted on its own certificate (`tls_unverified`) and the SHA-256 fingerprint of the public key it is pinned to (`tls_pin`, lowercase hex). Contacts no server. A Gmail or Outlook mailbox answers 400, since it has no certificate choice.",
+        "tags": [
+          "mailboxes"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The mailbox id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The certificate policy per server.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailboxCertificates"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid id, or the mailbox is not an SMTP/IMAP mailbox.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient scope, permission, or mailbox not allowed for this key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mailbox not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/emails/{id}/identity": {
       "get": {
         "operationId": "mailboxes_send_identity",
@@ -32850,6 +32939,78 @@
           "backfill_synced",
           "deferred"
         ]
+      },
+      "MailCertificate": {
+        "type": "object",
+        "description": "The certificate a mail server presented.",
+        "required": [
+          "fingerprint"
+        ],
+        "properties": {
+          "fingerprint": {
+            "type": "string",
+            "description": "SHA-256 of the leaf's public key, lowercase hex."
+          },
+          "subject": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "not_after": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "self_signed": {
+            "type": "boolean"
+          },
+          "trusted": {
+            "type": "boolean",
+            "description": "True when the chain also passes CA and host name verification."
+          }
+        }
+      },
+      "MailboxServerCertificate": {
+        "type": "object",
+        "required": [
+          "host",
+          "port",
+          "tls_unverified"
+        ],
+        "properties": {
+          "host": {
+            "type": "string"
+          },
+          "port": {
+            "type": "integer"
+          },
+          "tls_unverified": {
+            "type": "boolean",
+            "description": "Whether the server is trusted on its own certificate rather than a certificate authority."
+          },
+          "tls_pin": {
+            "type": "string",
+            "description": "SHA-256 fingerprint of the public key the server is trusted on, lowercase hex."
+          },
+          "observed": {
+            "$ref": "#/components/schemas/MailCertificate"
+          }
+        }
+      },
+      "MailboxCertificates": {
+        "type": "object",
+        "required": [
+          "smtp",
+          "imap"
+        ],
+        "properties": {
+          "smtp": {
+            "$ref": "#/components/schemas/MailboxServerCertificate"
+          },
+          "imap": {
+            "$ref": "#/components/schemas/MailboxServerCertificate"
+          }
+        }
       },
       "MailboxSync": {
         "type": "object",

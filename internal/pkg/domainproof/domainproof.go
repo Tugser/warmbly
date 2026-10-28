@@ -5,12 +5,19 @@
 package domainproof
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
+	"net"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/warmbly/warmbly/internal/pkg/trackdns"
 )
 
 // Label is where the record lives, under the domain.
@@ -46,4 +53,80 @@ func (p *Prover) Matches(txts []string, orgID uuid.UUID, domain string) bool {
 		}
 	}
 	return false
+}
+
+// CodeProofMissing is a record that points here without the workspace's TXT proof beside it.
+const CodeProofMissing = "proof_missing"
+
+// TXTResolver is the one lookup a proof check makes; *net.Resolver satisfies it.
+type TXTResolver interface {
+	LookupTXT(ctx context.Context, name string) ([]string, error)
+}
+
+const lookupTimeout = 5 * time.Second
+
+// Record is the TXT name and value to publish, empty when there is no domain or no prover.
+func (p *Prover) Record(orgID uuid.UUID, domain string) (name, value string) {
+	if p == nil || domain == "" {
+		return "", ""
+	}
+	return Name(domain), p.Value(orgID, domain)
+}
+
+// Published reports whether the workspace's proof is in DNS at the domain or at a parent it sits under; an error means a lookup could not tell.
+func (p *Prover) Published(ctx context.Context, r TXTResolver, orgID uuid.UUID, domain string) (bool, error) {
+	if p == nil {
+		return false, nil
+	}
+	if r == nil {
+		r = net.DefaultResolver
+	}
+	cctx, cancel := context.WithTimeout(ctx, lookupTimeout)
+	defer cancel()
+	var lookupErr error
+	for _, d := range proofDomains(domain) {
+		txts, err := r.LookupTXT(cctx, Name(d))
+		if p.Matches(txts, orgID, d) {
+			return true, nil
+		}
+		var dnsErr *net.DNSError
+		if err != nil && !(errors.As(err, &dnsErr) && dnsErr.IsNotFound) && lookupErr == nil {
+			lookupErr = err
+		}
+	}
+	return false, lookupErr
+}
+
+// proofDomains is the domain and each parent of at least two labels, most specific first.
+func proofDomains(domain string) []string {
+	d := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if d == "" {
+		return nil
+	}
+	out := []string{d}
+	for strings.Count(d, ".") > 1 {
+		d = d[strings.Index(d, ".")+1:]
+		out = append(out, d)
+	}
+	return out
+}
+
+// Gate holds a record that points here to the workspace's TXT proof, unless held says the workspace already verified the host.
+func (p *Prover) Gate(ctx context.Context, r TXTResolver, res trackdns.Result, orgID uuid.UUID, held bool) trackdns.Result {
+	if !res.Verified || held {
+		return res
+	}
+	ok, err := p.Published(ctx, r, orgID, res.Domain)
+	if ok {
+		return res
+	}
+	res.Verified, res.Method = false, ""
+	if err != nil {
+		res.Code = trackdns.CodeLookupError
+		res.Reason = fmt.Sprintf("%s points here, but the TXT record %s could not be looked up right now. Try again in a minute.", res.Domain, Name(res.Domain))
+		return res
+	}
+	res.Code = CodeProofMissing
+	res.Reason = fmt.Sprintf("%s points here. Add the TXT record %s with this workspace's value to prove the domain is yours. DNS changes can take a while to appear.", res.Domain, Name(res.Domain))
+	return res
 }

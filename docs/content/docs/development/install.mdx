@@ -127,6 +127,8 @@ It also gets a certificate for hostnames that do not exist yet. A workspace on t
 
 Behind your own proxy this is yours to arrange: the same custom domains need certificates there, and how depends on the proxy. Caddy takes the same `on_demand_tls` block; nginx and Traefik need each domain added by hand. [Root redirects](/guides/sending-domains/#root-redirects) are custom domains too: the proxy sends the bare domain and its `www` to the tracking port with the original `Host` header. The sending domains page shows **Not reaching visitors**, and the change for Traefik, nginx, Caddy, Coolify or Dokploy, until it does. An instance [linked to Warmbly Cloud](/guides/warmbly-cloud/#root-redirects-served-by-warmbly-cloud) can have Cloud serve redirects instead.
 
+A workspace's custom domain serves only that workspace's forms and tracked links, and the forms and tracking services decide that from the request's `Host`. Keep the original `Host` header on everything the proxy forwards to them, as root redirects already need: a proxy that rewrites it to the upstream's name makes every custom domain look like the shared host. The two services pass the host to the backend, and a backend answers a forms or tracking service that predates this, and sends no host, exactly as before, so during a rolling update the backend can go first and the confinement applies once the forms and tracking services run the same release.
+
 </Step>
 
 <Step>
@@ -197,7 +199,7 @@ Including the keys makes the bundle as sensitive as the instance itself. Leaving
 
 ### Who gets in
 
-The first owner, either as a printed claim link or unattended from `WARMBLY_BOOTSTRAP_EMAIL` plus a hash from `warmblyctl hash-password`. Then the registration posture, and platform mail: an SMTP relay, or skip it and have password resets and login codes printed to the backend log.
+The first owner, either as a printed claim link or unattended from `WARMBLY_BOOTSTRAP_EMAIL` plus a hash from `warmblyctl hash-password`. Then the registration posture, and platform mail: an SMTP relay, or skip it and have platform mail printed to the backend log. Without a relay no sign-in or signup waits on an emailed code, and outside `APP_ENV=dev` reset and invitation links are withheld from that log.
 
 </Step>
 

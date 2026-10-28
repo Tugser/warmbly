@@ -107,6 +107,90 @@ type AdminInFlightResult struct {
 	Data    []AdminInFlightSend  `json:"data"`
 }
 
+// ---- send holds ----
+
+// Why a send hold cannot be resolved by an operator right now.
+const (
+	SendHoldBlockerMailboxInactive   = "mailbox_inactive"
+	SendHoldBlockerTaskMissing       = "task_missing"
+	SendHoldBlockerResolutionPending = "resolution_pending"
+	SendHoldBlockerResultSettling    = "result_settling"
+	SendHoldBlockerTaskNotSettled    = "task_not_settled"
+	SendHoldBlockerTooRecent         = "too_recent"
+	SendHoldBlockerOtherUnknownSends = "other_unknown_sends"
+	SendHoldBlockerProviderChanged   = "provider_changed"
+)
+
+// AdminSendHold is a mailbox held from sending and the send that holds it.
+type AdminSendHold struct {
+	EmailAccountID   uuid.UUID  `json:"email_account_id"`
+	MailboxEmail     string     `json:"mailbox_email"`
+	MailboxStatus    string     `json:"mailbox_status"`
+	Provider         string     `json:"provider"`
+	OrganizationID   *uuid.UUID `json:"organization_id,omitempty"`
+	OrganizationName string     `json:"organization_name"`
+	// Reason is unknown, conflict, permanent or authentication.
+	Reason     string     `json:"reason"`
+	HeldTaskID *uuid.UUID `json:"held_task_id,omitempty"`
+	TaskType   string     `json:"task_type"`
+	TaskStatus string     `json:"task_status"`
+	// Recipients and MessageID are what to look for in the mailbox's Sent folder.
+	Recipients  []string   `json:"recipients"`
+	MessageID   string     `json:"message_id"`
+	ReservedAt  *time.Time `json:"reserved_at,omitempty"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	HeldSince   *time.Time `json:"held_since,omitempty"`
+	ResultState string     `json:"result_state"`
+	// OtherUnknownSends are unsettled sends queued behind this hold.
+	OtherUnknownSends int    `json:"other_unknown_sends"`
+	Resolvable        bool   `json:"resolvable"`
+	Blocker           string `json:"blocker,omitempty"`
+}
+
+type AdminSendHoldsSummary struct {
+	Total    int            `json:"total"`
+	Active   int            `json:"active"`
+	Inactive int            `json:"inactive"`
+	ByReason map[string]int `json:"by_reason"`
+}
+
+type AdminSendHoldsResult struct {
+	Summary AdminSendHoldsSummary `json:"summary"`
+	Data    []AdminSendHold       `json:"data"`
+}
+
+// AdminResolveSendHold is an operator's provider-checked verdict on a held send.
+type AdminResolveSendHold struct {
+	HeldTaskID uuid.UUID `json:"held_task_id" binding:"required"`
+	HeldReason string    `json:"held_reason" binding:"required,oneof=unknown conflict permanent authentication"`
+	// Outcome is sent or not_sent for an unknown hold, provider_confirmed for the others.
+	Outcome               string `json:"outcome" binding:"required,oneof=sent not_sent provider_confirmed"`
+	MessageID             string `json:"message_id" binding:"max=998"`
+	ProviderMsgID         string `json:"provider_msg_id" binding:"max=998"`
+	ThreadID              string `json:"thread_id" binding:"max=998"`
+	ConfirmationReference string `json:"confirmation_reference" binding:"required,max=256"`
+}
+
+// Resolution maps the verdict onto the mailbox resolution the repository validates.
+func (r *AdminResolveSendHold) Resolution() (*SendRecoveryResolution, bool) {
+	out := &SendRecoveryResolution{HeldTaskID: r.HeldTaskID, HeldReason: r.HeldReason, ConfirmationReference: r.ConfirmationReference}
+	switch {
+	case r.HeldReason == "unknown" && r.Outcome == "sent":
+		out.EvidenceType = "operator_confirmed_sent"
+		out.MessageID, out.ProviderMsgID, out.ThreadID = r.MessageID, r.ProviderMsgID, r.ThreadID
+	case r.HeldReason == "unknown" && r.Outcome == "not_sent":
+		out.EvidenceType = "operator_confirmed_not_sent"
+	case r.HeldReason != "unknown" && r.Outcome == "provider_confirmed":
+		// The held send is itself the definitive same-mailbox evidence the check requires.
+		out.EvidenceType = "operator_provider_confirmation"
+		task := r.HeldTaskID
+		out.EvidenceTaskID = &task
+	default:
+		return nil, false
+	}
+	return out, true
+}
+
 // AdminDeadLetterRow is a task dead letter with the workspace it belongs to.
 type AdminDeadLetterRow struct {
 	TaskDeadLetter

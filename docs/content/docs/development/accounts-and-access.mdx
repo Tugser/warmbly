@@ -67,7 +67,7 @@ So "I registered fine yesterday and today it says the server is invite only" is 
 |---|---|---|---|
 | This server is invite only. Ask an administrator to invite you, then open the link in the invitation to create your account. | `registration_invite_only` | 403 | `DISABLE_REGISTRATION=invite_only`. Get an invitation and create the account from its link, or have an administrator run `warmblyctl user create` |
 | This server is not accepting new accounts. | `registration_closed` | 403 | `DISABLE_REGISTRATION=true`. No invitation overrides this. Only `warmblyctl user create` adds accounts, or change the mode and restart |
-| That invitation link is invalid, expired, or was issued for a different email address. Ask for a fresh one. | `invitation_invalid` | 403 | The invitation expired (7 days by default), was revoked, was already used, or the address you typed is not the address it was issued for |
+| That invitation link is invalid, expired, or was issued for a different email address. Ask for a fresh one. | `invitation_invalid` | 403 | The invitation expired (48 hours by default), was revoked, was already used, or the address you typed is not the address it was issued for |
 | That setup link is invalid, already used, or expired. | `setup_token_invalid` | 401 | 24 hour lifetime, single use, and it does not survive a Redis flush. Print a new one with `warmblyctl setup-link` |
 | This instance has already been set up. | `setup_already_complete` | 403 | An account exists, so no claim link is issued. Sign in, or see [recovering access](#recovering-access) |
 
@@ -119,7 +119,7 @@ A reason is required, and so is `--by`: this command talks to Postgres directly 
 
 Turning the switch off ends the exemption and signs out every session the account holds, exactly like revoking it under **Testers**.
 
-The admin panel has the same thing under **Testers**: create one, see the password once, and revoke an exemption when the reason no longer holds. The password a tester is created with works for a period you choose, 1 to 90 days (30 by default), and stops working on that date; the list shows when. Revoking a tester ends the exemption, clears that password and signs out every session the account holds. The account itself survives a revoke, so anything it did stays attributable, and so does any workspace membership it was given: remove the member from the workspace, or ban the account, to end its access entirely. An account exempted with `warmblyctl` has no handed-out password, so revoking it from the panel ends the exemption and its sessions and leaves its own password alone.
+The admin panel has the same thing under **Testers**: create one, see the password once, and revoke an exemption when the reason no longer holds. The password a tester is created with works for a period you choose, 1 to 48 hours (48 by default), and stops working then; the list shows when. Revoking a tester ends the exemption, clears that password and signs out every session the account holds. The account itself survives a revoke, so anything it did stays attributable, and so does any workspace membership it was given: remove the member from the workspace, or ban the account, to end its access entirely. An account exempted with `warmblyctl` has no handed-out password, so revoking it from the panel ends the exemption and its sessions and leaves its own password alone.
 
 #### Which workspace a tester lands in
 
@@ -233,15 +233,11 @@ On a phone or tablet the row actions are always visible; on a desktop they appea
 
 Send the link over a channel you trust. It is a bearer credential: anyone holding it can create an account in your workspace with the roles you attached, until it expires or you cancel it.
 
-<Callout type="info" title="There is no resend button">
-Nothing re-sends an invitation email, because on a `log` transport there would be nothing to send it with. To give somebody a fresh link, invite the same address again: that replaces the row in place with a new token and a reset expiry, and the previously copied link stops working.
+<Callout type="info" title="Expired invitations">
+An invitation works for 48 hours by default. One that ran out stays on the list marked **Expired**, with **Resend** on its row. Resend invites the same address again: the row gets a new token and a reset expiry, and the previously copied link stops working. On a `log` transport the new email is not delivered either, so copy the new link from the row once it is pending again.
 </Callout>
 
-If you would rather read it out of the log instead:
-
-```bash
-docker compose -p warmbly logs backend | grep -A20 "invitation"
-```
+The log does not carry the link. Unless `APP_ENV` is `dev`, the `log` transport replaces the query string of every link it writes with `?[redacted]`, and the invitation token travels there, so the copy action is the way to hand one over.
 
 The cleanest fix is still to point `MAIL_TRANSPORT` at a real relay. See [platform mail](/development/configuration/#platform-mail).
 
@@ -249,12 +245,12 @@ The cleanest fix is still to point `MAIL_TRANSPORT` at a real relay. See [platfo
 
 | Property | Behavior |
 |---|---|
-| Expiry | 7 days by default. Change it with `invitations.ttl_hours` under **Instance > Configuration > Settings**, clamped to 1 to 720 hours. It is read when the invitation is written, so a change applies to new invitations, not to outstanding ones |
+| Expiry | 48 hours by default. Shorten it with `invitations.ttl_hours` under **Instance > Configuration > Settings**, clamped to 1 to 48 hours; a longer value saved by an earlier release is read as 48. It is read when the invitation is written, so a change applies to new invitations, not to outstanding ones |
 | Address binding | The invitation is bound to the address it was issued for. Registering a different address with the same token is refused |
 | Re-inviting the same address | Replaces the row in place: one row per address per workspace, a rotated token, a reset expiry, and the previously copied link dead |
 | Copy link | Returns the token for a pending invitation so you can build and share the URL yourself |
 | Cancel | Revokes it immediately |
-| Expired rows | No longer shown in the dashboard and do not block new invitations. Re-inviting the address replaces the expired row. A platform admin with `manage_organizations` can remove expired records across all workspaces from **Instance > Setup and health > Findings**, with confirmation and an audit entry. Active invitations and members are unchanged |
+| Expired rows | Grant nothing and do not block new invitations. The 50 most recently expired stay under **Pending invitations** marked **Expired**, with **Resend**, which invites the address again with the same roles and access. A platform admin with `manage_organizations` can remove expired records across all workspaces from **Instance > Setup and health > Findings**, with confirmation and an audit entry. Active invitations and members are unchanged |
 | Turning links off | Set `invitations.links_enabled` to false under **Instance > Configuration > Settings** if invitations must arrive by mail and nowhere else. The copy action then fails with an explanation instead of returning a token. Only do this once mail actually delivers |
 
 Invitations join an existing workspace and never create one. To stand up a **second organization** you need `DISABLE_REGISTRATION=false`, or an administrator running `warmblyctl user create`.
@@ -437,7 +433,7 @@ Understand what that means on an instance reachable from the internet: every vis
 |---|---|
 | They never received the invitation | Mail probably does not deliver. Click the copy icon on their row under **Pending invitations** and send the link yourself. See [without a mail relay](#without-a-mail-relay) |
 | They opened the sign-up form and got a 403 | They need the invitation link, not the form. The link carries the token that permits the signup |
-| Their invitation expired | Re-invite the same address. It replaces the row and mints a fresh link |
+| Their invitation expired | Click **Resend** on its row under **Pending invitations**, or invite the same address again. Either replaces the row and mints a fresh link |
 | Nobody can reset a password | `MAIL_TRANSPORT` does not deliver. Use `warmblyctl user reset-password` and hand over the printed URL |
 | You lost the only admin account | `warmblyctl user create --email you@example.com --admin`, then sign in at the admin panel |
 

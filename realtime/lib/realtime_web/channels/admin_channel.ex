@@ -7,7 +7,8 @@ defmodule RealtimeWeb.AdminChannel do
   to connected admins unfiltered, so the admin app can render a live event
   feed and invalidate its queries without polling.
 
-  Join is gated hard: JWT sockets only (no API keys) and the user must have
+  Join is gated hard: JWT sockets only (no API keys), from a session that
+  verified a second factor, and the user must have
   `users.admin_permissions > 0`. There is no presence tracking here — this
   is an internal operations surface, not a collaboration space.
   """
@@ -36,25 +37,35 @@ defmodule RealtimeWeb.AdminChannel do
   defp authorize_join(socket) do
     user_id = socket.assigns.user_id
 
-    if Map.get(socket.assigns, :auth_type) != :jwt do
-      ChannelGuard.join_error("jwt_required")
-    else
-      case Auth.check_admin(user_id) do
-        {:ok, admin} ->
-          Logger.debug("Admin #{user_id} joined the platform event channel")
+    cond do
+      Map.get(socket.assigns, :auth_type) != :jwt ->
+        ChannelGuard.join_error("jwt_required")
 
-          socket = assign(socket, :admin_permissions, Map.get(admin, :permissions, 0))
+      # Same rule as the admin API: only a session that verified a second factor.
+      Map.get(socket.assigns, :mfa_verified) != true ->
+        ChannelGuard.join_error("admin_mfa_required")
 
-          {:ok,
-           %{
-             heartbeat_interval_ms: 25_000,
-             server_timeout_ms: 60_000
-           }, socket}
+      true ->
+        authorize_admin(socket, user_id)
+    end
+  end
 
-        {:error, reason} ->
-          Logger.warning("Admin channel join rejected for #{user_id}: #{inspect(reason)}")
-          ChannelGuard.join_error("not_an_admin")
-      end
+  defp authorize_admin(socket, user_id) do
+    case Auth.check_admin(user_id) do
+      {:ok, admin} ->
+        Logger.debug("Admin #{user_id} joined the platform event channel")
+
+        socket = assign(socket, :admin_permissions, Map.get(admin, :permissions, 0))
+
+        {:ok,
+         %{
+           heartbeat_interval_ms: 25_000,
+           server_timeout_ms: 60_000
+         }, socket}
+
+      {:error, reason} ->
+        Logger.warning("Admin channel join rejected for #{user_id}: #{inspect(reason)}")
+        ChannelGuard.join_error("not_an_admin")
     end
   end
 

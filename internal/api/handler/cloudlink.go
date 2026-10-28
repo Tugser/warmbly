@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -144,12 +146,28 @@ func (h *Handler) CloudLinkEnroll(c *gin.Context) {
 	if !ok {
 		return
 	}
-	row, xerr := h.CloudLinkService.Enroll(c.Request.Context(), *orgID, id)
+	// An empty body keeps an enrolled mailbox's executor; executor switches it.
+	var req struct {
+		Executor models.PoolLinkExecutor `json:"executor"`
+	}
+	if c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+			errx.JSON(c, errx.InvalidBody(err))
+			return
+		}
+	}
+	var row *models.CloudLinkMailboxRow
+	var xerr *errx.Error
+	if req.Executor != "" {
+		row, xerr = h.CloudLinkService.EnrollAs(c.Request.Context(), *orgID, id, req.Executor)
+	} else {
+		row, xerr = h.CloudLinkService.Enroll(c.Request.Context(), *orgID, id)
+	}
 	if xerr != nil {
 		errx.JSON(c, xerr)
 		return
 	}
-	h.auditOrg(c, models.AuditActionStart, models.AuditEntityCloudLink, &id, nil, map[string]string{"email": row.Email})
+	h.auditOrg(c, models.AuditActionStart, models.AuditEntityCloudLink, &id, nil, map[string]string{"email": row.Email, "executor": string(row.Executor.OrCloud())})
 	c.JSON(http.StatusOK, row)
 }
 
@@ -313,6 +331,7 @@ func (h *Handler) CloudLinkAdopt(c *gin.Context) {
 func (h *Handler) InternalCloudLinkToken(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
+		logBrokerAccess(c, "cloud_link.token", "", false, "mailbox id is not a uuid")
 		errx.JSON(c, errx.ErrUuid)
 		return
 	}
@@ -321,23 +340,28 @@ func (h *Handler) InternalCloudLinkToken(c *gin.Context) {
 		tok, handled, xerr := h.DelegationService.AccessToken(c.Request.Context(), id)
 		if handled {
 			if xerr != nil {
+				logBrokerAccess(c, "cloud_link.token.delegated", id.String(), false, xerr.ResponseCode())
 				errx.JSON(c, xerr)
 				return
 			}
+			logBrokerAccess(c, "cloud_link.token.delegated", id.String(), true, "")
 			c.Header("Cache-Control", "no-store")
 			c.JSON(http.StatusOK, tok)
 			return
 		}
 	}
 	if h.CloudLinkService == nil {
+		logBrokerAccess(c, "cloud_link.token", id.String(), false, "instance is not linked")
 		errx.JSON(c, errx.ErrNotFound)
 		return
 	}
 	tok, xerr := h.CloudLinkService.AccessToken(c.Request.Context(), id)
 	if xerr != nil {
+		logBrokerAccess(c, "cloud_link.token", id.String(), false, xerr.ResponseCode())
 		errx.JSON(c, xerr)
 		return
 	}
+	logBrokerAccess(c, "cloud_link.token", id.String(), true, "")
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, tok)
 }

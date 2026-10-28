@@ -172,7 +172,11 @@ Warmbly guards against broken templates at three points:
 - A campaign won't start if any step's template is malformed. You get an error naming the step, so recipients never receive raw `{{if ...}}` text.
 - If a broken template ever reaches sending, it falls back to plain variable substitution rather than failing the send.
 
-Templates also have limits, so one template cannot tie up the server. `{{range}}` only loops over a field of the data (`{{range .items}}`), never over a number or a function's result, and loops nest at most two deep. `{{template}}` and `{{block}}` are not supported. A template that breaks one of these rules is treated as malformed, and one whose output passes 1 MB falls back to plain substitution.
+Templates also have limits, so one template cannot tie up the server. `{{range}}` only loops over a field of the data (`{{range .items}}`), never over a number or a function's result, and loops nest at most two deep. `{{template}}`, `{{block}}` and `call` are not supported, a template declares at most 64 variables, and a function takes at most 32 arguments. A template that breaks one of these rules is treated as malformed. A render that passes 1 MB of output or too many loop steps falls back to plain substitution, and that fallback stays within the same 1 MB.
+
+## Values in the HTML body
+
+In the HTML body every variable is escaped for the place it lands, so a contact whose name is `Tom & <b>Jerry</b>` reads exactly that way instead of turning bold. A variable inside a link (`<a href="{{.website}}">`) keeps web, `mailto:` and `tel:` addresses and is replaced with a harmless `#ZgotmplZ` for anything else, and a value placed in a link's query is URL-encoded. The subject and the plain-text part are sent as written. The mailbox signature (`{{.Sender.SignatureHTML}}`) is your own markup and is kept as is.
 
 Always check Preview and send yourself a test email before launching.
 

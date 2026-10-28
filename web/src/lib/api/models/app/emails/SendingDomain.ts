@@ -58,6 +58,10 @@ export interface DomainRedirect {
     /** The tracking host that answers, which a proxy in front routes the domain to. */
     serve_host?: string;
     reach?: RedirectReach | null;
+    /** False when target_url is not on one of the workspace's own domains, so visitors get the domain's default page. */
+    target_active?: boolean;
+    /** Why the saved destination is not in use, when target_active is false. */
+    target_inactive_reason?: string;
 }
 
 export interface SendingDomain {

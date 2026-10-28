@@ -19,6 +19,7 @@ import { htmlToPlain } from "./emailPreview";
 import SequenceView from "./SequenceView";
 import StepSplitAllocator, { type SplitArm } from "./StepSplitAllocator";
 import { openerArmSubjects, type ArmSubject } from "./threading";
+import type { EarlierEmail } from "./emailAIPrompt";
 import {
     useCampaignABVariants,
     useCampaignABAnalysis,
@@ -44,6 +45,7 @@ export default function StepEmailArms({
     index,
     conversationSubject = null,
     conversationOpener = null,
+    earlierEmails,
 }: {
     campaignId: string;
     sequence: Sequence;
@@ -53,6 +55,7 @@ export default function StepEmailArms({
     // The step that opened that conversation, whose A/B variants can carry
     // other subjects a contact is replied to under.
     conversationOpener?: Sequence | null;
+    earlierEmails?: EarlierEmail[];
 }) {
     const { data: all } = useCampaignABVariants(campaignId);
     const conversationArms = React.useMemo(
@@ -208,6 +211,7 @@ export default function StepEmailArms({
                     index={index}
                     conversationSubject={conversationSubject}
                     conversationArms={conversationArms}
+                    earlierEmails={earlierEmails}
                     headerExtra={
                         variants.length === 0 ? (
                             <button
@@ -238,6 +242,7 @@ export default function StepEmailArms({
                     onDelete={() => deleteArm(selectedVariant.id)}
                     inheritedSubject={sequence.thread_reply ? conversationSubject || null : null}
                     inheritedArms={conversationArms}
+                    earlierEmails={earlierEmails}
                 />
             )}
         </div>
@@ -254,6 +259,7 @@ function VariantEditor({
     onDelete,
     inheritedSubject,
     inheritedArms,
+    earlierEmails,
 }: {
     campaignId: string;
     variant: ABVariant;
@@ -267,6 +273,7 @@ function VariantEditor({
     // path ignores the column. Null when the step writes its own subject.
     inheritedSubject?: string | null;
     inheritedArms?: ArmSubject[];
+    earlierEmails?: EarlierEmail[];
 }) {
     const update = useUpdateABVariant(campaignId);
 
@@ -368,6 +375,7 @@ function VariantEditor({
                 bodyPlaceholder="Leave blank to reuse the step's body"
                 campaignId={campaignId}
                 stepId={variant.step_id ?? undefined}
+                earlierEmails={earlierEmails}
             />
         </div>
     );

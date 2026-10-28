@@ -597,7 +597,8 @@ func DetermineErrorEventType(err *errx.MailError) models.JobEventType {
 	case errx.MailErrorCodeRateLimitExceeded:
 		return models.JobEventTypeEmailRateLimited
 
-	case errx.MailErrorCodeServerUnreachable, errx.MailErrorCodeConnectionLost, errx.MailErrorCodeNotFound:
+	case errx.MailErrorCodeServerUnreachable, errx.MailErrorCodeConnectionLost, errx.MailErrorCodeNotFound,
+		errx.MailErrorCodeTLSCertificateChanged, errx.MailErrorCodeTLSCertificateUnconfirmed:
 		return models.JobEventTypeEmailServerError
 
 	default:

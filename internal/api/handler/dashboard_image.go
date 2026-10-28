@@ -59,6 +59,8 @@ func (h *Handler) dashboardImage(c *gin.Context, publicOnly bool) {
 		return
 	}
 	c.Header("Cache-Control", "no-store")
+	// Read by the dashboard's fetch, never rendered as a page of this origin.
+	c.Header("Content-Disposition", "attachment")
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Header("Content-Security-Policy", "default-src 'none'; script-src 'none'; sandbox; frame-ancestors 'none'")
 	c.Data(http.StatusOK, contentType, data)

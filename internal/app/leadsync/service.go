@@ -174,6 +174,9 @@ func (s *service) Create(ctx context.Context, orgID, userID uuid.UUID, in *model
 	if xerr := s.contacts.ValidateSegmentTargets(ctx, orgID, segs); xerr != nil {
 		return nil, xerr
 	}
+	if xerr := s.validateLinkTargets(ctx, orgID, in.TargetCampaignID, cats); xerr != nil {
+		return nil, xerr
+	}
 
 	src := &models.LeadSyncSource{
 		OrganizationID:    orgID,
@@ -248,6 +251,15 @@ func (s *service) Update(ctx context.Context, orgID, id uuid.UUID, in *models.Up
 	}
 	if in.CategoryIDs != nil {
 		src.CategoryIDs = *in.CategoryIDs
+	}
+	if in.TargetCampaignID != nil || in.CategoryIDs != nil {
+		var changedCats []string
+		if in.CategoryIDs != nil {
+			changedCats = *in.CategoryIDs
+		}
+		if xerr := s.validateLinkTargets(ctx, orgID, in.TargetCampaignID, changedCats); xerr != nil {
+			return nil, xerr
+		}
 	}
 	if in.SegmentIDs != nil {
 		if xerr := s.contacts.ValidateSegmentTargets(ctx, orgID, *in.SegmentIDs); xerr != nil {
@@ -414,4 +426,16 @@ func padRow(row []string, n int) []string {
 	out := make([]string, n)
 	copy(out, row)
 	return out
+}
+
+// validateLinkTargets refuses a target campaign or category that is not the organization's own.
+func (s *service) validateLinkTargets(ctx context.Context, orgID uuid.UUID, campaignID *uuid.UUID, categoryIDs []string) *errx.Error {
+	ok, err := s.repo.TargetsInOrganization(ctx, orgID, campaignID, categoryIDs)
+	if err != nil {
+		return errx.InternalError()
+	}
+	if !ok {
+		return errx.NewWithIdentifier(errx.BadRequest, "lead_sync_target_not_found", "The target campaign or a category does not exist in this workspace.")
+	}
+	return nil
 }

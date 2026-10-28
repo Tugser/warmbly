@@ -785,12 +785,14 @@ Connects an SMTP/IMAP mailbox in a single call.
 |-------|------|----------|-------------|
 | `email` | string | yes | The mailbox address. |
 | `name` | string | no | Display name. |
-| `smtp` | object | yes | SMTP credentials: `username`, `password`, `host`, `port`, `security`. |
-| `imap` | object | yes | IMAP credentials: `username`, `password`, `host`, `port`, `security`. |
+| `smtp` | object | yes | SMTP credentials: `username`, `password`, `host`, `port`, `security`, and optionally `tls_unverified` and `tls_pin`. |
+| `imap` | object | yes | IMAP credentials: `username`, `password`, `host`, `port`, `security`, and optionally `tls_unverified` and `tls_pin`. |
 
 `security` is `tls` (implicit TLS, encrypted from the first byte), `starttls` (plaintext greeting upgraded in-band) or `none` (no encryption). It is optional: omit it and the port decides, which is `tls` for SMTP 465 and IMAP 993, and `starttls` for SMTP 587 and IMAP 143. `none` is never inferred from a port, only obeyed when you ask for it. Set the mode explicitly for anything non-standard, such as a submission relay on 2525. Any port from 1 to 65535 is accepted.
 
 `none` is accepted only for a mail server on the same machine as the worker, which means a self-hosted instance and a `host` of `localhost`, an address in `127.0.0.0/8`, or `::1`. It exists for local relays such as Proton Bridge, which serve plain IMAP and SMTP on the loopback interface; see [local mail relays](/guides/mailboxes/#local-mail-relays-proton-bridge). A hostname that merely resolves to a loopback address is refused, the request is rejected with `400` on the hosted product, and the worker checks the peer again at dial time. Everywhere else TLS is not optional.
+
+`tls_unverified` (boolean, default `false`) trusts that server on its own certificate instead of a certificate authority, for a server with a self-signed or company certificate. It only takes effect when the certificate fails verification: the connection test then records the SHA-256 fingerprint of the server's public key, and the mailbox connects only while the server presents that key. Alongside it, `tls_pin` (64 hexadecimal characters) requires a specific fingerprint up front, so the test fails rather than pin anything else. A server whose certificate verifies keeps normal checking either way. See [servers with their own certificate](/guides/mailboxes/#servers-with-their-own-certificate).
 
 ```json
 {

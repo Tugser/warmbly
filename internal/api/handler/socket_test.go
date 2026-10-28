@@ -13,13 +13,15 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/warmbly/warmbly/internal/api/middleware"
 	"github.com/warmbly/warmbly/internal/app/token"
 	"github.com/warmbly/warmbly/internal/errx"
+	"github.com/warmbly/warmbly/internal/models"
 )
 
 type socketTicketStub struct{ ticket string }
 
-func (s socketTicketStub) GenerateWebsocketToken(context.Context, uuid.UUID) (string, *errx.Error) {
+func (s socketTicketStub) GenerateWebsocketToken(context.Context, uuid.UUID, uuid.UUID) (string, *errx.Error) {
 	return s.ticket, nil
 }
 
@@ -31,6 +33,7 @@ func TestSocketTicketNormalizesLegacyURL(t *testing.T) {
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest(http.MethodPost, "/v1/getaway", nil)
 		c.Set("user_id", uuid.New().String())
+		c.Set(middleware.SessionKey, &models.Session{ID: uuid.New()})
 		h.GenerateWebsocket(c)
 		var response map[string]any
 		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {

@@ -39,7 +39,7 @@ func (fakeStore) DeletePrefix(context.Context, string) (int, error) {
 }
 func (fakeStore) Has(context.Context, string) (bool, error) { return false, nil }
 func (fakeStore) Name() string                              { return "fake" }
-func (fakeStore) PresignedGetURL(context.Context, string, time.Duration) (string, error) {
+func (fakeStore) PresignedGetURL(context.Context, string, time.Duration, storage.Download) (string, error) {
 	return "", nil
 }
 func (fakeStore) PresignedURL(context.Context, storage.PresignOp, string, string, time.Duration) (string, error) {

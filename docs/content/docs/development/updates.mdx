@@ -187,10 +187,10 @@ Updater:
 |---|---|---|
 | `UPDATER_TOKEN` | The token it accepts; falls back to `INTERNAL_API_TOKEN`. Refuses to start without one | unset |
 | `UPDATER_MODE` | `image` pins a release tag and pulls; `compose` rebuilds a checkout; `command` runs `UPDATER_COMMAND` | `compose` |
-| `UPDATER_COMMAND` | The build-and-restart command for `command` mode | unset |
+| `UPDATER_COMMAND` | The build-and-restart program for `command` mode: an absolute path, optionally followed by plain space-separated arguments (letters, digits and `_./:=,@%+-`). It runs in `UPDATER_REPO_DIR` without a shell, so put pipes, `&&` and variables in a script and name the script here. The updater refuses to start on any other value | unset |
 | `UPDATER_REPO_DIR` | The checkout, or in image mode the install directory holding the compose file and `.env` | working directory |
-| `UPDATER_REMOTE` | The git remote to fetch and pull from | `origin` |
-| `UPDATER_COMPOSE_PROJECT` | The `-p` the stack was started with | `warmbly` |
+| `UPDATER_REMOTE` | The git remote to fetch and pull from, by name | `origin` |
+| `UPDATER_COMPOSE_PROJECT` | The `-p` the stack was started with: lowercase letters, digits, `_` and `-` | `warmbly` |
 | `UPDATER_COMPOSE_PROFILES` | Extra profiles on every compose call, so its own image is rebuilt | `updater` |
 | `UPDATER_BACKEND_HEALTH_URL` | Polled after the restart until it answers | `http://backend:8080/health` |
 | `UPDATER_FETCH_INTERVAL` | How often it fetches for the commits-behind count | `30m` |

@@ -2,6 +2,7 @@
 
 import Request from "@/lib/api/client/Request";
 import type {
+    CloudLinkExecutor,
     CloudLinkMailboxRow,
     CloudLinkOAuthStart,
     CloudLinkPendingConnect,
@@ -38,8 +39,14 @@ export async function listCloudLinkMailboxes(): Promise<CloudLinkMailboxRow[]> {
     return res.data ?? [];
 }
 
-export async function enrollCloudLinkMailbox(id: string): Promise<CloudLinkMailboxRow> {
-    return await Request<CloudLinkMailboxRow>({ method: "POST", url: `/cloud-link/mailboxes/${id}/enroll`, authorization: true });
+/** Without an executor an enrolled mailbox keeps its own; with one it switches. */
+export async function enrollCloudLinkMailbox(id: string, executor?: CloudLinkExecutor): Promise<CloudLinkMailboxRow> {
+    return await Request<CloudLinkMailboxRow>({
+        method: "POST",
+        url: `/cloud-link/mailboxes/${id}/enroll`,
+        data: executor ? { executor } : undefined,
+        authorization: true,
+    });
 }
 
 export async function unenrollCloudLinkMailbox(id: string): Promise<void> {

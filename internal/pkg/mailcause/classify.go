@@ -118,9 +118,11 @@ func classify(in Input) string {
 		return TooManyLogins
 	case hasAny(text, "must issue a starttls", "must issue starttls", "starttls first", "requires tls", "encryption required", "must use tls"):
 		return CleartextRefused
+	case has(text, "private network address"):
+		return PrivateHost
 	case hasAny(text, "no such host", "nxdomain", "name or service not known"):
 		return HostNotFound
-	case hasAny(text, "no supported authentication", "auth not supported", "authentication not supported",
+	case hasAny(text, "no supported authentication", "no sign-in method warmbly supports", "auth not supported", "authentication not supported",
 		"authentication not enabled", "unrecognized authentication type", "does not support auth",
 		"authentication mechanism not supported", "auth not available", "authentication not available"):
 		return AuthUnavailable

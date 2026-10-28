@@ -536,6 +536,7 @@ It also lists any `INTERNAL_API_PREVIOUS_UNTIL`, `NODE_BROKER_PREVIOUS_UNTIL` an
 | `--apply` | Write the resealed values. Without it, `reseal` reports what it would do |
 | `--batch` | Rows read per query, 1 to 10000. Defaults to 500 |
 | `--json` | Print the report as JSON (also on `keys status`) |
+| `--require-primary` | On `keys status`, also exit non-zero while any value opens only under a read key, which is the check that a read key can be retired |
 
 Both exit non-zero when any value is unreadable. Restore the key that sealed it as a read key before retiring anything; an unreadable mailbox credential is a mailbox that can no longer sign in.
 
@@ -746,6 +747,35 @@ warmblyctl fleet pin <node-id>        # clear that pin
 ```
 
 Setting a tag also pins the channel, so a release landing later does not undo a deliberate rollback.
+
+`fleet version` moves every node at once. A rollout moves them in stages instead, and stops on the first sign of trouble:
+
+```bash
+warmblyctl fleet rollout start v1.4.3 --canary 1 --waves 50,100 --bake 30m
+warmblyctl fleet rollout status
+warmblyctl fleet rollout advance       # admit the next stage now, skipping the bake
+warmblyctl fleet rollout halt --reason "watching sync errors"
+warmblyctl fleet rollout abort         # forget the rollout, fleet stays on the old tag
+```
+
+A rollout admits the canary nodes alone, workers before consumers, and admits each wave only after every admitted node has reported the target and stayed up on it for the bake. Waves are cumulative percentages of the live, unpinned nodes. The backend checks the rollout every 30 seconds and halts it when an admitted node stops heartbeating, rolls itself back on the host, misses the target within `--deadline` (15 minutes by default) or keeps restarting. A halted rollout admits nobody else and sends the admitted nodes back to the version they came from. Until it finishes, the fleet target stays at that old version, so a backend that predates rollouts holds every node where it is. Pinned nodes are left out.
+
+| Flag | Does |
+|---|---|
+| `--canary` | Nodes admitted first, alone. Defaults to `1` |
+| `--waves` | Comma-separated cumulative percentages admitted after the canary. Defaults to `100` |
+| `--bake` | Healthy time on the target before the next stage. Defaults to `30m` |
+| `--deadline` | Time an admitted node has to report the target. Defaults to `15m` |
+| `--digests` | `image=sha256:...` pairs (`worker`, `worker-kafka`, `consumer`, `consumer-kafka`). A node then pulls that exact image rather than the tag |
+| `--json` | Machine-readable output, on every rollout command |
+
+The host updater checks each update itself too. A node restarted onto a new version that does not stay up for two minutes is put back on the image it ran, and reports the failure so the same version is not tried again.
+
+```bash
+warmblyctl fleet env-status
+```
+
+Lists every live node as `current` (it applied the env the control plane renders now), `stale` or `manual` (it does not [refresh its env](/development/configuration/#keeping-a-nodes-env-current)), and exits non-zero until every node is current. Run it where the backend runs, so it renders from the same configuration. A key rotation that reaches the fleet waits on it.
 
 ```bash
 warmblyctl fleet remove <node-id>

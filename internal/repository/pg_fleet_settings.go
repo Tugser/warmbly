@@ -18,6 +18,10 @@ import (
 type FleetSettingsRepository interface {
 	GetRelease(ctx context.Context) (*models.FleetReleaseState, error)
 	SetRelease(ctx context.Context, state *models.FleetReleaseState) error
+	// CompareAndSetRelease writes next only while the stored state still
+	// equals prev (nil meaning none stored), so concurrent backends never
+	// overwrite each other's rollout decisions. It reports whether it wrote.
+	CompareAndSetRelease(ctx context.Context, prev, next *models.FleetReleaseState) (bool, error)
 
 	// GetJoinToken returns "" when no token has been issued yet, which callers
 	// must treat as "nothing may join" rather than "anything may". A nil
@@ -70,6 +74,28 @@ func (r *fleetSettingsRepository) GetRelease(ctx context.Context) (*models.Fleet
 
 func (r *fleetSettingsRepository) SetRelease(ctx context.Context, state *models.FleetReleaseState) error {
 	return r.setRaw(ctx, models.FleetSettingsKeyRelease, state)
+}
+
+func (r *fleetSettingsRepository) CompareAndSetRelease(ctx context.Context, prev, next *models.FleetReleaseState) (bool, error) {
+	raw, err := json.Marshal(next)
+	if err != nil {
+		return false, err
+	}
+	if prev == nil {
+		tag, err := r.db.Exec(ctx, `
+			INSERT INTO admin_settings (key, value, updated_at) VALUES ($1, $2, now())
+			ON CONFLICT (key) DO NOTHING`, models.FleetSettingsKeyRelease, raw)
+		return err == nil && tag.RowsAffected() == 1, err
+	}
+	old, err := json.Marshal(prev)
+	if err != nil {
+		return false, err
+	}
+	// jsonb equality is semantic, so key order in the stored value is irrelevant.
+	tag, err := r.db.Exec(ctx, `
+		UPDATE admin_settings SET value = $2, updated_at = now()
+		 WHERE key = $1 AND value = $3::jsonb`, models.FleetSettingsKeyRelease, raw, old)
+	return err == nil && tag.RowsAffected() == 1, err
 }
 
 type joinTokenValue struct {

@@ -246,3 +246,22 @@ func TestRollPctBiasNeverReachesCertainty(t *testing.T) {
 		}
 	}
 }
+
+type activeCampaignsStub struct {
+	repository.CampaignRepository
+	n int
+}
+
+func (r activeCampaignsStub) CountActiveCampaignsForAccount(context.Context, uuid.UUID) (int, error) {
+	return r.n, nil
+}
+
+func TestCampaignSenderGetsBoostedEngagement(t *testing.T) {
+	ctx := context.Background()
+	if !(&JobsService{CampaignRepo: activeCampaignsStub{n: 1}}).senderGetsRecoveryEngagement(ctx, uuid.New()) {
+		t.Fatal("a sender backing a live campaign should get the reply boost")
+	}
+	if (&JobsService{CampaignRepo: activeCampaignsStub{}}).senderGetsRecoveryEngagement(ctx, uuid.New()) {
+		t.Fatal("a healthy sender with no live campaign should not")
+	}
+}

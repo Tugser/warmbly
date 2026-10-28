@@ -517,17 +517,13 @@ The frontends are plain files under `/opt/warmbly/web` and `/opt/warmbly/admin` 
 
 ### Claim the instance
 
-On its first boot with an empty `users` table the backend prints a single-use setup link to its log:
-
-```bash
-sudo journalctl -u warmbly-backend | grep -o 'http[^ ]*/setup?token=[a-f0-9]*' | tail -1
-```
-
-Open it at `https://app.yourdomain.com`, pick a password, and you are the owner and platform admin. If the line has scrolled away, `warmblyctl setup-link` prints a fresh one:
+While the `users` table is empty, `warmblyctl setup-link` prints a single-use setup link. Outside `APP_ENV=dev` the backend log names this command rather than carrying a link:
 
 ```bash
 sudo -u warmbly env $(grep -E '^(PRIMARY_DB|REDIS|AUTH_SECRET|APP_URL)=' /etc/warmbly/warmbly.env | xargs) warmblyctl setup-link
 ```
+
+Open it at `https://app.yourdomain.com`, pick a password, and you are the owner and platform admin. Running the command again replaces the link.
 
 `warmblyctl` is the same operator CLI the container image ships; it reads `PRIMARY_DB` and friends from the environment, so the `env $(grep ...)` prefix above is how every command on the [warmblyctl reference](/development/warmblyctl/) is run on a bare host. A shell alias saves typing it:
 

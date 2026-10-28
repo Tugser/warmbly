@@ -84,9 +84,7 @@ func (s *tokenService) RevokeSessionByID(ctx context.Context, userID, sessionID,
 		return errx.ErrSessionNotFound
 	}
 
-	// Bust the cache so ValidateAccessToken re-reads the now-revoked row and the
-	// session stops working immediately rather than after the cache TTL.
-	if err := s.deleteSession(ctx, sessionID); err != nil {
+	if err := s.evictRevoked(ctx, sessionID, userID, time.Now()); err != nil {
 		return err
 	}
 	s.notifyRevoked(ctx, userID)
@@ -133,17 +131,12 @@ func (s *tokenService) revokeOthers(ctx context.Context, userID, currentSessionI
 	return first
 }
 
-// evictRevoked drops a revoked session from the cache. When the delete is
-// refused it stores a revoked tombstone instead: a reader that would have
-// served the stale copy for the rest of SessionTTL sees revoked_at set, and a
-// short TTL sends the next read to the row.
+// evictRevoked overwrites a revoked session's cache entry with a tombstone that
+// outlives any cached copy; only when that write is refused does it delete.
 func (s *tokenService) evictRevoked(ctx context.Context, id, userID uuid.UUID, revokedAt time.Time) *errx.Error {
-	if err := s.deleteSession(ctx, id); err == nil {
+	tomb := &models.Session{ID: id, UserID: userID, RevokedAt: &revokedAt}
+	if err := s.saveSession(ctx, tomb, revokedTombstoneTTL); err == nil {
 		return nil
 	}
-	tomb := &models.Session{ID: id, UserID: userID, RevokedAt: &revokedAt}
-	if err := s.saveSession(ctx, tomb, revokedTombstoneTTL); err != nil {
-		return err
-	}
-	return nil
+	return s.deleteSession(ctx, id)
 }

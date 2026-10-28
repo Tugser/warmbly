@@ -30,7 +30,9 @@ func reportable(err error) bool {
 	case errx.MailErrorCodeSendingTooFast,
 		errx.MailErrorCodeQuotaExceeded,
 		errx.MailErrorCodeServerUnreachable,
-		errx.MailErrorCodeConnectionLost:
+		errx.MailErrorCodeConnectionLost,
+		errx.MailErrorCodeTLSCertificateChanged,
+		errx.MailErrorCodeTLSCertificateUnconfirmed:
 		return false
 	}
 	return true
@@ -124,10 +126,14 @@ func mailErrorToJobEventType(mailErr *errx.MailError) models.JobEventType {
 	// A provider 429 during sync (MailErrorCodeSendingTooFast) is not
 	// relayed: the loop backs off and retries. Relaying it as a rate-limit
 	// event would deactivate the mailbox for a transient provider throttle.
+	// A refused certificate pin is a connection error the owner resolves in
+	// the mailbox's settings; it never deactivates the mailbox.
 	case errx.MailErrorCodeServerUnreachable,
 		errx.MailErrorCodeConnectionLost,
 		errx.MailErrorCodeNotFound,
-		errx.MailErrorCodeImapUnknown:
+		errx.MailErrorCodeImapUnknown,
+		errx.MailErrorCodeTLSCertificateChanged,
+		errx.MailErrorCodeTLSCertificateUnconfirmed:
 		return models.JobEventTypeEmailServerError
 	}
 	return ""

@@ -22,6 +22,9 @@ type Encrypted struct {
 // ErrUnreadable is a value shaped like ciphertext that no configured key opens.
 var ErrUnreadable = errors.New("sealed value does not open under any configured credential key")
 
+// ErrDecrypt is the one error a decrypt returns, whatever was wrong with the input.
+var ErrDecrypt = errors.New("encrypt: value could not be decrypted")
+
 // Encrypter performs AES-GCM encryption with a fixed 32-byte key.
 type Encrypter struct {
 	aead     cipher.AEAD
@@ -99,11 +102,11 @@ func (e *Encrypter) Encrypt(plaintext string) (string, error) {
 func (e *Encrypter) Decrypt(hexStr string) (string, error) {
 	enc, err := ParseHex(hexStr)
 	if err != nil {
-		return "", err
+		return "", ErrDecrypt
 	}
 	plain, err := e.DecryptEncrypted(enc)
 	if err != nil {
-		return "", err
+		return "", ErrDecrypt
 	}
 	return string(plain), nil
 }
@@ -129,14 +132,14 @@ func (e *Encrypter) EncryptBytes(plain []byte) (*Encrypted, error) {
 func (e *Encrypter) DecryptEncrypted(enc *Encrypted) ([]byte, error) {
 	nonce, err := hex.DecodeString(enc.Nonce)
 	if err != nil {
-		return nil, err
+		return nil, ErrDecrypt
 	}
 	ct, err := hex.DecodeString(enc.Ciphertext)
 	if err != nil {
-		return nil, err
+		return nil, ErrDecrypt
 	}
 	if len(nonce) != e.aead.NonceSize() {
-		return nil, errors.New("invalid encryption nonce")
+		return nil, ErrDecrypt
 	}
 	plaintext, err := e.aead.Open(nil, nonce, ct, nil)
 	if err == nil {
@@ -147,7 +150,7 @@ func (e *Encrypter) DecryptEncrypted(enc *Encrypted) ([]byte, error) {
 			return plaintext, nil
 		}
 	}
-	return nil, err
+	return nil, ErrDecrypt
 }
 
 // Reseal returns stored sealed under the primary key when only a read key opens it; changed is false when the primary already does.
@@ -203,11 +206,11 @@ func (e *Encrypted) Hex() string {
 func ParseHex(hexStr string) (*Encrypted, error) {
 	data, err := hex.DecodeString(hexStr)
 	if err != nil {
-		return nil, err
+		return nil, ErrDecrypt
 	}
 	nonceSize := 12 // GCM standard nonce
 	if len(data) < nonceSize {
-		return nil, errors.New("ciphertext too short")
+		return nil, ErrDecrypt
 	}
 	return &Encrypted{
 		Nonce:      hex.EncodeToString(data[:nonceSize]),

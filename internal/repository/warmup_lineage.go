@@ -239,8 +239,10 @@ func (r *taskRepository) ReleaseUnpublishedWarmupTask(ctx context.Context, id uu
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// An unpublished task's unsent tokens go with it, or each retry adds one to its recipient's day.
 	_, err = tx.Exec(ctx, `WITH released AS(UPDATE tasks t SET status='pending',scheduled_at=$2,updated_at=NOW() FROM warmup_tasks w
-        WHERE t.id=$1 AND w.task_id=t.id AND t.status='active' AND w.dispatch_nonce IS NULL RETURNING t.id)
+        WHERE t.id=$1 AND w.task_id=t.id AND t.status='active' AND w.dispatch_nonce IS NULL RETURNING t.id),
+        removed AS(DELETE FROM warmup_tokens WHERE task_id IN(SELECT id FROM released) AND sent_message_id='')
         UPDATE warmup_tasks SET schedule_revision=schedule_revision+1 WHERE task_id IN(SELECT id FROM released)`, id, at)
 	if err != nil {
 		return err

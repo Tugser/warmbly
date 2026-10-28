@@ -188,6 +188,16 @@ func (s *emailService) LoadAccountOntoWorker(ctx context.Context, accountID uuid
 	if acc.Status != "active" {
 		return nil
 	}
+	// A mailbox a linked instance executes has no credential here and never goes to a worker.
+	if probe, ok := s.emailRepository.(interface {
+		InstanceExecuted(context.Context, uuid.UUID) (bool, error)
+	}); ok {
+		if executed, err := probe.InstanceExecuted(ctx, acc.ID); err != nil {
+			return err
+		} else if executed {
+			return nil
+		}
+	}
 	// A delegated mailbox without its grant (it arrived in an archive, or the grant
 	// went) has nothing to sign in with; it waits inactive until the domain is
 	// connected again, which relinks and reactivates it.
@@ -507,8 +517,8 @@ func (s *emailService) buildAddWorkerEmailSnapshot(ctx context.Context, acc *mod
 		out.ImapSync = true
 		out.SmtpImap = &models.AddWorkerEmailSmtpImapData{
 			Credentials: &models.SmtpImap{
-				SMTP: &models.Service{Host: creds.SMTPHost, Port: creds.SMTPPort, Username: creds.SMTPUser, Password: creds.SMTPPassword, Security: creds.SMTPSecurity},
-				IMAP: &models.Service{Host: creds.IMAPHost, Port: creds.IMAPPort, Username: creds.IMAPUser, Password: creds.IMAPPassword, Security: creds.IMAPSecurity},
+				SMTP: &models.Service{Host: creds.SMTPHost, Port: creds.SMTPPort, Username: creds.SMTPUser, Password: creds.SMTPPassword, Security: creds.SMTPSecurity, TLSUnverified: creds.SMTPTLSUnverified, TLSPin: creds.SMTPTLSPin},
+				IMAP: &models.Service{Host: creds.IMAPHost, Port: creds.IMAPPort, Username: creds.IMAPUser, Password: creds.IMAPPassword, Security: creds.IMAPSecurity, TLSUnverified: creds.IMAPTLSUnverified, TLSPin: creds.IMAPTLSPin},
 			},
 			Mailboxes: s.workerMailboxes(ctx, userID, acc, preload),
 		}

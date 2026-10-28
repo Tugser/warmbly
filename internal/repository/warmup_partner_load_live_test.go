@@ -230,3 +230,50 @@ func TestLiveWarmupPartnerCandidatesDropAnUnreachableRecipient(t *testing.T) {
 		t.Fatalf("delivered/arrived = %d/%d, want %d/1", c.Delivered7d, c.Arrived7d, sample+2)
 	}
 }
+
+// A reply's pre-check and the send reservation read one rule, so a reply the
+// reservation would refuse is known to be refused before it holds the slot.
+func TestLiveWarmupInboxHasRoomMatchesTheReservation(t *testing.T) {
+	f := newPartnerOrgFixture(t)
+	ctx := context.Background()
+	repo := &warmupRepository{db: f.pool}
+	room := func(pool string) bool {
+		t.Helper()
+		has, err := repo.WarmupInboxHasRoom(ctx, f.sibling, pool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return has
+	}
+	reserve := func(pool string) bool {
+		t.Helper()
+		var allowed bool
+		if err := f.pool.QueryRow(ctx, warmupInboxRoomSQL, f.sibling, inboundSharePercent(pool), 0).Scan(&allowed); err != nil {
+			t.Fatal(err)
+		}
+		return allowed
+	}
+	freeCap := config.WarmupInboundDailyFloor * config.WarmupFreeInboundSharePercent / 100
+	for i := 0; i < freeCap-1; i++ {
+		f.received(t, f.sibling, f.outside, time.Now().Add(-time.Second))
+	}
+	if !room("free") || !room("premium") {
+		t.Fatal("an inbox one short of the free share has no room")
+	}
+	f.received(t, f.sibling, f.outside, time.Now().Add(-time.Second))
+	if room("free") {
+		t.Fatal("a free sender sees room past its share of the inbox")
+	}
+	if !reserve("free") {
+		t.Fatal("the reservation refused a send already counted inside the free share")
+	}
+	if !room("premium") {
+		t.Fatal("a paying sender lost the rest of the inbox's day")
+	}
+	for i := freeCap; i < config.WarmupInboundDailyFloor; i++ {
+		f.received(t, f.sibling, f.outside, time.Now().Add(-time.Second))
+	}
+	if room("premium") || reserve("free") {
+		t.Fatal("a full inbox still has room")
+	}
+}

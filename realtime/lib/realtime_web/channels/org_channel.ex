@@ -57,7 +57,9 @@ defmodule RealtimeWeb.OrgChannel do
     user_id = socket.assigns.user_id
     checked_at = System.monotonic_time(:millisecond)
 
-    case Auth.check_org_membership(user_id, org_id) do
+    case user_id
+         |> Auth.check_org_membership(org_id)
+         |> Auth.confine(socket.assigns[:credential]) do
       {:ok, member} ->
         Logger.debug("User #{user_id} joined org channel #{org_id}")
 
@@ -96,7 +98,7 @@ defmodule RealtimeWeb.OrgChannel do
          }, socket}
 
       {:error, :not_a_member} ->
-        join_error(:not_a_member)
+        ChannelGuard.join_error("not_a_member")
 
       {:error, reason} ->
         Logger.warning("Failed to join org channel: #{inspect(reason)}")
@@ -280,7 +282,9 @@ defmodule RealtimeWeb.OrgChannel do
     case ChannelGuard.refresh_authorization(
            socket,
            fn ->
-             Auth.check_org_membership(socket.assigns.user_id, socket.assigns.org_id)
+             socket.assigns.user_id
+             |> Auth.check_org_membership(socket.assigns.org_id)
+             |> Auth.confine(socket.assigns[:credential])
            end,
            force
          ) do

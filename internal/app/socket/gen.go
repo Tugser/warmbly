@@ -5,13 +5,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/warmbly/warmbly/internal/app/token"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/observability/errs"
 	"github.com/warmbly/warmbly/internal/pkg/crypt"
 )
 
-func (s *socketService) GenerateWebsocketToken(ctx context.Context, userID uuid.UUID) (string, *errx.Error) {
+func (s *socketService) GenerateWebsocketToken(ctx context.Context, userID, sessionID uuid.UUID) (string, *errx.Error) {
+	if sessionID == uuid.Nil {
+		return "", errx.ErrUnauthorized
+	}
 	issuedAt := time.Now()
 	expiresAt := issuedAt.Add(SocketTTL)
 	id := uuid.New()
@@ -21,7 +23,7 @@ func (s *socketService) GenerateWebsocketToken(ctx context.Context, userID uuid.
 		return "", errx.InternalError()
 	}
 
-	wsToken, err := s.tokenService.GenerateTokenFor(token.PurposeWebSocket, userID, id, "", nonce, issuedAt, expiresAt)
+	wsToken, err := s.tokenService.GenerateWebsocketTicket(userID, id, sessionID, nonce, issuedAt, expiresAt)
 	if err != nil {
 		errs.CaptureException(err)
 		return "", errx.InternalError()

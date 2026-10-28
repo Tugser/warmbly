@@ -19,7 +19,8 @@ overrides:
   postcss-selector-parser: '>=7.1.3'
   # fumadocs-mdx pins an older esbuild; lift it to the patched line.
   esbuild: '>=0.28.1'
-  dompurify: ^3.4.16
+  dompurify: ^3.4.17
+  'zod@>=4.0.0 <4.6.6': ^4.6.6
   # Stay before 0.18.11, which upstream deprecated for breaking changes.
   katex: 0.18.2
   source-map-js: ^1.2.2

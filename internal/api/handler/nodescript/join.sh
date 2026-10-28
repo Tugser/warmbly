@@ -30,6 +30,11 @@ STATE_DIR="/var/lib/warmbly"
 AGENT_DIR="/var/lib/warmbly/node"
 DRY_RUN="false"
 PRINT_UNIT="false"
+PRINT_UPDATER="false"
+ADOPT="false"
+ADOPT_ACCEPT_TARGET="false"
+ADOPT_ENV_REFRESH="false"
+ADOPT_KEEP_LOCAL=""
 
 log()  { printf '%s\n' "$*"; }
 warn() { printf '%s\n' "$*" >&2; }
@@ -51,9 +56,21 @@ Join a machine to a Warmbly fleet.
                      ghcr.io/warmbly/warmbly.
   --config-dir <d>   Where to write the env file. Default /etc/warmbly.
   --dry-run          Enrol and print what would be written, change nothing.
+  --print-updater    Print the updater that would be installed and exit.
   --print-unit       Print the systemd unit that would be installed and exit.
                      Contacts nothing and writes nothing; used by
                      `make join-check`.
+
+Adopting a machine that already runs a node (no enrolment, node.env kept):
+  --adopt            Install the standard unit and updater for the node
+                     described by the existing node.env.
+  --keep-local <k,k> Copy these node.env keys into node.local.env, for values
+                     only this machine knows.
+  --env-refresh      Let the updater refresh node.env from the control plane,
+                     enabled only when a refresh would keep every key.
+  --accept-target    Adopt even though the control plane asks for a different
+                     version than this node runs.
+
   -h, --help         This text.
 
 A second run re-enrols the same machine: it keeps the existing node id, so the
@@ -77,6 +94,11 @@ parse_args() {
       --config-dir)  CONFIG_DIR="${2:-}"; shift 2 ;;
       --dry-run)     DRY_RUN="true"; shift ;;
       --print-unit)  PRINT_UNIT="true"; shift ;;
+      --print-updater) PRINT_UPDATER="true"; shift ;;
+      --adopt)       ADOPT="true"; shift ;;
+      --accept-target) ADOPT_ACCEPT_TARGET="true"; shift ;;
+      --env-refresh) ADOPT_ENV_REFRESH="true"; shift ;;
+      --keep-local)  ADOPT_KEEP_LOCAL="${2:-}"; shift 2 ;;
       -h|--help)     usage; exit 0 ;;
       *)             die "unknown option: $1 (try --help)" ;;
     esac
@@ -190,7 +212,7 @@ enrol() {
     [ -n "$detail" ] || detail=$(cat "$tmp")
     rm -f "$tmp"
     case "$code" in
-      401) die "the join token was rejected. Issue a fresh one and try again." ;;
+      401) die "the join token was rejected: $detail" ;;
       *)   die "enrolment failed (HTTP $code): $detail" ;;
     esac
   fi
@@ -263,6 +285,8 @@ write_config() {
     printf 'WARMBLY_VERSION=%s\n' "$DESIRED_VERSION"
     printf 'WARMBLY_TARGET_VERSION_PATH=%s/target-version\n' "$AGENT_DIR"
     printf 'WARMBLY_NODE_NAME=%s\n' "$WARMBLY_NAME"
+    # node.env is exactly the render plus the lines above, so a refresh loses nothing.
+    printf 'WARMBLY_ENV_REFRESH=true\n'
   } > "$CONFIG_DIR/node.env"
   chmod 600 "$CONFIG_DIR/node.env"
 
@@ -503,64 +527,264 @@ WantedBy=multi-user.target
 UNIT
 }
 
-install_units() {
-  [ "$DRY_RUN" = "false" ] || return 0
-
-  service="warmbly-$WARMBLY_ROLE"
-  if blobs_are_local; then
-    root=$(blob_root)
-    if [ -n "$root" ]; then
-      # Keep this a standalone statement: make join-check asserts on it by
-      # first field, because a looser match was satisfied by the name
-      # appearing inside a warn string.
-      ensure_blob_root "$root"
-    fi
-  fi
-  render_unit > "/etc/systemd/system/$service.service"
-
-  # The updater is what makes auto-update work without anything reaching into
-  # this machine. The node writes the version the control plane wants into
-  # $STATE_DIR/target-version on each heartbeat; this notices the file changed,
-  # pulls, and restarts. Keeping it outside the service means the process being
-  # replaced is never the process doing the replacing.
-  cat > "/usr/local/bin/warmbly-node-update" <<'UPDATER'
+# render_updater prints the root updater exactly as install_updater writes it.
+# The node only writes requests into $AGENT_DIR; this decides whether to act
+# on them, so the process being replaced is never the one doing the replacing.
+render_updater() {
+  cat <<'UPDATER'
 #!/bin/sh
+# Applies what the control plane asked this node to run: a version, and with
+# WARMBLY_ENV_REFRESH=true in node.env, a refreshed env. Never reaches out
+# except to pull the image and, for a refresh, to fetch this node's own env.
 set -eu
-STATE_DIR="/var/lib/warmbly"
-AGENT_DIR="/var/lib/warmbly/node"
-CONFIG_DIR="/etc/warmbly"
-[ -f "$AGENT_DIR/target-version" ] || exit 0
-[ -f "$STATE_DIR/image" ] || exit 0
+# ROOT and the timings exist for make join-check; the timer sets none of them.
+ROOT="${WARMBLY_UPDATER_ROOT:-}"
+STATE_DIR="$ROOT/var/lib/warmbly"
+AGENT_DIR="$ROOT/var/lib/warmbly/node"
+CONFIG_DIR="$ROOT/etc/warmbly"
+HEALTH_SECONDS="${WARMBLY_UPDATE_HEALTH_SECONDS:-120}"
+SETTLE_SECONDS="${WARMBLY_UPDATE_SETTLE_SECONDS:-15}"
+POLL_SECONDS="${WARMBLY_UPDATE_POLL_SECONDS:-10}"
+LOCK_SECONDS="${WARMBLY_UPDATE_LOCK_SECONDS:-300}"
+# Kept across an env refresh: written by join or by this updater, never rendered.
+PRESERVED_KEYS="WARMBLY_VERSION WARMBLY_TARGET_VERSION_PATH WARMBLY_NODE_NAME WARMBLY_ENV_REFRESH NODE_LOG_TOKEN NODE_CREDENTIAL"
 
-target="$(cat "$AGENT_DIR/target-version")"
-image="$(cat "$STATE_DIR/image")"
-current="$(sed -n 's/^WARMBLY_VERSION=//p' "$CONFIG_DIR/node.env" | head -n 1)"
+log() { printf 'warmbly-node-update: %s\n' "$*"; }
 
-[ -n "$target" ] || exit 0
-[ "$target" != "$current" ] || exit 0
+env_value() {
+  sed -n "s/^$1=//p" "$CONFIG_DIR/node.env" | head -n 1
+}
 
-# The node writes this file, and root runs whatever image it names, so the
-# value is validated rather than trusted: tag characters only, no registry or
-# path separators that could redirect the pull somewhere else.
-case "$target" in
-  *[!A-Za-z0-9._-]*) echo "warmbly-node-update: refusing malformed target '$target'"; exit 0 ;;
-esac
+# read_token reads a file the node wrote. The node is untrusted here, so a
+# symlink or anything but a plain token reads as empty.
+read_token() {
+  [ -f "$1" ] || return 0
+  [ ! -L "$1" ] || return 0
+  v=$(head -c 256 "$1" | head -n 1)
+  case "$v" in
+    ""|*[!A-Za-z0-9._:+-]*) return 0 ;;
+  esac
+  printf '%s\n' "$v"
+}
 
-role="$(sed -n 's/^WARMBLY_NODE_ROLE=//p' "$CONFIG_DIR/node.env" | head -n 1)"
-[ -n "$role" ] || exit 0
+# write_agent replaces a file in the node's directory by rename, so a symlink
+# the node planted is replaced, never followed.
+write_agent() {
+  tmp=$(mktemp "$AGENT_DIR/.update.XXXXXX")
+  printf '%s\n' "$2" > "$tmp"
+  chmod 0644 "$tmp"
+  chown 1000:1000 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$AGENT_DIR/$1"
+}
 
-# Pull first. If the image is not there yet, leave the node on the version it
-# is running rather than restarting it into a pull failure.
-if ! docker pull "$image:$target" >/dev/null 2>&1; then
-  echo "warmbly-node-update: $image:$target is not pullable yet; staying on $current"
-  exit 0
-fi
+set_version() {
+  if grep -q '^WARMBLY_VERSION=' "$CONFIG_DIR/node.env"; then
+    sed -i "s|^WARMBLY_VERSION=.*|WARMBLY_VERSION=$1|" "$CONFIG_DIR/node.env"
+  else
+    printf 'WARMBLY_VERSION=%s\n' "$1" >> "$CONFIG_DIR/node.env"
+  fi
+}
 
-sed -i "s|^WARMBLY_VERSION=.*|WARMBLY_VERSION=$target|" "$CONFIG_DIR/node.env"
-printf 'WARMBLY_IMAGE_REF=%s:%s\n' "$image" "$target" > "$STATE_DIR/image-ref"
-echo "warmbly-node-update: $current -> $target"
-systemctl restart "warmbly-$role"
+# digest_for prints the digest the control plane pinned for tag, if any.
+digest_for() {
+  [ -f "$AGENT_DIR/target-digest" ] || return 0
+  [ ! -L "$AGENT_DIR/target-digest" ] || return 0
+  line=$(head -c 256 "$AGENT_DIR/target-digest" | head -n 1)
+  printf '%s\n' "$line" | grep -Eq '^[A-Za-z0-9._-]+ sha256:[0-9a-f]{64}$' || return 0
+  [ "${line%% *}" = "$1" ] || return 0
+  printf '%s\n' "${line#* }"
+}
+
+started() {
+  docker inspect -f '{{.State.Running}} {{.State.StartedAt}}' "$service" 2>/dev/null || echo "false -"
+}
+
+# healthy passes when the restarted container comes up and stays on one start
+# for HEALTH_SECONDS. A crash loop restarts it, which changes StartedAt.
+healthy() {
+  sleep "$SETTLE_SECONDS"
+  first=$(started)
+  case "$first" in
+    "true "*) ;;
+    *) return 1 ;;
+  esac
+  waited=0
+  while [ "$waited" -lt "$HEALTH_SECONDS" ]; do
+    sleep "$POLL_SECONDS"
+    waited=$((waited + POLL_SECONDS))
+    [ "$(started)" = "$first" ] || return 1
+  done
+  return 0
+}
+
+update_version() {
+  target=$(read_token "$AGENT_DIR/target-version")
+  [ -n "$target" ] || return 0
+  case "$target" in
+    *[!A-Za-z0-9._-]*) log "refusing malformed target '$target'"; return 0 ;;
+  esac
+  current=$(env_value WARMBLY_VERSION)
+  [ "$target" != "$current" ] || return 0
+  if [ "$(read_token "$AGENT_DIR/update-failed")" = "$target" ]; then
+    return 0
+  fi
+  image=$(head -n 1 "$STATE_DIR/image")
+  case "$image" in
+    ""|*[!A-Za-z0-9./_-]*) log "refusing malformed image '$image'"; return 0 ;;
+  esac
+  ref="$image:$target"
+  digest=$(digest_for "$target")
+  if [ -n "$digest" ]; then
+    ref="$image@$digest"
+  fi
+  # Pull first, so a missing image leaves the node on what it runs.
+  if ! docker pull "$ref" >/dev/null 2>&1; then
+    log "$ref is not pullable yet; staying on $current"
+    return 0
+  fi
+  previous=$(cat "$STATE_DIR/image-ref")
+  set_version "$target"
+  printf 'WARMBLY_IMAGE_REF=%s\n' "$ref" > "$STATE_DIR/image-ref"
+  log "$current -> $target ($ref)"
+  systemctl restart "$service"
+  if healthy; then
+    rm -f "$AGENT_DIR/update-failed"
+    return 0
+  fi
+  log "$target did not stay up; returning to $current"
+  set_version "$current"
+  printf '%s\n' "$previous" > "$STATE_DIR/image-ref"
+  systemctl restart "$service"
+  write_agent update-failed "$target"
+}
+
+# fetch_env writes this node's env as the control plane renders it now into $1.
+fetch_env() {
+  url=$(env_value WARMBLY_BACKEND_URL)
+  id=$(env_value WARMBLY_NODE_ID)
+  token=$(env_value NODE_BROKER_TOKEN)
+  [ -n "$token" ] || token=$(env_value INTERNAL_API_TOKEN)
+  if [ -z "$url" ] || [ -z "$id" ] || [ -z "$token" ]; then
+    log "node.env lacks WARMBLY_BACKEND_URL, WARMBLY_NODE_ID or a node token; cannot fetch env"
+    return 1
+  fi
+  # Both credentials go through curl's stdin config, never argv, so ps never shows them.
+  cred=$(env_value NODE_CREDENTIAL)
+  code=$( {
+    printf 'header = "Authorization: Bearer %s"\n' "$token"
+    if [ -n "$cred" ]; then printf 'header = "X-Warmbly-Node-Credential: %s"\n' "$cred"; fi
+  } | curl -sS -K - --max-time 30 -o "$1" -w '%{http_code}' \
+      "${url%/}/api/v1/internal/fleet/node-env?node_id=$id&role=$role") || code=000
+  if [ "$code" != "200" ]; then
+    case "$code" in
+      401|403) log "fetching env failed (HTTP $code): the control plane hands an env only to the node it was issued to; run the join command again on this machine, which keeps its id and node.local.env" ;;
+      *) log "fetching env failed (HTTP $code)" ;;
+    esac
+    return 1
+  fi
+  if ! grep -qx "WARMBLY_NODE_ID=$id" "$1" || ! grep -qx "WARMBLY_NODE_ROLE=$role" "$1"; then
+    log "fetched env names another node; ignored"
+    return 1
+  fi
+  return 0
+}
+
+refresh_env() {
+  [ "$(env_value WARMBLY_ENV_REFRESH)" = "true" ] || return 0
+  want=$(read_token "$AGENT_DIR/target-env-revision")
+  [ -n "$want" ] || return 0
+  have=$(read_token "$AGENT_DIR/env-revision")
+  # A revision that failed its health check waits for the next one.
+  if [ "$want" = "$have" ] || [ "$want-failed" = "$have" ]; then
+    return 0
+  fi
+  umask 077
+  fresh=$(mktemp "$CONFIG_DIR/.node.env.XXXXXX")
+  if ! fetch_env "$fresh"; then
+    rm -f "$fresh"
+    return 0
+  fi
+  revision=$(sha256sum "$fresh" | cut -c1-32)
+  for key in $PRESERVED_KEYS; do
+    grep "^$key=" "$CONFIG_DIR/node.env" | head -n 1 >> "$fresh" || true
+  done
+  chmod 600 "$fresh"
+  cp -p "$CONFIG_DIR/node.env" "$CONFIG_DIR/.node.env.previous"
+  mv -f "$fresh" "$CONFIG_DIR/node.env"
+  log "applied env revision $revision"
+  systemctl restart "$service"
+  if healthy; then
+    rm -f "$CONFIG_DIR/.node.env.previous"
+    write_agent env-revision "$revision"
+    return 0
+  fi
+  log "env revision $revision did not stay up; restoring the previous env"
+  mv -f "$CONFIG_DIR/.node.env.previous" "$CONFIG_DIR/node.env"
+  systemctl restart "$service"
+  write_agent env-revision "$want-failed"
+}
+
+# check_env lists, by name only, keys in node.env a refresh would drop.
+check_env() {
+  umask 077
+  fresh=$(mktemp "$CONFIG_DIR/.node.env.XXXXXX")
+  if ! fetch_env "$fresh"; then
+    rm -f "$fresh"
+    return 1
+  fi
+  dropped=""
+  withdrawn=""
+  if [ "$role" = "worker" ]; then
+    withdrawn="CREDENTIALS_ENCRYPTION_KEY CREDENTIALS_ENCRYPTION_READ_KEYS KMS_LOCAL_MASTER_KEY"
+  fi
+  keys=$(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$CONFIG_DIR/node.env" | tr '\n' ' ')
+  for key in $keys; do
+    case " $PRESERVED_KEYS " in *" $key "*) continue ;; esac
+    # Keys the control plane no longer sends a worker are meant to go.
+    case " $withdrawn " in *" $key "*) continue ;; esac
+    grep -q "^$key=" "$fresh" && continue
+    if [ -f "$CONFIG_DIR/node.local.env" ] && grep -q "^$key=" "$CONFIG_DIR/node.local.env"; then
+      continue
+    fi
+    dropped="$dropped $key"
+  done
+  rm -f "$fresh"
+  if [ -n "$dropped" ]; then
+    log "a refresh would drop:$dropped (move them to node.local.env first)"
+    return 1
+  fi
+  log "a refresh keeps every key node.env has"
+  return 0
+}
+
+main() {
+  [ -f "$CONFIG_DIR/node.env" ] || exit 0
+  [ -f "$STATE_DIR/image" ] || exit 0
+  role=$(env_value WARMBLY_NODE_ROLE)
+  case "$role" in
+    worker|consumer) ;;
+    *) exit 0 ;;
+  esac
+  service="warmbly-$role"
+  exec 8>"$ROOT/run/warmbly-node-update.lock"
+  if [ "${1:-}" = "--check-env" ]; then
+    # adopt reads success as a passed preflight, so a held lock has to wait or fail, never pass.
+    flock -w "$LOCK_SECONDS" 8 || { log "another update is running; retry --check-env"; exit 1; }
+    check_env
+    return
+  fi
+  flock -n 8 || exit 0
+  refresh_env
+  update_version
+  return 0
+}
+
+main "$@"
 UPDATER
+}
+
+install_updater() {
+  render_updater > /usr/local/bin/warmbly-node-update
   chmod 755 /usr/local/bin/warmbly-node-update
 
   cat > /etc/systemd/system/warmbly-node-update.service <<'UNIT'
@@ -583,7 +807,116 @@ OnUnitActiveSec=2min
 [Install]
 WantedBy=timers.target
 UNIT
+}
 
+# adopt puts an already-running node under the standard unit and updater
+# without enrolling it again: node.env stays as it is, apart from opting in to
+# env refresh when asked, and node.local.env gains only the keys named.
+adopt() {
+  [ "$(id -u)" = "0" ] || die "run as root: --adopt installs a systemd unit"
+  need_cmd flock
+  need_cmd sha256sum
+  command -v docker >/dev/null 2>&1 || die "docker is required but not installed"
+  command -v systemctl >/dev/null 2>&1 || die "systemd is required"
+  [ -f "$CONFIG_DIR/node.env" ] || die "--adopt needs an existing $CONFIG_DIR/node.env"
+  NODE_ENV=$(cat "$CONFIG_DIR/node.env")
+  NODE_ID=$(printf '%s\n' "$NODE_ENV" | sed -n 's/^WARMBLY_NODE_ID=//p' | head -n 1)
+  valid_node_id "$NODE_ID" || die "node.env has no valid WARMBLY_NODE_ID; join this machine instead"
+  role=$(printf '%s\n' "$NODE_ENV" | sed -n 's/^WARMBLY_NODE_ROLE=//p' | head -n 1)
+  [ -n "$WARMBLY_ROLE" ] || WARMBLY_ROLE="$role"
+  [ "$WARMBLY_ROLE" = "$role" ] || die "node.env says role '$role', not '$WARMBLY_ROLE'"
+  case "$WARMBLY_ROLE" in
+    worker|consumer) ;;
+    *) die "node.env has no usable WARMBLY_NODE_ROLE" ;;
+  esac
+  current=$(printf '%s\n' "$NODE_ENV" | sed -n 's/^WARMBLY_VERSION=//p' | head -n 1)
+  target=""
+  if [ -f "$AGENT_DIR/target-version" ] && [ ! -L "$AGENT_DIR/target-version" ]; then
+    target=$(head -n 1 "$AGENT_DIR/target-version")
+  fi
+  if [ -n "$target" ] && [ "$target" != "$current" ] && [ "$ADOPT_ACCEPT_TARGET" != "true" ]; then
+    die "the control plane asks for $target and this node runs ${current:-an unknown version}; the updater would move it within two minutes. Set the fleet version first, or pass --accept-target."
+  fi
+  # The unit starts from image-ref and the updater pulls from image, so keep what the node already runs.
+  [ -f "$STATE_DIR/image-ref" ] || die "--adopt needs $STATE_DIR/image-ref, the image this node starts from; join this machine instead"
+  image=""
+  if [ -f "$STATE_DIR/image" ]; then image=$(head -n 1 "$STATE_DIR/image"); fi
+  if [ -z "$image" ]; then
+    image=$(sed -n 's/^WARMBLY_IMAGE_REF=//p' "$STATE_DIR/image-ref" | head -n 1)
+    image=${image%%@*}
+    case "${image##*/}" in *:*) image=${image%:*} ;; esac
+  fi
+  [ -n "$image" ] || die "$STATE_DIR/image-ref names no image; join this machine instead"
+
+  mkdir -p "$STATE_DIR" "$AGENT_DIR"
+  chown 1000:1000 "$AGENT_DIR" 2>/dev/null || true
+  chmod 0700 "$AGENT_DIR"
+  chmod 0755 "$STATE_DIR"
+  chown root:root "$STATE_DIR" 2>/dev/null || true
+  printf '%s\n' "$image" > "$STATE_DIR/image"
+  for f in image image-ref; do
+    chown root:root "$STATE_DIR/$f" 2>/dev/null || true
+    chmod 0644 "$STATE_DIR/$f"
+  done
+  if ! grep -q '^WARMBLY_TARGET_VERSION_PATH=' "$CONFIG_DIR/node.env"; then
+    # Without it the node never writes the version the control plane asks for.
+    printf 'WARMBLY_TARGET_VERSION_PATH=%s/target-version\n' "$AGENT_DIR" >> "$CONFIG_DIR/node.env"
+  fi
+  ensure_local_env
+  keep_local
+  render_unit > "/etc/systemd/system/warmbly-$WARMBLY_ROLE.service"
+  # Keep this a standalone statement: make join-check asserts on it by first field.
+  install_updater
+  systemctl daemon-reload
+  if [ "$ADOPT_ENV_REFRESH" = "true" ] && ! grep -qx 'WARMBLY_ENV_REFRESH=true' "$CONFIG_DIR/node.env"; then
+    # Opt in only when a refresh would keep every key this node runs with.
+    /usr/local/bin/warmbly-node-update --check-env || die "env refresh left off: name the keys listed above with --keep-local and run --adopt again"
+    printf 'WARMBLY_ENV_REFRESH=true\n' >> "$CONFIG_DIR/node.env"
+    log "Enabled env refresh"
+  fi
+  systemctl enable --now warmbly-node-update.timer >/dev/null 2>&1 || true
+  log "Adopted $WARMBLY_ROLE node $NODE_ID. The updater runs every two minutes;"
+  log "run \`systemctl restart warmbly-$WARMBLY_ROLE\` to start it under the new unit."
+  return 0
+}
+
+# keep_local copies the named node.env keys into node.local.env, so a refresh
+# that renders node.env afresh cannot drop a value only this machine knows.
+keep_local() {
+  [ -n "$ADOPT_KEEP_LOCAL" ] || return 0
+  for key in $(printf '%s' "$ADOPT_KEEP_LOCAL" | tr ',' ' '); do
+    case "$key" in
+      *[!A-Za-z0-9_]*|"") die "--keep-local takes variable names, got '$key'" ;;
+    esac
+    grep -q "^$key=" "$CONFIG_DIR/node.local.env" && continue
+    line=$(grep "^$key=" "$CONFIG_DIR/node.env" | head -n 1) || true
+    if [ -z "$line" ]; then
+      warn "$key is not in node.env; nothing to keep"
+      continue
+    fi
+    printf '%s\n' "$line" >> "$CONFIG_DIR/node.local.env"
+    log "Kept $key in node.local.env"
+  done
+  return 0
+}
+
+install_units() {
+  [ "$DRY_RUN" = "false" ] || return 0
+
+  service="warmbly-$WARMBLY_ROLE"
+  if blobs_are_local; then
+    root=$(blob_root)
+    if [ -n "$root" ]; then
+      # Keep this a standalone statement: make join-check asserts on it by
+      # first field, because a looser match was satisfied by the name
+      # appearing inside a warn string.
+      ensure_blob_root "$root"
+    fi
+  fi
+  render_unit > "/etc/systemd/system/$service.service"
+
+  # Keep this a standalone statement: make join-check asserts on it by first field.
+  install_updater
   systemctl daemon-reload
   log "Installed $service.service and warmbly-node-update.timer"
 }
@@ -618,6 +951,14 @@ main() {
   # first field, so each stays a standalone statement. Reformatting one into
   # `if ! x; then` fails the build with a message about ordering.
   parse_args "$@"
+  if [ "$PRINT_UPDATER" = "true" ]; then
+    render_updater
+    return 0
+  fi
+  if [ "$ADOPT" = "true" ]; then
+    adopt
+    return 0
+  fi
   if [ "$PRINT_UNIT" = "true" ]; then
     # No enrolment, no network, no files. NODE_ENV is whatever the caller
     # supplied, so the blob branches can be exercised from a test.

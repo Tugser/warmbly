@@ -60,10 +60,13 @@ variable "services" {
     secret_version_id = string
     secret_keys       = set(string)
     environment       = optional(map(string), {})
+    # kafka when the service runs the -kafka build; the deploy reads it off the task definition tag.
+    image_variant = optional(string, "default")
   }))
   validation {
     condition = (var.github_repository == null || alltrue([for name in ["backend", "consumer"] : contains(keys(var.services), name)])) && alltrue([for name, service in var.services :
       contains(["backend", "consumer", "forms", "realtime", "tracking"], name) &&
+      contains(["default", "kafka"], service.image_variant) &&
       can(regex("@sha256:[a-f0-9]{64}$", service.image)) &&
       ((service.cpu == 256 && contains([512, 1024, 2048], service.memory)) ||
         (service.cpu == 512 && contains([1024, 2048, 3072, 4096], service.memory)) ||
@@ -343,6 +346,7 @@ resource "aws_ecs_task_definition" "service" {
     operating_system_family = "LINUX"
   }
   container_definitions = jsonencode([local.service_containers[each.key]])
+  tags                  = { "warmbly-image-variant" = each.value.image_variant }
   depends_on            = [aws_iam_role_policy.execution, aws_iam_role_policy.application]
 }
 resource "aws_ecs_service" "service" {
@@ -365,6 +369,14 @@ resource "aws_ecs_service" "service" {
     enable   = true
     rollback = true
   }
+  dynamic "alarms" {
+    for_each = contains(keys(local.public_services), each.key) ? [1] : []
+    content {
+      alarm_names = [aws_cloudwatch_metric_alarm.target_5xx[each.key].alarm_name, aws_cloudwatch_metric_alarm.unhealthy_hosts[each.key].alarm_name]
+      enable      = true
+      rollback    = true
+    }
+  }
   network_configuration {
     subnets          = local.foundation.public_subnet_ids
     security_groups  = [local.foundation.tasks_sg_id]
@@ -383,6 +395,58 @@ resource "aws_ecs_service" "service" {
     content { registry_arn = aws_service_discovery_service.backend.arn }
   }
   depends_on = [aws_lb_listener_rule.service]
+}
+
+# Named ${var.name}-<service>-*: the deploy bakes each service against every alarm with that prefix.
+resource "aws_cloudwatch_metric_alarm" "target_5xx" {
+  for_each            = local.public_services
+  alarm_name          = "${var.name}-${each.key}-target-5xx-rate"
+  alarm_description   = "More than 5% of requests to ${each.key} answered 5xx"
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 5
+  evaluation_periods  = 3
+  datapoints_to_alarm = 2
+  treat_missing_data  = "notBreaching"
+  metric_query {
+    id          = "rate"
+    expression  = "IF(requests >= 20, 100 * errors / requests, 0)"
+    label       = "5xx percent"
+    return_data = true
+  }
+  metric_query {
+    id = "errors"
+    metric {
+      namespace   = "AWS/ApplicationELB"
+      metric_name = "HTTPCode_Target_5XX_Count"
+      period      = 60
+      stat        = "Sum"
+      dimensions  = { LoadBalancer = aws_lb.main.arn_suffix, TargetGroup = aws_lb_target_group.service[each.key].arn_suffix }
+    }
+  }
+  metric_query {
+    id = "requests"
+    metric {
+      namespace   = "AWS/ApplicationELB"
+      metric_name = "RequestCount"
+      period      = 60
+      stat        = "Sum"
+      dimensions  = { LoadBalancer = aws_lb.main.arn_suffix, TargetGroup = aws_lb_target_group.service[each.key].arn_suffix }
+    }
+  }
+}
+resource "aws_cloudwatch_metric_alarm" "unhealthy_hosts" {
+  for_each            = local.public_services
+  alarm_name          = "${var.name}-${each.key}-unhealthy-hosts"
+  alarm_description   = "A ${each.key} target has failed its load balancer health check for three minutes"
+  namespace           = "AWS/ApplicationELB"
+  metric_name         = "UnHealthyHostCount"
+  dimensions          = { LoadBalancer = aws_lb.main.arn_suffix, TargetGroup = aws_lb_target_group.service[each.key].arn_suffix }
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 3
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 1
+  treat_missing_data  = "notBreaching"
 }
 
 output "runtime" {

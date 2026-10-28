@@ -29,6 +29,15 @@ func TestDashboardEmailLinks(t *testing.T) {
 	}
 }
 
+// The reset token travels in the fragment, so neither the request line nor a Referer carries it.
+func TestPasswordResetLinkKeepsTheTokenOutOfTheQuery(t *testing.T) {
+	t.Setenv("APP_URL", "https://app.warmbly.com")
+	got := GetPasswordResetURL("tok.en", "")
+	if got != "https://app.warmbly.com/auth/reset-password/confirm#session=tok.en" || strings.Contains(got, "?") {
+		t.Fatalf("reset link = %q", got)
+	}
+}
+
 func TestPrimaryDashboardOriginAndRevalidation(t *testing.T) {
 	t.Setenv("APP_URL", "https://app.warmbly.com/")
 	t.Setenv("APP_ORIGIN", "")

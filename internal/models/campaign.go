@@ -315,7 +315,25 @@ type CampaignEstimateResult struct {
 	Timeline []CampaignEstimateDay `json:"timeline"`
 	// Senders is the pool mailbox by mailbox, at most CampaignEstimateSendersMax.
 	Senders []CampaignEstimateSender `json:"senders"`
+	// Scenarios are changes that would finish sooner, each simulated the same way.
+	Scenarios []CampaignEstimateScenario `json:"scenarios"`
 }
+
+// CampaignEstimateScenario is one change and the finish it would bring. Value
+// is the change's own figure: the reply percent assumed, the mailboxes added,
+// or the sending days a week.
+type CampaignEstimateScenario struct {
+	Kind     string     `json:"kind"`
+	Value    int        `json:"value"`
+	FinishAt *time.Time `json:"finish_at"`
+}
+
+// Scenario kinds of a campaign estimate.
+const (
+	EstimateScenarioReplies       = "replies"
+	EstimateScenarioMoreMailboxes = "more_mailboxes"
+	EstimateScenarioEveryDay      = "every_day"
+)
 
 const (
 	CampaignEstimateTimelineMax = 120
@@ -355,6 +373,11 @@ const (
 type CampaignEstimateWarmup struct {
 	Mailboxes int `json:"mailboxes"`
 	PerDay    int `json:"per_day"`
+	// PerDayWithout is what the same mailboxes warm at with no live campaign.
+	PerDayWithout int `json:"per_day_without"`
+	// ReplyRate is the least share of their warmup mail pool partners answer
+	// while the campaign runs, where the partner allows replies.
+	ReplyRate int `json:"reply_rate"`
 }
 
 // CampaignEstimateDay is one calendar day of the projection.
@@ -370,14 +393,16 @@ type CampaignEstimateDay struct {
 
 // CampaignEstimateSender is one mailbox's part in the projection.
 type CampaignEstimateSender struct {
-	ID           uuid.UUID  `json:"id"`
-	Email        string     `json:"email"`
-	Provider     string     `json:"provider"`
-	State        string     `json:"state"`
-	FirstDayCap  int        `json:"first_day_cap"`
-	SteadyCap    int        `json:"steady_cap"`
-	WarmupPerDay int        `json:"warmup_per_day"`
-	FullCapAt    *time.Time `json:"full_cap_at"`
+	ID           uuid.UUID `json:"id"`
+	Email        string    `json:"email"`
+	Provider     string    `json:"provider"`
+	State        string    `json:"state"`
+	FirstDayCap  int       `json:"first_day_cap"`
+	SteadyCap    int       `json:"steady_cap"`
+	WarmupPerDay int       `json:"warmup_per_day"`
+	// WarmupWithout is the mailbox's warmup volume with no live campaign.
+	WarmupWithout int        `json:"warmup_without"`
+	FullCapAt     *time.Time `json:"full_cap_at"`
 }
 
 type CampaignFolderCount struct {

@@ -23,7 +23,7 @@ const (
 
 	// Campaign Management (bits 9-10)
 	AdminPermViewCampaigns // View any campaign
-	AdminPermStopCampaigns // Force-stop campaigns
+	AdminPermStopCampaigns // Force-stop campaigns, replay dead letters, lift send holds
 
 	// Analytics (bits 11-12)
 	AdminPermViewAnalytics // Platform analytics
@@ -157,7 +157,7 @@ func GetAllPermissionInfos() []PermissionInfo {
 
 		// Campaign Management
 		{Name: "view_campaigns", Permission: AdminPermViewCampaigns, Description: "View any campaign", Category: "Campaign Management"},
-		{Name: "stop_campaigns", Permission: AdminPermStopCampaigns, Description: "Force-stop campaigns", Category: "Campaign Management"},
+		{Name: "stop_campaigns", Permission: AdminPermStopCampaigns, Description: "Force-stop campaigns, replay dead letters and lift send holds", Category: "Campaign Management"},
 
 		// Analytics
 		{Name: "view_analytics", Permission: AdminPermViewAnalytics, Description: "View platform analytics", Category: "Analytics"},

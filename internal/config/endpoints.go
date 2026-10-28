@@ -146,8 +146,9 @@ func NormalizeWebsocketURL(value string) string {
 	return u.String()
 }
 
+// GetPasswordResetURL carries the token in the fragment, which no server log or Referer receives.
 func GetPasswordResetURL(sessionToken, origin string) string {
-	return dashboardBaseURL(origin) + "/auth/reset-password/confirm?session=" + url.QueryEscape(sessionToken)
+	return dashboardBaseURL(origin) + "/auth/reset-password/confirm#session=" + url.QueryEscape(sessionToken)
 }
 
 // GetInviteURL uses a trusted initiating dashboard, or the primary dashboard.

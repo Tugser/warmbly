@@ -18,6 +18,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
+	"github.com/warmbly/warmbly/internal/app/customhost"
+	"github.com/warmbly/warmbly/internal/app/owndomain"
 	"github.com/warmbly/warmbly/internal/config"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/jobrun"
@@ -53,6 +55,7 @@ type Mailboxes interface {
 	DomainsOverview(ctx context.Context, orgID uuid.UUID) ([]models.SendingDomain, *errx.Error)
 	CountDomainMailboxes(ctx context.Context, orgID uuid.UUID, domain string) (int, *errx.Error)
 	SetDomainTracking(ctx context.Context, orgID uuid.UUID, domain, host string, verified bool, verifiedAt *time.Time) (int, *errx.Error)
+	OwnedDomains(ctx context.Context, orgID uuid.UUID) ([]string, *errx.Error)
 }
 
 // Resolver is the DNS the checks read; net.DefaultResolver in production.
@@ -77,11 +80,17 @@ type Service struct {
 	reach     ReachProber
 	redirects repository.DomainRedirectRepository
 	mailboxes Mailboxes
+	own       *owndomain.Resolver
 	resolver  Resolver
 	proof     *domainproof.Prover
+	// customHosts gates a new tracking host on the workspace's TXT proof.
+	customHosts *customhost.Checker
 	// target is this instance's tracking host; "" when tracking is not set up.
 	target func() string
 }
+
+// WireCustomHosts attaches the custom-domain ownership checks.
+func (s *Service) WireCustomHosts(c *customhost.Checker) { s.customHosts = c }
 
 func NewService(redirects repository.DomainRedirectRepository, mailboxes Mailboxes, resolver Resolver, proof *domainproof.Prover) *Service {
 	if resolver == nil {
@@ -89,6 +98,42 @@ func NewService(redirects repository.DomainRedirectRepository, mailboxes Mailbox
 	}
 	return &Service{redirects: redirects, mailboxes: mailboxes, resolver: resolver, proof: proof, target: config.TrackingHostname, reach: NewHTTPReach()}
 }
+
+// WireOwnDomains replaces the default definition of the workspace's own domains (mailbox domains only) with the shared one.
+func (s *Service) WireOwnDomains(r *owndomain.Resolver) { s.own = r }
+
+func (s *Service) ownDomains() *owndomain.Resolver {
+	if s.own != nil {
+		return s.own
+	}
+	return owndomain.New(s.mailboxes, nil)
+}
+
+// ownTarget refuses a redirect destination outside the workspace's own domains.
+func (s *Service) ownTarget(ctx context.Context, orgID uuid.UUID, target string) *errx.Error {
+	ok, xerr := s.ownDomains().Allows(ctx, orgID, target)
+	if xerr != nil {
+		return xerr
+	}
+	if !ok {
+		return owndomain.Refusal()
+	}
+	return nil
+}
+
+// markTarget records on the row whether its destination is on one of the workspace's own domains, and so served.
+func markTarget(r *models.DomainRedirect, own []string) {
+	if r == nil || r.LinkedInstanceID != nil || r.TargetURL == "" {
+		return
+	}
+	active := owndomain.Within(owndomain.TargetHost(r.TargetURL), own)
+	r.TargetActive = &active
+	if !active {
+		r.TargetInactiveReason = targetInactiveMessage
+	}
+}
+
+const targetInactiveMessage = "Not in use: the destination is no longer on one of this workspace's own domains, so visitors get the domain's default page instead. This happens when the mailbox or verified domain it relied on was removed. Point the redirect at a page on a domain the workspace has a mailbox on, its verified tracking domain, or its verified forms domain, or reconnect that domain."
 
 func normalizeDomain(d string) string {
 	return mailhost.NormalizeDomain(strings.TrimPrefix(strings.ToLower(strings.TrimSpace(d)), "www."))
@@ -104,10 +149,15 @@ func (s *Service) Overview(ctx context.Context, orgID uuid.UUID) ([]models.Sendi
 	if err != nil {
 		return nil, errx.InternalError()
 	}
+	own, xerr := s.ownDomains().Domains(ctx, orgID)
+	if xerr != nil {
+		return nil, xerr
+	}
 	byDomain := map[string]*models.DomainRedirect{}
 	for i := range redirects {
 		r := redirects[i]
 		s.decorate(&r, nil)
+		markTarget(&r, own)
 		byDomain[r.Domain] = &r
 	}
 	var links map[string]models.VendorDomainLink
@@ -171,9 +221,10 @@ func (s *Service) ApplyTracking(ctx context.Context, orgID uuid.UUID, domain, ho
 	}
 	status := &models.TrackingDomainStatus{TrackingDomain: host, CNAMETarget: s.target()}
 	if host != "" {
-		res := trackdns.VerifyWith(ctx, s.resolver, host, s.target())
+		res := s.customHosts.Gate(ctx, trackdns.VerifyWith(ctx, s.resolver, host, s.target()), orgID, false)
 		status.TrackingDomainVerified, status.Status, status.Message, status.Observed = res.Verified, res.Code, res.Reason, res.Observed
 		status.TrackingHostUnresolvable = res.TargetUnresolvable
+		status.TXTName, status.TXTValue = s.customHosts.Record(orgID, host)
 		if res.Verified {
 			now := time.Now().UTC()
 			status.TrackingDomainVerifiedAt = &now
@@ -209,6 +260,9 @@ func (s *Service) SetRedirect(ctx context.Context, orgID, userID uuid.UUID, doma
 	}
 	if existing != nil && existing.LinkedInstanceID != nil {
 		return nil, errx.NewWithIdentifier(errx.Conflict, ErrIDLinked, "This domain's redirect is managed by a linked self-hosted instance. Change it there.")
+	}
+	if xerr := s.ownTarget(ctx, orgID, target); xerr != nil {
+		return nil, xerr
 	}
 	server := in.ServedBy
 	if server == "" && existing != nil {
@@ -386,6 +440,13 @@ func (s *Service) probe(ctx context.Context, r *models.DomainRedirect) probe {
 // force asks Cloud to check again rather than report its last verdict.
 func (s *Service) check(ctx context.Context, r *models.DomainRedirect, force bool) (*models.DomainRedirect, *errx.Error) {
 	if r.ServedBy == models.RedirectServedByCloud {
+		// Cloud cannot see this workspace's domains, so a destination that is no longer its own stops being served there from here.
+		if ok, xerr := s.ownDomains().Allows(ctx, r.OrganizationID, r.TargetURL); xerr == nil && !ok {
+			if xerr := s.releaseCloud(ctx, r.OrganizationID, r.Domain); xerr != nil {
+				log.Warn().Str("domain", r.Domain).Str("code", xerr.ResponseCode()).Msg("domain redirect: could not stop Cloud serving a destination off the workspace's domains")
+			}
+			return s.stop(ctx, r, targetInactiveMessage)
+		}
 		return s.checkCloud(ctx, r, force)
 	}
 	p := s.probe(ctx, r)
@@ -442,6 +503,11 @@ func (s *Service) finish(ctx context.Context, before *models.DomainRedirect, p *
 			map[string]string{"verified": strconv.FormatBool(fresh.Verified), "reaching": strconv.FormatBool(!blocked(fresh))}, map[string]string{"domain": fresh.Domain})
 	}
 	s.decorate(fresh, p)
+	if fresh.LinkedInstanceID == nil {
+		if own, xerr := s.ownDomains().Domains(ctx, fresh.OrganizationID); xerr == nil {
+			markTarget(fresh, own)
+		}
+	}
 	return fresh, nil
 }
 
@@ -509,9 +575,26 @@ func (s *Service) targetAddresses(target string) []string {
 }
 
 // Lookup is the redirect target for a host the tracking service was asked for.
+// A destination off the workspace's own domains answers as no redirect.
 func (s *Service) Lookup(ctx context.Context, host string) (string, bool, error) {
-	return s.redirects.Lookup(ctx, host)
+	got, ok, err := s.redirects.LookupServed(ctx, host)
+	if err != nil || !ok {
+		return "", false, err
+	}
+	// Cloud has no view of a linked instance's domains; the instance holds its redirects to the rule before and after Cloud takes them.
+	if got.LinkedInstanceID == nil {
+		allowed, xerr := s.ownDomains().Allows(ctx, got.OrganizationID, got.TargetURL)
+		if xerr != nil {
+			return "", false, errOwnDomainsUnavailable
+		}
+		if !allowed {
+			return "", false, nil
+		}
+	}
+	return got.TargetURL, true, nil
 }
+
+var errOwnDomainsUnavailable = errors.New("domain redirect lookup: own domains unavailable")
 
 // StartSweep re-checks pending redirects often and verified ones a few times a
 // day, so DNS added later verifies by itself and DNS removed stops the redirect.
@@ -585,6 +668,9 @@ func (s *Service) VendorForward(ctx context.Context, orgID, userID uuid.UUID, do
 		if xerr != nil {
 			return nil, xerr
 		}
+		if xerr := s.ownTarget(ctx, orgID, cleaned); xerr != nil {
+			return nil, xerr
+		}
 		target = cleaned
 	}
 	link, xerr := s.vendors.SetForwarding(ctx, orgID, domain, target)
@@ -630,7 +716,14 @@ func (s *Service) writeTrackingCNAME(ctx context.Context, orgID uuid.UUID, domai
 	if s.vendors == nil {
 		return errx.ErrNotFound
 	}
-	return s.vendors.UpsertDNS(ctx, orgID, domain, "CNAME", host, target)
+	if xerr := s.vendors.UpsertDNS(ctx, orgID, domain, "CNAME", host, target); xerr != nil {
+		return xerr
+	}
+	// Best effort: a vendor that cannot write TXT leaves the ownership record to the customer.
+	if name, value := s.customHosts.Record(orgID, host); name != "" && !s.customHosts.Holds(ctx, orgID, host) {
+		_ = s.vendors.UpsertDNS(ctx, orgID, domain, "TXT", name, value)
+	}
+	return nil
 }
 
 // AutoRedirect sets a domain's root redirect the easiest way available: the

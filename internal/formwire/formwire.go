@@ -49,6 +49,8 @@ type SubmitRequest struct {
 	// submission to the visitor's funnel events.
 	LinkToken  string `json:"link_token,omitempty"`
 	VisitorKey string `json:"visitor_key,omitempty"`
+	// Host is the host the visitor reached the form on; on a workspace's custom host only its own forms answer.
+	Host string `json:"host,omitempty"`
 }
 
 // EventRequest is one funnel event forwarded by the forms service, plus the
@@ -63,6 +65,7 @@ type EventRequest struct {
 	LinkToken  string `json:"link_token,omitempty"`
 	RemoteIP   string `json:"remote_ip"`
 	UserAgent  string `json:"user_agent,omitempty"`
+	Host       string `json:"host,omitempty"`
 }
 
 // SubmitResult is what the visitor sees after a successful submit.

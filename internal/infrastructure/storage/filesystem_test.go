@@ -86,7 +86,7 @@ func TestFilesystemStore_PresignedUnsupported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.PresignedGetURL(context.Background(), "x", 0)
+	_, err = s.PresignedGetURL(context.Background(), "x", 0, Download{})
 	if !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("expected ErrUnsupported, got %v", err)
 	}

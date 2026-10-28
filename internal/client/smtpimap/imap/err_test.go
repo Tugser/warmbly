@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	goimap "github.com/emersion/go-imap/v2"
+	"github.com/warmbly/warmbly/internal/client/netbind"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 )
@@ -35,6 +36,7 @@ func TestConnectionFailureReasonDoesNotExposeTransportDetails(t *testing.T) {
 		{"closed_socket", net.ErrClosed, "connection closed"},
 		{"timeout", context.DeadlineExceeded, "connection timed out"},
 		{"op_timeout", &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ETIMEDOUT}, "connection timed out"},
+		{"private_host", &net.OpError{Op: "dial", Net: "tcp", Err: netbind.ErrPrivateMailHost}, errx.MailConnectionReasonPrivateHost},
 		{"other", errors.New("secret.invalid password=secret"), "connection failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

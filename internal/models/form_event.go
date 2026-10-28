@@ -138,9 +138,12 @@ type FormsDomainStatus struct {
 	// CNAMETarget is the value to put in the CNAME: this install's forms host
 	// (FORMS_DOMAIN). Empty means the install has none, so nothing can verify.
 	CNAMETarget string `json:"cname_target"`
+	// TXTName and TXTValue are the ownership record a new verification needs beside the CNAME.
+	TXTName  string `json:"txt_name,omitempty"`
+	TXTValue string `json:"txt_value,omitempty"`
 
 	// Status is stable and machine-readable, straight from trackdns: verified,
-	// unset, no_target, not_found, wrong_target or lookup_error.
+	// unset, no_target, not_found, wrong_target, proof_missing or lookup_error.
 	Status  string `json:"status"`
 	Message string `json:"message"`
 	// Observed is what DNS actually returned, so a customer can spot their own

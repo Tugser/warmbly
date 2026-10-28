@@ -13,6 +13,7 @@ import (
 	"github.com/warmbly/warmbly/internal/config"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/observability/errs"
 	"github.com/warmbly/warmbly/internal/pkg/mailhtml"
 	"github.com/warmbly/warmbly/internal/repository"
 	"github.com/warmbly/warmbly/internal/scheduler"
@@ -161,10 +162,14 @@ func (s *emailSendService) SendEmail(ctx context.Context, userID, orgID, account
 	// when the admin set BanScopeSend, even if the user can otherwise
 	// log in and inspect their account.
 	if s.userRepo != nil {
-		if scope, scopeErr := s.userRepo.GetBanState(ctx, userID); scopeErr == nil {
-			if models.BanScope(scope).Has(models.BanScopeSend) {
-				return nil, errx.New(errx.Forbidden, "this account cannot send email")
-			}
+		scope, scopeErr := s.userRepo.GetBanState(ctx, userID)
+		if scopeErr != nil {
+			// A ban state that cannot be read refuses the send.
+			errs.CaptureException(scopeErr)
+			return nil, errx.InternalError()
+		}
+		if models.BanScope(scope).Has(models.BanScopeSend) {
+			return nil, errx.ErrAccountSendingSuspended
 		}
 	}
 
@@ -172,10 +177,13 @@ func (s *emailSendService) SendEmail(ctx context.Context, userID, orgID, account
 	// user's ban: a suspended workspace stops sending even for members who are
 	// not themselves banned.
 	if s.orgRiskRepo != nil {
-		if states, err := s.orgRiskRepo.GetOrgRiskStates(ctx, []uuid.UUID{orgID}); err == nil {
-			if states[orgID].BlocksSending() {
-				return nil, errx.New(errx.Forbidden, "this workspace is suspended from sending while it is under review")
-			}
+		states, err := s.orgRiskRepo.GetOrgRiskStates(ctx, []uuid.UUID{orgID})
+		if err != nil {
+			errs.CaptureException(err)
+			return nil, errx.InternalError()
+		}
+		if states[orgID].BlocksSending() {
+			return nil, errx.ErrWorkspaceSendingSuspended
 		}
 	}
 

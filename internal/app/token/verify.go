@@ -28,7 +28,7 @@ func (s *tokenService) GetSession(ctx context.Context, sessionID uuid.UUID) (*mo
 	// only costs the next request a database read. Returning the error here
 	// meant a Redis write that was refused, on quota or anything else, failed
 	// every authenticated request with a 500.
-	_ = s.saveSession(ctx, sess, SessionTTL)
+	s.fillSession(ctx, sess)
 	return sess, nil
 }
 
@@ -55,9 +55,10 @@ func (s *tokenService) ValidateAccessToken(ctx context.Context, accessToken stri
 
 	// A revoked session is dead immediately. Revocation busts the Redis cache,
 	// so the next read here re-loads the row with revoked_at set and the token
-	// stops working without waiting for the cache TTL or a refresh.
-	if session.RevokedAt != nil {
-		return nil, errx.ErrToken
+	// stops working without waiting for the cache TTL or a refresh. A session
+	// past its expires_at is dead the same way.
+	if !session.Live(time.Now()) {
+		return nil, errx.ErrSessionEnded
 	}
 
 	if session.AccessNonce != t.Nonce || !sameTokenIssueTime(session.LastRefreshedAt, t.IssuedAt.Time) {

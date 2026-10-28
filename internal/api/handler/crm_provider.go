@@ -658,10 +658,13 @@ func (h *Handler) pipedriveAppCall(c *gin.Context) (pipedrive.AppCall, bool) {
 		c.Status(http.StatusNotFound)
 		return pipedrive.AppCall{}, false
 	}
+	// Pipedrive puts its signed token in the query; nothing here may pass the URL on.
+	c.Header("Referrer-Policy", "no-referrer")
+	c.Header("Cache-Control", "no-store")
 	q := c.Request.URL.Query()
 	for _, k := range []string{"userId", "companyId", "selectedIds", "token"} {
 		if len(q[k]) > 1 {
-			c.Status(http.StatusBadRequest)
+			pipedriveRefuse(c, http.StatusBadRequest, pipedriveReopenMessage)
 			return pipedrive.AppCall{}, false
 		}
 	}
@@ -672,10 +675,19 @@ func (h *Handler) pipedriveAppCall(c *gin.Context) (pipedrive.AppCall, bool) {
 		RecordID:  strings.TrimSpace(q.Get("selectedIds")),
 	}
 	if !h.Pipedrive.VerifyAppToken(q.Get("token"), call) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"message": "Pipedrive did not sign this request."}})
+		pipedriveRefuse(c, http.StatusUnauthorized, pipedriveReopenMessage)
 		return pipedrive.AppCall{}, false
 	}
 	return call, true
+}
+
+// pipedriveReopenMessage answers a request whose Pipedrive signature is
+// missing, malformed, too old, or not Pipedrive's.
+const pipedriveReopenMessage = "Warmbly could not confirm this request came from Pipedrive, or the page has been open too long. Reload the Pipedrive page and open the Warmbly panel again."
+
+// pipedriveRefuse answers in the shape both Pipedrive panels and modals display.
+func pipedriveRefuse(c *gin.Context, status int, message string) {
+	c.JSON(status, gin.H{"error": gin.H{"title": "Warmbly", "subtitle": message, "message": message}})
 }
 
 // PipedrivePanel answers the Warmbly JSON panel on Pipedrive person and deal

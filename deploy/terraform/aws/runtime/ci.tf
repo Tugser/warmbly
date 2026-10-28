@@ -43,23 +43,56 @@ resource "aws_iam_role" "github_deploy" {
   max_session_duration = 3600
 }
 
+locals {
+  ecs_arn = "arn:aws:ecs:us-east-1:${data.aws_caller_identity.current.account_id}"
+  # One-off tasks a deploy or a rotation runs, and the roles they pass.
+  github_tasks = {
+    migration  = [aws_iam_role.migration_execution.arn]
+    validation = [aws_iam_role.validation_execution.arn, aws_iam_role.application["backend"].arn]
+    ops        = [aws_iam_role.execution["backend"].arn, aws_iam_role.application["backend"].arn]
+    rotator    = [aws_iam_role.rotator_execution.arn, aws_iam_role.rotator.arn]
+  }
+  github_log_groups = concat(
+    [aws_cloudwatch_log_group.migration.arn, aws_cloudwatch_log_group.validation.arn, aws_cloudwatch_log_group.rotator.arn],
+    ["arn:aws:logs:us-east-1:${data.aws_caller_identity.current.account_id}:log-group:/ecs/${var.name}/backend"],
+  )
+}
+
 data "aws_iam_policy_document" "github_deploy" {
   count = var.github_repository == null ? 0 : 1
   statement {
-    actions   = ["ecs:DescribeTaskDefinition"]
+    actions   = ["ecs:DescribeTaskDefinition", "ecs:RegisterTaskDefinition"]
     resources = ["*"]
   }
   statement {
-    actions   = ["ecs:DescribeServices", "ecs:UpdateService"]
-    resources = [for service in ["backend", "consumer"] : "arn:aws:ecs:us-east-1:${data.aws_caller_identity.current.account_id}:service/${var.name}/${var.name}-${service}"]
+    actions   = ["ecs:TagResource"]
+    resources = ["${local.ecs_arn}:task-definition/${var.name}-*:*"]
+    condition {
+      test     = "StringEquals"
+      variable = "ecs:CreateAction"
+      values   = ["RegisterTaskDefinition"]
+    }
+  }
+  statement {
+    actions   = ["ecs:ListTagsForResource"]
+    resources = ["${local.ecs_arn}:task-definition/${var.name}-*:*"]
+  }
+  # Describe by prefix so a deploy can tell which services this install runs; only those can be updated.
+  statement {
+    actions   = ["ecs:DescribeServices"]
+    resources = ["${local.ecs_arn}:service/${var.name}/${var.name}-*"]
+  }
+  statement {
+    actions   = ["ecs:UpdateService"]
+    resources = [for service in keys(var.services) : "${local.ecs_arn}:service/${var.name}/${var.name}-${service}"]
   }
   statement {
     actions   = ["ecs:DescribeTasks"]
-    resources = ["arn:aws:ecs:us-east-1:${data.aws_caller_identity.current.account_id}:task/${var.name}/*"]
+    resources = ["${local.ecs_arn}:task/${var.name}/*"]
   }
   statement {
     actions   = ["ecs:RunTask"]
-    resources = ["arn:aws:ecs:us-east-1:${data.aws_caller_identity.current.account_id}:task-definition/${var.name}-migration:*"]
+    resources = [for task in keys(local.github_tasks) : "${local.ecs_arn}:task-definition/${var.name}-${task}:*"]
     condition {
       test     = "ArnEquals"
       variable = "ecs:cluster"
@@ -68,14 +101,27 @@ data "aws_iam_policy_document" "github_deploy" {
   }
   statement {
     actions = ["iam:PassRole"]
-    resources = concat([aws_iam_role.migration_execution.arn], flatten([
-      for name in ["backend", "consumer"] : [aws_iam_role.execution[name].arn, aws_iam_role.application[name].arn]
-    ]))
+    resources = distinct(concat(flatten(values(local.github_tasks)), flatten([
+      for name in keys(var.services) : [aws_iam_role.execution[name].arn, aws_iam_role.application[name].arn]
+    ])))
     condition {
       test     = "StringEquals"
       variable = "iam:PassedToService"
       values   = ["ecs-tasks.amazonaws.com"]
     }
+  }
+  statement {
+    actions   = ["logs:GetLogEvents"]
+    resources = [for group in local.github_log_groups : "${group}:log-stream:*"]
+  }
+  statement {
+    actions   = ["cloudwatch:DescribeAlarms"]
+    resources = ["*"]
+  }
+  # Version metadata only: the deploy repins references and never reads a value.
+  statement {
+    actions   = ["secretsmanager:DescribeSecret", "secretsmanager:ListSecretVersionIds"]
+    resources = [for name in keys(var.services) : local.foundation.secret_arns[name]]
   }
 }
 

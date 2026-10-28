@@ -50,7 +50,7 @@ export default function TestersPage() {
     const [orgQuery, setOrgQuery] = useState("");
     const [org, setOrg] = useState<AdminOrgListItem | null>(null);
     const [roleID, setRoleID] = useState("");
-    const [passwordDays, setPasswordDays] = useState(30);
+    const [passwordHours, setPasswordHours] = useState(48);
     // Held in state, never refetched: the server returns it once and cannot
     // produce it again.
     const [created, setCreated] = useState<CreatedTester | null>(null);
@@ -83,7 +83,7 @@ export default function TestersPage() {
             createTester({
                 email: email.trim(),
                 reason: reason.trim(),
-                password_days: passwordDays,
+                password_hours: passwordHours,
                 ...(joining
                     ? { organization_id: org!.id, role_id: roleID }
                     : { org_name: orgName.trim() || undefined }),
@@ -96,7 +96,7 @@ export default function TestersPage() {
             setOrgQuery("");
             setOrg(null);
             setRoleID("");
-            setPasswordDays(30);
+            setPasswordHours(48);
             qc.invalidateQueries({ queryKey: ["admin", "testers"] });
             toast.success("Tester created");
         },
@@ -450,14 +450,14 @@ export default function TestersPage() {
                         </Field>
 
                         <Field label="Password works for">
-                            <Select value={String(passwordDays)} onValueChange={(v) => setPasswordDays(Number(v))}>
+                            <Select value={String(passwordHours)} onValueChange={(v) => setPasswordHours(Number(v))}>
                                 <SelectTrigger className="w-full">
                                     <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
-                                    {[7, 14, 30, 60, 90].map((d) => (
+                                    {[4, 12, 24, 48].map((d) => (
                                         <SelectItem key={d} value={String(d)}>
-                                            {d} days
+                                            {d} hours
                                         </SelectItem>
                                     ))}
                                 </SelectContent>

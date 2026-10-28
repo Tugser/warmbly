@@ -783,14 +783,64 @@ func (s *service) loadTranscript(ctx context.Context, orgID, userID, sessionID u
 		return nil, errx.New(errx.Internal, "failed to load conversation")
 	}
 	out := make([]generation.AgentMessage, 0, len(rows))
-	for _, r := range rows {
-		var m generation.AgentMessage
-		if uerr := json.Unmarshal(r.Content, &m); uerr != nil {
-			continue
+	for i := 0; i < len(rows); {
+		j := i + 1
+		for j < len(rows) && rows[j].CreatedAt.Equal(rows[i].CreatedAt) {
+			j++
 		}
-		out = append(out, m)
+		run := make([]generation.AgentMessage, 0, j-i)
+		for _, r := range rows[i:j] {
+			var m generation.AgentMessage
+			if uerr := json.Unmarshal(r.Content, &m); uerr != nil {
+				continue
+			}
+			run = append(run, m)
+		}
+		out = append(out, orderTiedMessages(run)...)
+		i = j
 	}
 	return out, nil
+}
+
+// orderTiedMessages restores a valid order for rows that share one timestamp,
+// which older releases wrote for every message saved in the same transaction.
+// Tool results answering an earlier turn come first, then each tool-calling
+// assistant turn followed by its results, then everything else.
+func orderTiedMessages(run []generation.AgentMessage) []generation.AgentMessage {
+	if len(run) < 2 {
+		return run
+	}
+	callers := make(map[string]bool)
+	for _, m := range run {
+		for _, tc := range m.ToolCalls {
+			callers[tc.ID] = true
+		}
+	}
+	results := make(map[string][]generation.AgentMessage)
+	var orphans, rest []generation.AgentMessage
+	for _, m := range run {
+		switch {
+		case m.Role == "tool" && callers[m.ToolCallID]:
+			results[m.ToolCallID] = append(results[m.ToolCallID], m)
+		case m.Role == "tool":
+			orphans = append(orphans, m)
+		}
+	}
+	out := append(make([]generation.AgentMessage, 0, len(run)), orphans...)
+	for _, m := range run {
+		switch {
+		case m.Role == "tool":
+		case m.Role == "assistant" && len(m.ToolCalls) > 0:
+			out = append(out, m)
+			for _, tc := range m.ToolCalls {
+				out = append(out, results[tc.ID]...)
+				delete(results, tc.ID)
+			}
+		default:
+			rest = append(rest, m)
+		}
+	}
+	return append(out, rest...)
 }
 
 func (s *service) persist(ctx context.Context, orgID, userID, sessionID uuid.UUID, msgs []generation.AgentMessage, tokens int) error {

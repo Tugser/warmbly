@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/warmbly/warmbly/internal/client/mailtls"
 	"github.com/warmbly/warmbly/internal/client/netbind"
 	wsmtp "github.com/warmbly/warmbly/internal/client/smtpimap/smtp"
 	"github.com/warmbly/warmbly/internal/models"
@@ -24,18 +25,15 @@ const probeConversation = 10 * time.Second
 // and any port is accepted. security may be empty, in which case the port
 // convention decides. The result says why a probe failed, so a refused
 // password and an unreachable host are not reported as the same thing.
-func VerifySMTP(ctx context.Context, host string, port int, user, pass, security string) ProbeResult {
+func VerifySMTP(ctx context.Context, host string, port int, user, pass, security string, policy mailtls.Policy) ProbeResult {
 	// Brackets belong to the address, not to the host, and JoinHostPort is
 	// what puts them back for an IPv6 literal.
 	host = models.NormalizeMailHost(host)
 
-	// Matches the send client's TLS policy: MAIL_TLS_INSECURE is a dev-only
-	// knob for the local self-signed sandbox, never set in production.
-	tlsConf := &tls.Config{
-		ServerName:         host,
-		InsecureSkipVerify: netbind.InsecureTLS(), //nolint:gosec // MAIL_TLS_INSECURE, local dev only
-		MinVersion:         tls.VersionTLS12,
-	}
+	// The send client's TLS policy, with the presented certificate captured
+	// so the owner can be shown what to confirm.
+	capture := &mailtls.Capture{}
+	tlsConf := mailtls.Config(host, policy, capture)
 
 	// The unencrypted mode only ever addresses this machine. Refusing it here
 	// as well as at send time means a mailbox that could never be dialled
@@ -77,7 +75,7 @@ func VerifySMTP(ctx context.Context, host string, port int, user, pass, security
 	if err := conn.SetDeadline(deadline); err != nil {
 		return probeFail(ctx, models.MailProbeProtocol, err)
 	}
-	res := verifySMTPSession(ctx, conn, dialed.Security, host, user, pass, tlsConf)
+	res := verifySMTPSession(ctx, conn, dialed.Security, host, user, pass, tlsConf, capture)
 	if dialed.FellBack {
 		res.Port, res.Security = dialed.Port, dialed.Security
 	}
@@ -85,12 +83,17 @@ func VerifySMTP(ctx context.Context, host string, port int, user, pass, security
 }
 
 // verifySMTPSession runs the sign-in on an open socket in the given mode.
-func verifySMTPSession(ctx context.Context, conn net.Conn, resolved, host, user, pass string, tlsConf *tls.Config) ProbeResult {
+func verifySMTPSession(ctx context.Context, conn net.Conn, resolved, host, user, pass string, tlsConf *tls.Config, capture *mailtls.Capture) (res ProbeResult) {
+	defer func() {
+		if res.Certificate == nil {
+			res.Certificate = capture.Certificate(nil)
+		}
+	}()
 	implicitTLS := resolved == models.MailSecurityTLS
 	if implicitTLS {
 		tlsConn := tls.Client(conn, tlsConf)
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			return probeFail(ctx, models.MailProbeTLS, err)
+			return tlsFail(ctx, err, capture)
 		}
 		conn = tlsConn
 	}
@@ -107,21 +110,27 @@ func verifySMTPSession(ctx context.Context, conn net.Conn, resolved, host, user,
 	}
 
 	if !implicitTLS && resolved != models.MailSecurityNone {
-		// TLS stays mandatory, with the same dev-only escape hatch the send
-		// path uses for the local no-STARTTLS sink.
+		// TLS stays mandatory, with the same development-only escape hatch the
+		// send path uses for the local no-STARTTLS sink.
 		if ok, _ := c.Extension("STARTTLS"); ok {
 			if err := c.StartTLS(tlsConf); err != nil {
-				return probeFail(ctx, models.MailProbeTLS, err)
+				return tlsFail(ctx, err, capture)
 			}
 		} else if !netbind.InsecureTLS() {
-			return probeFailText(models.MailProbeTLS, "the server offers no STARTTLS on this port")
+			return probeFailText(models.MailProbeTLS, "the server offers no STARTTLS on this port, and Warmbly only signs in over an encrypted connection. Use the server's SSL/TLS port (usually 465) or a port that offers STARTTLS (usually 587)")
 		}
 	}
 
-	// Negotiated from what the server advertised, like the send path: a
-	// server that offers only LOGIN refuses a blind AUTH PLAIN, and probing
-	// with PLAIN alone rejected mailboxes whose credentials were correct.
+	// Negotiated from what the server advertised and the link it is on, like
+	// the send path: a server that offers only LOGIN refuses a blind AUTH
+	// PLAIN, and no password mechanism runs outside TLS or loopback.
 	auth, aerr := wsmtp.NegotiateAuth(c, user, pass, host)
+	if errors.Is(aerr, wsmtp.ErrSMTPCleartextAuth) {
+		return probeFailText(models.MailProbeCleartext, "the server only offers sign-in over an unencrypted connection, and Warmbly never sends a password unencrypted. Use the server's SSL/TLS port (usually 465) or a port that offers STARTTLS (usually 587)")
+	}
+	if errors.Is(aerr, wsmtp.ErrSMTPNoSupportedAuth) {
+		return probeFailText(models.MailProbeProtocol, noSupportedAuthDetail(c))
+	}
 	if aerr != nil {
 		return probeFail(ctx, models.MailProbeProtocol, aerr)
 	}
@@ -175,4 +184,13 @@ func ehloName(user string) string {
 		return user[at+1:]
 	}
 	return "localhost"
+}
+
+// noSupportedAuthDetail names the sign-in methods the server offered when none is one Warmbly speaks.
+func noSupportedAuthDetail(c *smtp.Client) string {
+	detail := "the server offers no sign-in method Warmbly supports (Warmbly signs in with LOGIN, PLAIN or CRAM-MD5)"
+	if _, offered := c.Extension("AUTH"); offered != "" {
+		detail = "the server offers no sign-in method Warmbly supports: it offers " + probeDetail(errors.New(offered)) + ", and Warmbly signs in with LOGIN, PLAIN or CRAM-MD5"
+	}
+	return detail + ". Use the provider's documented SMTP submission host, which usually offers one of them"
 }

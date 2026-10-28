@@ -25,7 +25,11 @@ defmodule Realtime.Auth do
   - Otherwise = JWT token
 
   Returns:
-  - {:ok, user_id, :jwt}, {:ok, user_id, :api_key} or {:ok, user_id, :oauth} on success
+  - {:ok, user_id, auth_type, context} on success, where auth_type is :jwt,
+    :api_key or :oauth. For a ticket, context carries `session_id` and
+    `mfa_verified`; for an API key or OAuth token it carries `credential`,
+    the workspace the credential belongs to and the member permissions its
+    scopes reach.
   - {:error, reason} on failure
   """
   def verify_token(token, opts \\ [])
@@ -62,9 +66,10 @@ defmodule Realtime.Auth do
 
     case JOSE.JWT.verify_strict(jwk(secret), ["HS256"], token) do
       {true, %JOSE.JWT{fields: fields}, _} ->
-        case validate_claims(fields) do
-          {:ok, user_id} -> {:ok, user_id, :jwt}
-          error -> error
+        with {:ok, user_id} <- validate_claims(fields),
+             {:ok, session} <- ticket_session(fields, user_id),
+             :ok <- claim_ticket(fields) do
+          {:ok, user_id, :jwt, session}
         end
 
       {false, _, _} ->
@@ -118,13 +123,59 @@ defmodule Realtime.Auth do
 
   def proxy_ip(_, _), do: :error
 
+  @live_session_query """
+  SELECT mfa_verified FROM sessions
+  WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL
+    AND (expires_at IS NULL OR expires_at > now())
+  """
+
+  # A ticket naming its session is accepted only while that session is live.
+  defp ticket_session(%{"session_id" => session_id}, user_id)
+       when is_binary(session_id) and session_id != "" do
+    case dump_and_query(@live_session_query, [session_id, user_id]) do
+      {:ok, %{rows: [[mfa_verified] | _]}} ->
+        {:ok, %{session_id: session_id, mfa_verified: mfa_verified == true}}
+
+      {:ok, %{rows: []}} ->
+        {:error, :session_revoked}
+
+      {:error, _reason} ->
+        {:error, :database_error}
+    end
+  end
+
+  # Tickets minted by a backend that predates the claim: no session, so no second factor.
+  defp ticket_session(_claims, _user_id), do: {:ok, %{session_id: nil, mfa_verified: false}}
+
+  # Each ticket opens one socket; the marker outlives the ticket itself.
+  defp claim_ticket(%{"sid" => ticket_id, "exp" => exp})
+       when is_binary(ticket_id) and ticket_id != "" and is_integer(exp) do
+    ttl = max(exp - System.system_time(:second), 1)
+
+    case ticket_store().set_nx("ws_ticket_used:" <> ticket_id, ttl) do
+      {:ok, "OK"} ->
+        :ok
+
+      {:ok, nil} ->
+        {:error, :ticket_used}
+
+      {:error, reason} ->
+        Logger.warning("Socket ticket claim unavailable, refusing: #{inspect(reason)}")
+        {:error, :verification_error}
+    end
+  end
+
+  defp claim_ticket(_claims), do: {:error, :invalid_claims}
+
+  defp ticket_store, do: Application.get_env(:realtime, :ticket_store, Realtime.Redis)
+
   @doc """
   Verify an API key.
   """
   def verify_api_key(api_key, opts \\ []) do
     case ApiKey.validate(api_key, opts) do
-      {:ok, user_id} ->
-        {:ok, user_id, :api_key}
+      {:ok, user_id, credential} ->
+        {:ok, user_id, :api_key, %{credential: credential_grant(credential)}}
 
       {:error, reason} ->
         Logger.warning("API key verification failed: #{inspect(reason)}")
@@ -137,8 +188,8 @@ defmodule Realtime.Auth do
   """
   def verify_oauth_token(token, opts \\ []) do
     case OAuthToken.validate(token, opts) do
-      {:ok, user_id} ->
-        {:ok, user_id, :oauth}
+      {:ok, user_id, credential} ->
+        {:ok, user_id, :oauth, %{credential: credential_grant(credential)}}
 
       {:error, reason} ->
         Logger.warning("OAuth token verification failed: #{inspect(reason)}")
@@ -162,6 +213,8 @@ defmodule Realtime.Auth do
   def error_code(:key_inactive), do: 4004
   def error_code(:key_expired), do: 4004
   def error_code(:token_revoked), do: 4004
+  def error_code(:session_revoked), do: 4004
+  def error_code(:ticket_used), do: 4004
   def error_code(:database_error), do: 4004
   def error_code(:permission_denied), do: 4010
   def error_code(:ip_not_allowed), do: 4010
@@ -194,6 +247,13 @@ defmodule Realtime.Auth do
   def error_message(:key_inactive), do: "API key inactive"
   def error_message(:key_expired), do: "API key expired"
   def error_message(:token_revoked), do: "Access token revoked"
+
+  def error_message(:session_revoked),
+    do: "The session that minted this connection token has signed out; sign in again"
+
+  def error_message(:ticket_used),
+    do: "This connection token was already used; mint a new one for each connection"
+
   def error_message(:database_error), do: "Authentication failed"
   def error_message(:permission_denied), do: "Permission denied"
   def error_message(:ip_not_allowed), do: "IP address not allowed"
@@ -310,6 +370,57 @@ defmodule Realtime.Auth do
 
   def in_scope?(%{scope: _}, _kind, _id), do: false
   def in_scope?(_member, _kind, _id), do: true
+
+  # API scope bit => the member permission it lets a credential socket use.
+  @scope_grants [
+    {0, :manage_emails},
+    {1, :view_campaigns},
+    {2, :view_contacts},
+    {3, :access_unibox},
+    {4, :view_analytics}
+  ]
+
+  @doc """
+  The workspace an API key or OAuth token belongs to, and the member
+  permissions its scopes reach. Team, billing and settings events need a
+  scope no credential has, so they never reach a credential socket.
+  """
+  def credential_grant(%{organization_id: org_id, scopes: scopes}) do
+    scopes = if is_integer(scopes), do: scopes, else: 0
+
+    mask =
+      Enum.reduce(@scope_grants, 0, fn {bit, perm}, acc ->
+        if Bitwise.band(scopes, Bitwise.bsl(1, bit)) != 0,
+          do: Bitwise.bor(acc, permission(perm)),
+          else: acc
+      end)
+
+    %{organization_id: org_id, permissions: mask}
+  end
+
+  @doc """
+  Narrow a membership lookup to what the socket's credential reaches. A
+  ticket socket (no credential) keeps the member's own permissions; an API
+  key or OAuth token reaches only its own workspace, and there only the
+  member permissions its scopes grant.
+  """
+  def confine(result, nil), do: result
+
+  def confine({:ok, %{organization_id: member_org} = member}, %{
+        organization_id: credential_org,
+        permissions: mask
+      })
+      when not is_nil(member_org) and not is_nil(credential_org) do
+    with {:ok, id} <- dump_uuid(credential_org),
+         {:ok, ^id} <- dump_uuid(member_org) do
+      {:ok, %{member | permissions: Bitwise.band(member.permissions || 0, mask)}}
+    else
+      _ -> {:error, :not_a_member}
+    end
+  end
+
+  def confine({:ok, _member}, _credential), do: {:error, :not_a_member}
+  def confine(error, _credential), do: error
 
   @doc false
   def matches_org?(_member, org_id) when org_id in [nil, ""], do: true

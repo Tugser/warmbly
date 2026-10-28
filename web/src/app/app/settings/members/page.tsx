@@ -31,6 +31,7 @@ import useUpdateMemberRole from "@/lib/api/hooks/app/organizations/useUpdateMemb
 import useRoles from "@/lib/api/hooks/app/organizations/useRoles";
 import useAuthConfig from "@/lib/api/hooks/auth/useAuthConfig";
 import type OrganizationRole from "@/lib/api/models/app/organizations/OrganizationRole";
+import type Invitation from "@/lib/api/models/app/organizations/Invitation";
 import { useAppStore } from "@/stores";
 import type { AppError } from "@/lib/api/client/normalizeError";
 import buildError from "@/lib/helper/buildError";
@@ -72,6 +73,7 @@ export default function MembersSettingsPage() {
 
     const memberList = members.data ?? [];
     const inviteList = invites.data ?? [];
+    const expiredCount = inviteList.filter((i) => i.expired).length;
 
     function doRemove(id: string, label: string) {
         confirm?.show(`Remove ${label}?`, async () => {
@@ -98,6 +100,23 @@ export default function MembersSettingsPage() {
                 /* surfaced */
             }
         });
+    }
+    const [resending, setResending] = React.useState<string | null>(null);
+    // Inviting the same address again replaces the expired row with a fresh link and expiry.
+    async function resendInvite(inv: Invitation) {
+        const roleIds = inv.roles?.length ? inv.roles.map((r) => r.id) : inv.role_id ? [inv.role_id] : undefined;
+        setResending(inv.id);
+        try {
+            await toast.promise(invite.mutateAsync({ email: inv.email, role_ids: roleIds, access: inv.access }), {
+                loading: "Sending…",
+                success: `Invitation sent again to ${inv.email}`,
+                error: (e: AppError) => buildError(e),
+            });
+        } catch {
+            /* surfaced */
+        } finally {
+            setResending(null);
+        }
     }
     async function copyInviteLink(invitationId: string) {
         // Each copy mints a new link and retires the last, so the write starts inside the click:
@@ -300,7 +319,11 @@ export default function MembersSettingsPage() {
 
             <Section
                 eyebrow="Pending invitations"
-                description={`${inviteList.length} awaiting acceptance.`}
+                description={
+                    expiredCount > 0
+                        ? `${inviteList.length - expiredCount} awaiting acceptance, ${expiredCount} expired. An invitation works for up to 48 hours.`
+                        : `${inviteList.length} awaiting acceptance. An invitation works for up to 48 hours.`
+                }
             >
                 {invites.isPending ? (
                     <p className="text-[11.5px] text-slate-400 py-2">Loading…</p>
@@ -316,7 +339,7 @@ export default function MembersSettingsPage() {
                                     <Th className="w-32">Role</Th>
                                     <Th className="md:w-48">Access</Th>
                                     <Th className="w-40 hidden md:table-cell">Expires</Th>
-                                    <th className="w-16 md:w-32 px-3 py-2"></th>
+                                    <th className="w-28 md:w-32 px-3 py-2"></th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -328,9 +351,14 @@ export default function MembersSettingsPage() {
                                         <td className="px-4">
                                             <div className="flex items-center gap-2.5">
                                                 <MailIcon className="w-3.5 h-3.5 text-slate-400" />
-                                                <span className="text-[12.5px] text-slate-900 truncate">
+                                                <span className={`text-[12.5px] truncate ${inv.expired ? "text-slate-500" : "text-slate-900"}`}>
                                                     {inv.email}
                                                 </span>
+                                                {inv.expired && (
+                                                    <span className="md:hidden">
+                                                        <ExpiredBadge />
+                                                    </span>
+                                                )}
                                             </div>
                                         </td>
                                         <td className="px-3">
@@ -340,26 +368,48 @@ export default function MembersSettingsPage() {
                                             <AccessBadge access={inv.access} />
                                         </td>
                                         <td className="px-3 font-mono text-[11px] text-slate-500 tabular-nums hidden md:table-cell">
-                                            {new Date(inv.expires_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                                            {inv.expired ? (
+                                                <ExpiredBadge />
+                                            ) : (
+                                                new Date(inv.expires_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+                                            )}
                                         </td>
                                         <td className="px-3">
                                             {access.canManage && (
-                                                <div className="flex items-center gap-0.5 justify-end opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => copyInviteLink(inv.id)}
-                                                        aria-label="Copy invite link"
-                                                        title="Copy invite link"
-                                                        className="size-6 rounded text-slate-400 hover:text-slate-900 hover:bg-slate-100 inline-flex items-center justify-center transition-colors"
-                                                    >
-                                                        <CopyIcon className="w-3 h-3" />
-                                                    </button>
+                                                <div className="flex items-center gap-0.5 justify-end">
+                                                    {inv.expired ? (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => resendInvite(inv)}
+                                                            disabled={resending === inv.id}
+                                                            aria-label="Send invitation again"
+                                                            title="Send invitation again"
+                                                            className="h-6 px-2 rounded-md border border-slate-200 text-[11.5px] text-slate-700 hover:border-sky-300 hover:text-sky-700 hover:bg-sky-50 inline-flex items-center gap-1 transition-colors disabled:opacity-50"
+                                                        >
+                                                            {resending === inv.id ? (
+                                                                <Loader2Icon className="w-3 h-3 animate-spin" />
+                                                            ) : (
+                                                                <SendIcon className="w-3 h-3" />
+                                                            )}
+                                                            Resend
+                                                        </button>
+                                                    ) : (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => copyInviteLink(inv.id)}
+                                                            aria-label="Copy invite link"
+                                                            title="Copy invite link"
+                                                            className="size-6 rounded text-slate-400 hover:text-slate-900 hover:bg-slate-100 inline-flex items-center justify-center transition-colors opacity-100 md:opacity-0 md:group-hover:opacity-100"
+                                                        >
+                                                            <CopyIcon className="w-3 h-3" />
+                                                        </button>
+                                                    )}
                                                     <button
                                                         type="button"
                                                         onClick={() => doCancelInvite(inv.id)}
                                                         aria-label="Cancel invitation"
                                                         title="Cancel invitation"
-                                                        className="size-6 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 inline-flex items-center justify-center transition-colors"
+                                                        className="size-6 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 inline-flex items-center justify-center transition-colors opacity-100 md:opacity-0 md:group-hover:opacity-100"
                                                     >
                                                         <TrashIcon className="w-3 h-3" />
                                                     </button>
@@ -375,6 +425,14 @@ export default function MembersSettingsPage() {
                 )}
             </Section>
         </SectionShell>
+    );
+}
+
+function ExpiredBadge() {
+    return (
+        <span className="inline-flex items-center h-[18px] px-1.5 rounded bg-amber-50 text-amber-700 text-[10.5px] font-medium font-sans">
+            Expired
+        </span>
     );
 }
 

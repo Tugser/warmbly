@@ -58,6 +58,15 @@ const BREAKER_COOLDOWN: Duration = Duration::from_secs(15);
 /// resolve, so anything past a handful of misses is a probe.
 const MISS_BUDGET_PER_MIN: u32 = 12;
 
+/// A ticket's cache entry, scoped to the host it was resolved on.
+fn cache_key(host: &str, link_id: &str) -> String {
+    if host.is_empty() {
+        link_id.to_string()
+    } else {
+        format!("{host}/{link_id}")
+    }
+}
+
 pub struct LinkResolver {
     http: reqwest::Client,
     backend_url: String,
@@ -101,12 +110,21 @@ impl LinkResolver {
         }
     }
 
+    #[cfg(test)]
     pub async fn resolve(&self, link_id: &str, source: &str) -> Resolution {
-        if let Some(link) = self.found.get(link_id).await {
+        self.resolve_on(link_id, source, "").await
+    }
+
+    /// Resolves a ticket as seen on `host`, the normalized request host: a
+    /// workspace's custom host resolves only that workspace's tickets, so
+    /// answers are cached per host.
+    pub async fn resolve_on(&self, link_id: &str, source: &str, host: &str) -> Resolution {
+        let key = cache_key(host, link_id);
+        if let Some(link) = self.found.get(&key).await {
             return Resolution::Found(link);
         }
 
-        if self.not_found.contains_key(link_id) {
+        if self.not_found.contains_key(&key) {
             self.count_miss(source).await;
             return Resolution::NotFound;
         }
@@ -123,7 +141,7 @@ impl LinkResolver {
         // Coalesce immutable-ticket cache fills, but charge every caller's own misses.
         match self
             .found
-            .try_get_with(link_id.to_string(), self.fetch(link_id))
+            .try_get_with(key.clone(), self.fetch(link_id, host, &key))
             .await
         {
             Ok(link) => Resolution::Found(link),
@@ -137,18 +155,27 @@ impl LinkResolver {
         }
     }
 
-    async fn fetch(&self, link_id: &str) -> Result<ResolvedLink, LookupError> {
-        if self.not_found.contains_key(link_id) {
+    async fn fetch(
+        &self,
+        link_id: &str,
+        host: &str,
+        key: &str,
+    ) -> Result<ResolvedLink, LookupError> {
+        if self.not_found.contains_key(key) {
             return Err(LookupError::NotFound);
         }
         if self.breaker_is_open() {
             return Err(LookupError::Unavailable);
         }
 
-        let url = format!(
+        let mut url = format!(
             "{}/api/v1/internal/tracked-links/{}",
             self.backend_url, link_id
         );
+        if !host.is_empty() {
+            url.push_str("?host=");
+            url.push_str(host);
+        }
         let response = self
             .http
             .get(&url)
@@ -174,7 +201,7 @@ impl LinkResolver {
             },
             Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
                 self.breaker_failures.store(0, Ordering::Relaxed);
-                self.not_found.insert(link_id.to_string(), ()).await;
+                self.not_found.insert(key.to_string(), ()).await;
                 Err(LookupError::NotFound)
             }
             Ok(resp) => {

@@ -65,10 +65,16 @@ export const saveTokens = (data: Record<string, unknown>) => {
 // banners are deliberately not here; they are not the user's data.
 const SESSION_SCOPED_KEY_PREFIXES = [
   "warmbly-reply-draft:",
+  "remie.tips.",
+  "warmbly:view:",
+  "warmbly:signin-migration-later:",
 ];
 
 const SESSION_SCOPED_KEYS = [
   "sso_binding",
+  "warmbly.sendingDomains.redirectRescue",
+  "warmbly.sendingDomains.setupNudge",
+  "warmbly.compose.seedPick",
 ];
 
 // clearTokens ends the client's half of the session: the tokens, and the
@@ -113,10 +119,34 @@ export const announceSessionEnded = () => {
   }
 };
 
+// The sign-in page reads this once to say why the person landed there.
+const SESSION_ENDED_NOTICE_KEY = "warmbly:session-ended-notice";
+export const SESSION_ENDED_MESSAGE = "Your session ended. Sign in again to continue.";
+
+// takeSessionEndedNotice reports, once, whether the last session was ended by
+// the server rather than by signing out.
+export const takeSessionEndedNotice = (): boolean => {
+  try {
+    const seen = sessionStorage.getItem(SESSION_ENDED_NOTICE_KEY) !== null;
+    sessionStorage.removeItem(SESSION_ENDED_NOTICE_KEY);
+    return seen;
+  } catch {
+    return false;
+  }
+};
+
 // endSession ends the session and says so. Use it wherever the server has
 // refused the credentials; clearTokens alone is for a sign-out that already
-// owns the navigation.
-export const endSession = () => {
+// owns the navigation. notice=false is for a caller that already told the
+// person why.
+export const endSession = ({ notice = true }: { notice?: boolean } = {}) => {
   clearTokens();
+  if (notice) {
+    try {
+      sessionStorage.setItem(SESSION_ENDED_NOTICE_KEY, "1");
+    } catch {
+      /* storage unavailable: the redirect still happens */
+    }
+  }
   announceSessionEnded();
 };

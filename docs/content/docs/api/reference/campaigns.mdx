@@ -140,11 +140,12 @@ Project an audience against a sender pool before a campaign exists. The campaign
 | `steps`, `total_sends` | Emails per contact, and `recipients` times `steps`. |
 | `first_touch_finish_at` | The day the last contact gets their first email. |
 | `ramping`, `held` | Mailboxes still climbing their graduation ceiling, and mailboxes that send nothing today. |
-| `warmup` | `{mailboxes, per_day}`: the warmup mail running alongside the campaign. |
+| `warmup` | `{mailboxes, per_day, per_day_without, reply_rate}`: the warmup mail running alongside the campaign, what the same mailboxes warm at with no live campaign, and the least share of it (in percent) pool partners reply to while the campaign runs. |
 | `other_campaigns_per_day` | What the pool's mailboxes sent for other campaigns on an average day over the last week. |
 | `bottleneck` | The clamp that costs the most sends on the first full sending day: `campaign_limit`, `warmup_graduation`, `spacing`, `other_campaigns`, `health`, `held`, `workspace_risk`, `org_daily_limit` or `sending_behavior`. Empty when the mailboxes' own caps are the limit. |
 | `timeline` | Up to 120 days from the start: `date`, `sending_day`, `capacity`, `sends`, `first_emails`, `follow_ups`, `warmup`. |
-| `senders` | Up to 200 mailboxes: `id`, `email`, `provider`, `state` (`ready`, `ramping`, `throttled`, `health_hold`, `domain_auth`, `resting`, `no_worker`), `first_day_cap`, `steady_cap`, `warmup_per_day`, `full_cap_at`. |
+| `senders` | Up to 200 mailboxes: `id`, `email`, `provider`, `state` (`ready`, `ramping`, `throttled`, `health_hold`, `domain_auth`, `resting`, `no_worker`), `first_day_cap`, `steady_cap`, `warmup_per_day`, `warmup_without`, `full_cap_at`. |
+| `scenarios` | Changes that would finish sooner, each simulated the same way and listed only when it beats `estimated_finish_at`: `kind` (`replies`: the given percent of leads reply, `more_mailboxes`: that many more mailboxes like these, `every_day`: the same hours on every day of the week), `value`, `finish_at`. |
 
 ```json
 {
@@ -161,14 +162,18 @@ Project an audience against a sender pool before a campaign exists. The campaign
   "full_capacity_at": "2026-10-06T00:00:00+02:00",
   "ramping": 4,
   "held": 0,
-  "warmup": { "mailboxes": 4, "per_day": 20 },
+  "warmup": { "mailboxes": 4, "per_day": 20, "per_day_without": 120, "reply_rate": 60 },
   "other_campaigns_per_day": 0,
   "bottleneck": "warmup_graduation",
   "timeline": [
     { "date": "2026-09-28", "sending_day": true, "capacity": 60, "sends": 60, "first_emails": 60, "follow_ups": 0, "warmup": 20 }
   ],
   "senders": [
-    { "id": "5d0c…", "email": "anna@acme.io", "provider": "gmail", "state": "ramping", "first_day_cap": 20, "steady_cap": 45, "warmup_per_day": 5, "full_cap_at": "2026-10-06T00:00:00+02:00" }
+    { "id": "5d0c…", "email": "anna@acme.io", "provider": "gmail", "state": "ramping", "first_day_cap": 20, "steady_cap": 45, "warmup_per_day": 5, "warmup_without": 30, "full_cap_at": "2026-10-06T00:00:00+02:00" }
+  ],
+  "scenarios": [
+    { "kind": "replies", "value": 3, "finish_at": "2026-10-14T00:00:00+02:00" },
+    { "kind": "more_mailboxes", "value": 4, "finish_at": "2026-10-09T00:00:00+02:00" }
   ]
 }
 ```
@@ -1462,6 +1467,25 @@ Generate outreach copy with the AI writing assistant. Gated to paid and free-tri
 ```
 
 When the organization is out of credits the endpoint returns `402` with `code: "insufficient_credits"` and the standard envelope. A depleted balance is checked before any provider call, so no completion is ever burned on a `402`.
+
+### Streaming
+
+Send `Accept: text/event-stream` to receive the text while the model writes it. `POST /generation/edit` streams the same way. Refusals (`402`, `403`, `429`, validation) still answer with a JSON error before the stream starts. Once it starts, each event is one `data:` line of JSON:
+
+| `type` | Fields | Meaning |
+| --- | --- | --- |
+| `delta` | `text` | The next fragment, in order. |
+| `stage` | `stage: "checking"` | The text is written and words spam filters flag are being reworded. |
+| `done` | `text`, `credits_remaining`, `credits_charged`, `tokens_used`, `model` | The final text, which can differ from the joined deltas after the rewording. Always the last event on success. |
+| `error` | `code`, `message` | The generation failed. A failure refunds the credit, except when the caller disconnected after text had arrived. |
+
+```text
+data: {"type":"delta","text":"Hi {{.FirstName}},"}
+
+data: {"type":"delta","text":" saw that"}
+
+data: {"type":"done","text":"Hi {{.FirstName}}, saw that...","credits_remaining":247,"credits_charged":1,"tokens_used":412,"model":"..."}
+```
 
 ## Preview an AI variable
 

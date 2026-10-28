@@ -72,7 +72,12 @@ func (h *Handler) Reauth(c *gin.Context) {
 	// Refused before the hash comparison, so a caller past the budget cannot
 	// measure Argon2's timing either.
 	ctx := c.Request.Context()
-	if !h.AuthService.ReserveReauthAttempt(ctx, uid) {
+	ok, xerr := h.AuthService.ReserveReauthAttempt(ctx, uid)
+	if xerr != nil {
+		errx.Handle(c, xerr)
+		return
+	}
+	if !ok {
 		errx.Handle(c, errx.NewWithIdentifier(errx.BadRequest, "reauth_limited",
 			"Too many confirmation attempts. Wait an hour, or sign out and sign in again."))
 		return

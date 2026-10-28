@@ -29,6 +29,7 @@ func (d Deps) registerWebhookTools(r *Registry) {
 
 	r.Register(Tool{
 		Name:        "create_webhook",
+		FreshAuth:   true,
 		Description: "Create a webhook endpoint subscribed to event types. Must be an HTTPS URL. The signing secret is shown once to the member, never to you.",
 		InputSchema: objectSchema(map[string]any{
 			"url":         strProp("HTTPS endpoint URL (required)."),
@@ -45,6 +46,7 @@ func (d Deps) registerWebhookTools(r *Registry) {
 
 	r.Register(Tool{
 		Name:        "update_webhook",
+		FreshAuth:   true,
 		Description: "Update a webhook endpoint's URL, description, event subscriptions, and enabled state.",
 		InputSchema: objectSchema(map[string]any{
 			"webhook_id":  strProp("The endpoint's UUID."),

@@ -178,7 +178,8 @@ export async function Request<T>(config: AuthRequestConfig): Promise<T> {
                 return retry.data;
             }
             const failure = new APIError(
-                body.error || body.message || err.message || "Request failed",
+                // message is the sentence written for people; error is only the HTTP title.
+                body.message || (typeof body.error === "string" ? body.error : "") || err.message || "Request failed",
                 status,
                 err.response?.data,
             );

@@ -161,6 +161,7 @@ func (s *emailService) UpdateSMTPIMAPCredentials(ctx context.Context, orgID *uui
 	if xerr := validateSMTPIMAPCredentials(creds); xerr != nil {
 		return nil, xerr
 	}
+	s.inheritTLSPolicy(ctx, accountID, creds)
 
 	if s.workerAssignment == nil {
 		return nil, errx.ErrEmailOnboardNoWorker
@@ -228,13 +229,37 @@ func (s *emailService) resolveCredentialErrors(ctx context.Context, accountID uu
 	if s.accountErrors == nil {
 		return
 	}
-	codes := make([]string, 0, len(errx.CredentialMailErrorCodes))
-	for _, c := range errx.CredentialMailErrorCodes {
+	// The certificate errors clear too: every reconnect path first passed a
+	// connection test under the TLS settings it stored.
+	codes := make([]string, 0, len(errx.CredentialMailErrorCodes)+len(errx.TLSCertificateMailErrorCodes))
+	for _, c := range append(append([]errx.MailErrorCode{}, errx.CredentialMailErrorCodes...), errx.TLSCertificateMailErrorCodes...) {
 		codes = append(codes, string(c))
 	}
 	if xerr := s.accountErrors.ResolveByCodes(ctx, accountID, codes, "reconnect"); xerr != nil {
 		log.Warn().Str("account_id", accountID.String()).Str("error", xerr.Message).Msg("could not resolve credential errors after reconnect")
 	}
+}
+
+// inheritTLSPolicy keeps a server's certificate opt-out and pin across a
+// credential change that does not mention them, as long as the host is the
+// same. The check that follows clears both once the chain passes CA verification.
+func (s *emailService) inheritTLSPolicy(ctx context.Context, accountID uuid.UUID, creds *models.SmtpImap) {
+	stored, xerr := s.emailRepository.GetSMTPCredentials(ctx, accountID)
+	if xerr != nil || stored == nil {
+		return
+	}
+	inheritTLS(creds.SMTP, stored.SMTPHost, stored.SMTPTLSUnverified, stored.SMTPTLSPin)
+	inheritTLS(creds.IMAP, stored.IMAPHost, stored.IMAPTLSUnverified, stored.IMAPTLSPin)
+}
+
+func inheritTLS(svc *models.Service, host string, unverified bool, pin string) {
+	if svc == nil || svc.TLSUnverified || !unverified {
+		return
+	}
+	if !strings.EqualFold(models.NormalizeMailHost(svc.Host), models.NormalizeMailHost(host)) {
+		return
+	}
+	svc.TLSUnverified, svc.TLSPin = true, pin
 }
 
 // validateSMTPIMAPCredentials checks a replacement credential set: same bar as

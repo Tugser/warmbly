@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/warmbly/warmbly/internal/config"
+	"github.com/warmbly/warmbly/internal/pkg/mailhost"
 	"golang.org/x/oauth2"
 )
 
@@ -175,6 +176,27 @@ func (e *Email) ClockTimezone() string {
 
 func (e *Email) IsWarmingActive() bool {
 	return e.Warmup != nil && e.WarmupPausedAt == nil
+}
+
+// ConsumerMailbox reports a free Gmail or Outlook.com account, which starts with
+// far less sender trust than a Google Workspace or Microsoft 365 mailbox.
+func (e *Email) ConsumerMailbox() bool {
+	return e != nil && ConsumerMailboxHost(e.MailHost, e.Provider, e.Email)
+}
+
+// ConsumerMailboxHost is ConsumerMailbox for a mailbox not yet stored.
+func ConsumerMailboxHost(mailHost, provider, address string) bool {
+	h := mailhost.ForMailbox(mailHost, provider, address)
+	return h == mailhost.Gmail || h == mailhost.Outlook
+}
+
+// NewMailboxVolume is a new mailbox's starting cold cap, minimum gap and warmup
+// ceiling. A free Gmail or Outlook.com account starts lower.
+func NewMailboxVolume(mailHost, provider, address string) (campaignLimit, minWait, warmupMax int) {
+	if ConsumerMailboxHost(mailHost, provider, address) {
+		return config.ConsumerCampaignLimitDefault, config.ConsumerMinWaitTimeDefault, config.ConsumerWarmupMaxDefault
+	}
+	return config.CampaignLimitDefault, config.MinWaitTimeDefault, config.WarmupMaxDefault
 }
 
 // DomainAuthBlocked reports whether this mailbox's sending domain has been
@@ -391,9 +413,10 @@ type EmailAuthTarget struct {
 // re-checked keeps routing links long after its record changed, and a domain
 // that failed to verify has no other way back once it propagates.
 type TrackingDomainTarget struct {
-	ID       uuid.UUID
-	Domain   string
-	Verified bool
+	ID             uuid.UUID
+	OrganizationID uuid.UUID
+	Domain         string
+	Verified       bool
 }
 
 // EmailAuthTransition is a mailbox that just entered the failing state, so the
@@ -527,6 +550,83 @@ type Service struct {
 	// from the port", which is how rows and events written before the field
 	// existed behave.
 	Security string `json:"security,omitempty" avro:"security"`
+	// TLSUnverified is the owner's recorded choice to trust this server on its
+	// pinned certificate (TLSPin) instead of a certificate authority.
+	TLSUnverified bool `json:"tls_unverified,omitempty" avro:"tls_unverified"`
+	// TLSPin is the confirmed SHA-256 of the leaf's SubjectPublicKeyInfo,
+	// lowercase hex. Only read when TLSUnverified is set.
+	TLSPin string `json:"tls_pin,omitempty" avro:"tls_pin"`
+	// Observed is the certificate the last connection check saw. Never stored or sent.
+	Observed *MailCertificate `json:"-" avro:"-"`
+}
+
+// MailCertificate describes the certificate a mail server presented.
+type MailCertificate struct {
+	// Fingerprint is the SHA-256 of the leaf's SubjectPublicKeyInfo, lowercase hex.
+	Fingerprint string `json:"fingerprint"`
+	Subject     string `json:"subject,omitempty"`
+	Issuer      string `json:"issuer,omitempty"`
+	// NotAfter is the expiry, RFC 3339.
+	NotAfter   string `json:"not_after,omitempty"`
+	SelfSigned bool   `json:"self_signed,omitempty"`
+	// Trusted is set when the chain also passes CA and host name verification.
+	Trusted bool `json:"trusted,omitempty"`
+}
+
+// MailboxServerCertificate is one server's certificate policy on a mailbox.
+type MailboxServerCertificate struct {
+	Host          string `json:"host"`
+	Port          int    `json:"port"`
+	TLSUnverified bool   `json:"tls_unverified"`
+	TLSPin        string `json:"tls_pin,omitempty"`
+	// Observed is what the server presented on a check; absent on a plain read.
+	Observed *MailCertificate `json:"observed,omitempty"`
+}
+
+// MailboxCertificates is an SMTP/IMAP mailbox's certificate policy per server.
+type MailboxCertificates struct {
+	SMTP MailboxServerCertificate `json:"smtp"`
+	IMAP MailboxServerCertificate `json:"imap"`
+}
+
+// ConfirmMailboxCertificates names the fingerprints the owner confirmed, one
+// per server that is trusted on a pin.
+type ConfirmMailboxCertificates struct {
+	SMTPPin string `json:"smtp_pin"`
+	IMAPPin string `json:"imap_pin"`
+}
+
+// NormalizeTLSPin returns a certificate pin as 64 lowercase hex characters, or
+// "" when it is not a SHA-256 fingerprint. A "sha256:" prefix and colon, space
+// or dash separators are accepted.
+func NormalizeTLSPin(pin string) string {
+	pin = strings.TrimSpace(pin)
+	if len(pin) > 7 && strings.EqualFold(pin[:7], "sha256:") {
+		pin = pin[7:]
+	}
+	pin = strings.ToLower(strings.NewReplacer(":", "", " ", "", "-", "").Replace(pin))
+	if len(pin) != 64 {
+		return ""
+	}
+	for _, c := range pin {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return ""
+		}
+	}
+	return pin
+}
+
+// StoredTLSPin is the pin to persist for a server: only one whose owner opted
+// out of CA verification carries a pin.
+func (s *Service) StoredTLSPin() *string {
+	if s == nil || !s.TLSUnverified {
+		return nil
+	}
+	pin := NormalizeTLSPin(s.TLSPin)
+	if pin == "" {
+		return nil
+	}
+	return &pin
 }
 
 type Oauth2Service struct {
@@ -671,9 +771,12 @@ type TrackingDomainStatus struct {
 	// host (TRACKING_DOMAIN). Empty means the install has no tracking host, so
 	// there is nothing to point at and nothing can verify.
 	CNAMETarget string `json:"cname_target"`
+	// TXTName and TXTValue are the ownership record a new verification needs beside the CNAME.
+	TXTName  string `json:"txt_name,omitempty"`
+	TXTValue string `json:"txt_value,omitempty"`
 
 	// Status is stable and machine-readable: verified, unset, no_target,
-	// not_found, wrong_target, lookup_error, or pending when the value is
+	// not_found, wrong_target, proof_missing, lookup_error, or pending when the value is
 	// stored state rather than a fresh lookup.
 	Status string `json:"status"`
 

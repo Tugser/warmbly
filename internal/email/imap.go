@@ -8,6 +8,7 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/warmbly/warmbly/internal/client/mailtls"
 	"github.com/warmbly/warmbly/internal/client/netbind"
 	"github.com/warmbly/warmbly/internal/models"
 )
@@ -17,7 +18,7 @@ import (
 // security may be empty, in which case the port convention decides. The
 // result says why a probe failed, so a refused password and an unreachable
 // host are not reported as the same thing.
-func VerifyImap(ctx context.Context, host string, port int, user, pass, security string) ProbeResult {
+func VerifyImap(ctx context.Context, host string, port int, user, pass, security string, policy mailtls.Policy) ProbeResult {
 	// Brackets belong to the address, not to the host, and JoinHostPort is
 	// what puts them back for an IPv6 literal.
 	host = models.NormalizeMailHost(host)
@@ -43,14 +44,10 @@ func VerifyImap(ctx context.Context, host string, port int, user, pass, security
 		return probeFailText(models.MailProbeCleartext, "the host did not resolve to this machine")
 	}
 
-	// Matches the sync client's TLS policy: MAIL_TLS_INSECURE is a dev-only
-	// knob for the local self-signed sandbox, never set in production. Without
-	// it, validation rejects mailboxes the worker would go on to sync fine.
-	tlsConf := &tls.Config{
-		ServerName:         host,
-		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: netbind.InsecureTLS(),
-	}
+	// The sync client's TLS policy, with the presented certificate captured
+	// so the owner can be shown what to confirm.
+	capture := &mailtls.Capture{}
+	tlsConf := mailtls.Config(host, policy, capture)
 
 	var c *imapclient.Client
 
@@ -66,7 +63,7 @@ func VerifyImap(ctx context.Context, host string, port int, user, pass, security
 		}
 		c, err = imapclient.NewStartTLS(conn, &imapclient.Options{TLSConfig: tlsConf})
 		if err != nil {
-			return probeFail(ctx, models.MailProbeTLS, err)
+			return tlsFail(ctx, err, capture)
 		}
 	} else {
 		tlsConn := tls.Client(conn, tlsConf)
@@ -74,7 +71,7 @@ func VerifyImap(ctx context.Context, host string, port int, user, pass, security
 			return probeFail(ctx, models.MailProbeProtocol, err)
 		}
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			return probeFail(ctx, models.MailProbeTLS, err)
+			return tlsFail(ctx, err, capture)
 		}
 		c = imapclient.New(tlsConn, nil)
 	}
@@ -94,6 +91,7 @@ func VerifyImap(ctx context.Context, host string, port int, user, pass, security
 		if err != nil {
 			res = probeFail(ctx, imapLoginReason(err), err)
 		}
+		res.Certificate = capture.Certificate(nil)
 		c.Logout()
 		return res
 	case <-ctx.Done():

@@ -1888,8 +1888,7 @@ func (r *uniboxRepository) overview(ctx context.Context, orgID uuid.UUID, accoun
 	// Per-tag counters. Mailbox tags live in `tags` + `email_tags`.
 	// Per THREAD (distinct thread key) so threads aren't over-counted by
 	// message multiplicity or the email_tags fan-out. Every join is on the
-	// workspace: this used to compare the registry's user_id against the org
-	// id it is handed, so the rail was always empty.
+	// workspace's organization_id, never on a member's user_id.
 	tagRows, err := r.db.Query(ctx, `
 		SELECT
 			t.id,

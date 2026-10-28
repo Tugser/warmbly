@@ -33,6 +33,16 @@ vi.mock("./StepAttachments", () => ({ default: () => null }));
 vi.mock("@/components/ui/scroll-strip", () => ({ default: ({ children }: { children: React.ReactNode }) => <div>{children}</div> }));
 vi.mock("../ContentScore", () => ({ default: () => null }));
 vi.mock("./PreviewControls", () => ({ PlacementTestButton: () => null, PreviewContactPicker: () => null, PreviewMailboxPicker: () => null, SendTestButton: () => null }));
+vi.mock("./EmailAIWriter", () => ({ WriteEmailWithAI: () => null, SubjectAI: () => null }));
+vi.mock("@/lib/api/hooks/app/emails/useEmails", () => ({ default: () => ({ emails: [] }) }));
+vi.mock("./useEmailAIWriter", () => ({ useEmailAIWriter: () => ({ phase: "idle", busyLabels: [] }) }));
+vi.mock("@/components/app/ai/AIDraftBar", () => ({ default: () => null }));
+vi.mock("./SubjectEditor", () => ({
+    default: ({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) => (
+        <input value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+    ),
+}));
+vi.mock("@/hooks/usePermission", () => ({ usePermission: () => false }));
 
 const step: Sequence = {
     id: "step-id", name: "Opening email", subject: "", body_html: "", body_plain: "", body_code: false,

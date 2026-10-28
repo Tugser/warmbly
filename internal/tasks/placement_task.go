@@ -276,7 +276,7 @@ func (s *tasksService) renderPlacementBase(ctx context.Context, test *models.Pla
 	}
 	extra := templateContext(account, unsubscribeURL)
 	subject := expandSpintax(RenderTemplateWith(rawSubject, contact, extra))
-	bodyHTML := expandSpintax(RenderTemplateWith(rawHTML, contact, extra))
+	bodyHTML := expandSpintax(RenderHTMLTemplateWith(rawHTML, contact, extra))
 	bodyPlain := expandSpintax(RenderTemplateWith(rawPlain, contact, extra))
 	if bodyPlain == "" && bodyHTML != "" {
 		bodyPlain = ExtractPlainTextFromHTML(bodyHTML)

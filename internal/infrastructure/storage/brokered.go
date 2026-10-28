@@ -291,7 +291,9 @@ func (s *BrokeredStore) PutPublic(_ context.Context, _ string, _ io.Reader, _ st
 	return "", ErrUnsupported
 }
 
-func (s *BrokeredStore) PresignedGetURL(ctx context.Context, key string, _ time.Duration) (string, error) {
+// PresignedGetURL hands back the broker's read URL, which the control plane
+// signs as a download whatever dl says.
+func (s *BrokeredStore) PresignedGetURL(ctx context.Context, key string, _ time.Duration, _ Download) (string, error) {
 	return s.PresignedURL(ctx, PresignOpGet, key, "", 0)
 }
 

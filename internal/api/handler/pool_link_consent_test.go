@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -48,6 +49,44 @@ func serve(t *testing.T, fn gin.HandlerFunc, target string, cookies ...*http.Coo
 	return w
 }
 
+func servePost(t *testing.T, fn gin.HandlerFunc, form url.Values, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/addresses/connect/continue", strings.NewReader(form.Encode()))
+	c.Request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for _, ck := range cookies {
+		c.Request.AddCookie(ck)
+	}
+	fn(c)
+	c.Writer.WriteHeaderNow()
+	return w
+}
+
+// The browser-binding cookie is Secure in every environment but plain-http development.
+func TestBrokerCookieSecureOutsideDevelopment(t *testing.T) {
+	plain := httptest.NewRequest(http.MethodGet, "http://cloud.example/addresses/connect", nil)
+	forwarded := httptest.NewRequest(http.MethodGet, "http://cloud.example/addresses/connect", nil)
+	forwarded.Header.Set("X-Forwarded-Proto", "https")
+
+	for _, env := range []string{"production", "staging", "prod"} {
+		t.Setenv("APP_ENV", env)
+		if !brokerCookieSecure(plain) {
+			t.Fatalf("APP_ENV=%s over plain http: cookie not Secure", env)
+		}
+	}
+	for _, env := range []string{"", "dev", "development", "local"} {
+		t.Setenv("APP_ENV", env)
+		if brokerCookieSecure(plain) {
+			t.Fatalf("APP_ENV=%q over plain http: cookie Secure", env)
+		}
+		if !brokerCookieSecure(forwarded) {
+			t.Fatalf("APP_ENV=%q behind https: cookie not Secure", env)
+		}
+	}
+}
+
 func TestBrokeredSigninCompletesOnlyInTheBrowserThatContinued(t *testing.T) {
 	f := &fakeBroker{}
 	h := &Handler{PoolLinkService: f}
@@ -62,15 +101,22 @@ func TestBrokeredSigninCompletesOnlyInTheBrowserThatContinued(t *testing.T) {
 		t.Fatalf("cookie = %+v", cookies)
 	}
 	token := cookies[0].Value
+	if strings.Contains(body, "?state=") || strings.Contains(body, "t="+token) || !strings.Contains(body, `method="post"`) {
+		t.Fatalf("the consent page must post the binding value, never link it: %s", body)
+	}
 
-	if w := serve(t, h.PoolLinkOAuthContinue, "/addresses/connect/continue?state=pl_x&t="+token); w.Code == http.StatusFound || f.bound != "" {
+	if w := servePost(t, h.PoolLinkOAuthContinue, url.Values{"state": {"pl_x"}, "t": {token}}); w.Code == http.StatusSeeOther || f.bound != "" {
 		t.Fatalf("continue without the cookie = %d", w.Code)
 	}
-	if w := serve(t, h.PoolLinkOAuthContinue, "/addresses/connect/continue?state=pl_x&t=wrong", cookies[0]); w.Code == http.StatusFound || f.bound != "" {
+	if w := servePost(t, h.PoolLinkOAuthContinue, url.Values{"state": {"pl_x"}, "t": {"wrong"}}, cookies[0]); w.Code == http.StatusSeeOther || f.bound != "" {
 		t.Fatalf("continue with a token the page did not render = %d", w.Code)
 	}
-	if w := serve(t, h.PoolLinkOAuthContinue, "/addresses/connect/continue?state=pl_x&t="+token, cookies[0]); w.Code != http.StatusFound || f.bound != token {
+	if w := servePost(t, h.PoolLinkOAuthContinue, url.Values{"state": {"pl_x"}, "t": {token}}, cookies[0]); w.Code != http.StatusSeeOther || f.bound != token {
 		t.Fatalf("continue from the page = %d, bound %q", w.Code, f.bound)
+	}
+	f.bound = ""
+	if w := serve(t, h.PoolLinkOAuthContinue, "/addresses/connect/continue?state=pl_x&t="+token, cookies[0]); w.Code != http.StatusFound || f.bound != token {
+		t.Fatalf("continue from a page rendered by the previous release = %d, bound %q", w.Code, f.bound)
 	}
 
 	if w := serve(t, h.EmailOAuthCallbackGmail, "/addresses/google/callback?state=pl_x&code=c"); w.Code == http.StatusFound || strings.Contains(w.Body.String(), "postMessage") {

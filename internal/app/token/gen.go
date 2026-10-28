@@ -25,6 +25,8 @@ type TokenClaims struct {
 	// password-reset token from being accepted as a session.
 	Purpose  string `json:"purpose,omitempty"`
 	ClientIP string `json:"client_ip,omitempty"`
+	// TicketSession is the session a websocket ticket was minted from; sid is the ticket's own id.
+	TicketSession string `json:"session_id,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -70,6 +72,20 @@ func (s *tokenService) VerifyToken(tokenStr string) (*TokenClaims, *errx.Error) 
 	}
 
 	return claims, nil
+}
+
+// GenerateWebsocketTicket mints a socket ticket the realtime service accepts once,
+// and only while the session it names is live.
+func (s *tokenService) GenerateWebsocketTicket(userID, ticketID, sessionID uuid.UUID, nonce string, issuedAt, expiresAt time.Time) (string, error) {
+	claims := TokenClaims{
+		UserID: userID, SessionID: ticketID, Nonce: nonce,
+		Purpose: PurposeWebSocket, TicketSession: sessionID.String(),
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+			IssuedAt:  jwt.NewNumericDate(issuedAt),
+		},
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(s.AuthSecret))
 }
 
 // The proof is bound to one ticket and is never accepted as a socket credential.

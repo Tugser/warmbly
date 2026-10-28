@@ -69,10 +69,10 @@ export default function FormsDomainCard() {
         }
     }
 
-    async function copyTarget() {
-        if (!status?.cname_target) return;
-        await navigator.clipboard.writeText(status.cname_target);
-        toast.success("CNAME target copied");
+    async function copy(text: string | undefined, what: string) {
+        if (!text) return;
+        await navigator.clipboard.writeText(text);
+        toast.success(`${what} copied`);
     }
 
     return (
@@ -120,13 +120,29 @@ export default function FormsDomainCard() {
                         <span className="truncate">{status.cname_target}</span>
                         <button
                             type="button"
-                            onClick={() => void copyTarget()}
+                            onClick={() => void copy(status.cname_target, "CNAME target")}
                             aria-label="Copy CNAME target"
                             className="ml-auto size-6 inline-flex items-center justify-center rounded text-slate-400 hover:text-slate-900 hover:bg-slate-200/60 shrink-0"
                         >
                             <CopyIcon className="w-3 h-3" />
                         </button>
                     </div>
+                    {status.txt_name && status.txt_value && !status.forms_domain_verified && (
+                        <div className="mt-1 flex items-center gap-2 text-[11.5px] font-mono text-slate-700">
+                            <span className="text-slate-400">TXT</span>
+                            <span className="truncate">{status.txt_name}</span>
+                            <span className="text-slate-400">value</span>
+                            <span className="truncate">{status.txt_value}</span>
+                            <button
+                                type="button"
+                                onClick={() => void copy(status.txt_value, "TXT value")}
+                                aria-label="Copy TXT value"
+                                className="ml-auto size-6 inline-flex items-center justify-center rounded text-slate-400 hover:text-slate-900 hover:bg-slate-200/60 shrink-0"
+                            >
+                                <CopyIcon className="w-3 h-3" />
+                            </button>
+                        </div>
+                    )}
                 </div>
             ) : (
                 <p className="text-[11.5px] text-slate-500 rounded-md bg-slate-50 border border-slate-200 px-3 py-2">

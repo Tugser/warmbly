@@ -1253,10 +1253,11 @@ func (r *campaignRepository) Update(ctx context.Context, orgID, campaignID strin
 		}
 		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", "tracking_domain", argPos))
 		args = append(args, domain)
+		// A changed override is unverified until the CNAME is re-resolved; saving the same one keeps its verdict.
+		setClauses = append(setClauses,
+			fmt.Sprintf("tracking_domain_verified = (tracking_domain_verified AND tracking_domain = $%d)", argPos),
+			fmt.Sprintf("tracking_domain_verified_at = CASE WHEN tracking_domain = $%d THEN tracking_domain_verified_at END", argPos))
 		argPos++
-		// Any change to the override invalidates a prior verification until
-		// the CNAME is re-resolved (only a verified override is honored).
-		setClauses = append(setClauses, "tracking_domain_verified = false", "tracking_domain_verified_at = NULL")
 	}
 	if data.UTMTracking != nil {
 		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", "utm_tracking", argPos))

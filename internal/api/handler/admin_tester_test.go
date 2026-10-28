@@ -59,7 +59,7 @@ func TestAdminCreateTesterOnlyGrantsDedicatedWorkspaces(t *testing.T) {
 		r := gin.New()
 		r.Use(func(c *gin.Context) { c.Set(middleware.AdminUserIDKey, actor) })
 		r.POST("/testers", h.AdminCreateTester)
-		req := adminCreateTesterRequest{Email: "reviewer@example.test", Reason: "OAuth review", PasswordDays: 7}
+		req := adminCreateTesterRequest{Email: "reviewer@example.test", Reason: "OAuth review", PasswordHours: 24}
 		if existing {
 			req.OrgID, req.RoleID = &orgID, &roleID
 		}
@@ -150,5 +150,25 @@ func TestAdminSeedTesterWorkspaceRequiresAuthorityAndValidTarget(t *testing.T) {
 				t.Fatal("target or audit attribution changed")
 			}
 		})
+	}
+}
+
+func TestTesterPasswordLifetimeIsAtMostTwoDays(t *testing.T) {
+	for _, tc := range []struct {
+		req  adminCreateTesterRequest
+		want time.Duration
+		ok   bool
+	}{
+		{adminCreateTesterRequest{}, 48 * time.Hour, true},
+		{adminCreateTesterRequest{PasswordHours: 6}, 6 * time.Hour, true},
+		{adminCreateTesterRequest{PasswordDays: 2}, 48 * time.Hour, true},
+		{adminCreateTesterRequest{PasswordHours: 49}, 0, false},
+		{adminCreateTesterRequest{PasswordDays: 30}, 0, false},
+		{adminCreateTesterRequest{PasswordHours: -1}, 0, false},
+	} {
+		got, err := testerPasswordLifetime(tc.req)
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Errorf("%+v: got %v, err %v; want %v, ok %v", tc.req, got, err, tc.want, tc.ok)
+		}
 	}
 }

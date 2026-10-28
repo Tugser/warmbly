@@ -26,6 +26,18 @@ defmodule Realtime.Test.Counter do
     Agent.get(__MODULE__, &get_in(&1, [:counts, key])) || 0
   end
 
+  def set_nx(key, _ttl_seconds) do
+    Agent.get_and_update(__MODULE__, fn
+      %{down: true} = state ->
+        {{:error, :redis_unavailable}, state}
+
+      %{counts: counts} = state ->
+        if Map.has_key?(counts, key),
+          do: {{:ok, nil}, state},
+          else: {{:ok, "OK"}, %{state | counts: Map.put(counts, key, 1)}}
+    end)
+  end
+
   def incr_with_ttl(key, _ttl_seconds) do
     Agent.get_and_update(__MODULE__, fn
       %{down: true} = state ->

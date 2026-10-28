@@ -263,7 +263,7 @@ func (r *tokenRepository) RefreshToken(ctx context.Context, sessionID uuid.UUID,
 		UPDATE sessions
 		SET last_refreshed_at = $5,
 		 access_nonce = $1, refresh_nonce = $2, previous_refresh_nonce = $3
-		WHERE refresh_nonce = $3 AND id = $4 AND revoked_at IS NULL
+		WHERE refresh_nonce = $3 AND id = $4 AND revoked_at IS NULL AND expires_at > now()
 	`
 
 	params := []any{

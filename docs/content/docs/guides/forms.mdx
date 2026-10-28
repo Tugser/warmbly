@@ -115,7 +115,7 @@ The **Design** tab styles the form while the canvas updates live. The defaults a
 
 The **Settings** tab controls what a submission does:
 
-- **Success message** is shown after submitting, or set a **redirect URL** to send the visitor to your own thank-you page instead.
+- **Success message** is shown after submitting, or set a **redirect URL** to send the visitor to your own thank-you page instead. The page has to be on one of your workspace's own domains: a domain you have a mailbox on (not a shared provider such as `gmail.com`), a verified tracking domain, your verified [custom forms domain](#custom-domain), or a subdomain of one of them. Any other address is refused with `redirect_target_not_own_domain`. If a saved page stops qualifying, for example after the last mailbox on its domain is removed, the setting is kept and marked **Not in use**, and visitors see the success message until you change it.
 - **Add to labels** puts the labels you pick on every submitted contact, for example "Website leads".
 - **Add to campaign** enrolls new contacts as leads in the campaign you pick. Sending still follows the campaign's own schedule, limits and windows; a form never causes immediate mail. Picking a campaign turns on its **Keep running for new leads** setting, so it waits between submissions instead of finishing; a campaign that had already finished restarts when a lead arrives, through the usual launch checks, and a refused restart is noted in its activity log while the lead waits.
 - **Spam protection** and **allowed embed domains** are covered below.
@@ -156,7 +156,13 @@ This matters more than it looks. Click tracking already rewrites links in the HT
 
 Type the subdomain into **Custom domain** on any form's Share tab, add the `CNAME` it shows you at your DNS provider, then press **Save and verify**. It is a workspace setting, so it covers every form at once and needs the manage-settings permission.
 
-Verification reports the same outcomes as a tracking domain: verified, no record yet, points at something else, or nothing to point at when the install has no forms host. Until it verifies, links keep working on the shared host, so an unverified domain never breaks a form. Warmbly re-checks hourly, so a record that finishes propagating starts being used on its own, and one that later stops pointing here stops being used instead of quietly serving links from a host that no longer answers.
+A new domain also needs an ownership record beside the `CNAME`: a `TXT` record at `_warmbly.<your domain>` holding the `warmbly-verify=...` value the Share tab shows (the API returns it as `txt_name` and `txt_value`). The value is unique to your workspace on this instance, so nobody can copy it from your public DNS. The same record published on a parent domain counts too, so a `TXT` at `_warmbly.acme.com` with that domain's value covers `forms.acme.com` and every other subdomain of it. A domain this workspace already verified, as its forms domain or for tracking or a redirect, keeps verifying on the `CNAME` alone.
+
+A forms domain belongs to one workspace on an instance. Once a workspace has verified it, as a forms domain, a tracking domain or a redirect, no other workspace on the same instance can save or verify it as its forms domain (`409 forms_domain_taken`), and nothing changes.
+
+On your domain only your own workspace's forms are served. Any other form's link opened there answers like an unknown form, with a 404. The shared host serves every workspace's forms as before.
+
+Verification reports the same outcomes as a tracking domain: verified, no record yet, points at something else, the ownership record is missing, or nothing to point at when the install has no forms host. Until it verifies, links keep working on the shared host, so an unverified domain never breaks a form. Warmbly re-checks hourly, so a record that finishes propagating starts being used on its own, and one that later stops pointing here stops being used instead of quietly serving links from a host that no longer answers.
 
 A visitor who opens the domain itself, with no form in the path, gets a short page saying the address serves forms and that each one has its own link. No form is listed there, and nothing on it identifies your workspace, so a customer who types the domain out of curiosity sees something deliberate rather than an error.
 

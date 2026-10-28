@@ -239,7 +239,7 @@ func TestLinkedRedirectsProveOwnershipOnCloud(t *testing.T) {
 	if list, _ := repo.List(ctx, inst.OrganizationID); len(list) != 0 {
 		t.Fatalf("the workspace lists the link's row: %+v", list)
 	}
-	s.mailboxes = &fakeMailboxes{counts: map[string]int{"frost.io": 1}}
+	s.mailboxes = &fakeMailboxes{counts: map[string]int{"frost.io": 1}, owned: testOwned}
 	if _, xerr := s.SetRedirect(ctx, inst.OrganizationID, creator, "frost.io", RedirectInput{TargetURL: "evil.example"}); xerr == nil || xerr.Identifier != ErrIDLinked {
 		t.Fatalf("the dashboard changed the link's row: %v", xerr)
 	}

@@ -3,15 +3,17 @@ package notify
 import (
 	"context"
 	"log"
+	"regexp"
 	"strings"
+
+	"github.com/warmbly/warmbly/internal/config"
 )
 
 // logEmailNotificationService writes messages to stdout instead of delivering
-// them. It exists so a fresh install can complete first login before any relay
-// is configured: the login code is in the container logs rather than lost in a
-// sink the operator may not know is there.
+// them, so a fresh install works before any relay is configured. A transport
+// that does not deliver never gates a login or a signup on an emailed code, and
+// outside development every link's query and fragment is withheld.
 //
-// Gitea calls the same idea PROTOCOL=dummy and Zulip uses a file-based backend.
 // The banner is deliberately loud because this transport must never be mistaken
 // for working mail.
 type logEmailNotificationService struct {
@@ -44,12 +46,30 @@ func (s *logEmailNotificationService) write(to, cc, bcc []string, replyTo, subje
 		b.WriteString("│ Reply-To: " + replyTo + "\n")
 	}
 	b.WriteString("│ Subject: " + subject + "\n")
+	body := htmlToPlainText(html)
+	if !config.ExplicitDevelopment() {
+		body = redactLinkParams(body)
+		b.WriteString("│ Links:   query strings and fragments removed. Copy invitation links under Settings > Members; reset passwords with warmblyctl user reset-password\n")
+	}
 	b.WriteString("├──────────────────────────────────────────────────────────────────────\n")
-	for _, line := range strings.Split(htmlToPlainText(html), "\n") {
+	for _, line := range strings.Split(body, "\n") {
 		b.WriteString("│ " + line + "\n")
 	}
 	b.WriteString("└──────────────────────────────────────────────────────────────────────\n")
 
 	log.Print(b.String())
 	return nil
+}
+
+var logLink = regexp.MustCompile(`https?://[^\s<>"']+`)
+
+// redactLinkParams drops the query and fragment of every link, where reset and invitation tokens travel.
+func redactLinkParams(s string) string {
+	return logLink.ReplaceAllStringFunc(s, func(raw string) string {
+		cut := strings.IndexAny(raw, "?#")
+		if cut < 0 {
+			return raw
+		}
+		return raw[:cut] + "?[redacted]"
+	})
 }

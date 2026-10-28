@@ -127,6 +127,54 @@ func MailhostISPDB() bool {
 	return !SelfHosted()
 }
 
+// DevEnv reports whether APP_ENV names a development instance; unset is dev.
+func DevEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))) {
+	case "", "dev", "development", "local":
+		return true
+	}
+	return false
+}
+
+// ExplicitDevelopment reports whether APP_ENV names development; unlike DevEnv, unset is not.
+func ExplicitDevelopment() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))) {
+	case "dev", "development", "local":
+		return true
+	}
+	return false
+}
+
+// HostedProduction reports a hosted (not self-host) instance outside development.
+func HostedProduction() bool { return !SelfHosted() && !DevEnv() }
+
+// UnsafeWebhookURLsAllowed reports whether outbound HTTP to customer URLs may use
+// http:// and private addresses. Only a self-hosted or development instance may opt in.
+func UnsafeWebhookURLsAllowed() bool {
+	return isTrue(os.Getenv("WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS")) && !HostedProduction()
+}
+
+// PrivateMailHostsAllowed reports whether mailbox SMTP/IMAP connections may reach
+// non-public addresses. Never on hosted production; a self-hosted or development
+// instance allows them (on-premises mail servers) unless MAIL_ALLOW_PRIVATE_HOSTS=false.
+func PrivateMailHostsAllowed() bool {
+	if HostedProduction() {
+		return false
+	}
+	return !isFalse(os.Getenv("MAIL_ALLOW_PRIVATE_HOSTS"))
+}
+
+// MailTLSInsecureAllowed reports whether MAIL_TLS_INSECURE=true applies: never
+// on hosted production, where a mailbox opts out per server with a pinned key.
+func MailTLSInsecureAllowed() bool {
+	return isTrue(os.Getenv("MAIL_TLS_INSECURE")) && !HostedProduction()
+}
+
+// SMTPTLSInsecureAllowed reports whether SMTP_TLS_INSECURE_SKIP_VERIFY=true applies: never on hosted production.
+func SMTPTLSInsecureAllowed() bool {
+	return isTrue(os.Getenv("SMTP_TLS_INSECURE_SKIP_VERIFY")) && !HostedProduction()
+}
+
 // MailvendorSandboxURL points every inbox vendor client at the sandbox's mock
 // vendor API (<url>/<vendor>). Honoured only in development (APP_ENV dev or
 // unset), so a stray value can never send real vendor keys elsewhere.

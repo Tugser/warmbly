@@ -240,6 +240,16 @@
                                       "default": "",
                                       "name": "security",
                                       "type": "string"
+                                    },
+                                    {
+                                      "default": false,
+                                      "name": "tls_unverified",
+                                      "type": "boolean"
+                                    },
+                                    {
+                                      "default": "",
+                                      "name": "tls_pin",
+                                      "type": "string"
                                     }
                                   ],
                                   "name": "warmbly.events.Service",
@@ -959,6 +969,11 @@
             {
               "default": "",
               "name": "filing_id",
+              "type": "string"
+            },
+            {
+              "default": "",
+              "name": "command_id",
               "type": "string"
             },
             {

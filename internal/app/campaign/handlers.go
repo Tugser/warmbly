@@ -19,6 +19,7 @@ import (
 	"github.com/warmbly/warmbly/internal/config"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/infrastructure/pubsub"
+	"github.com/warmbly/warmbly/internal/infrastructure/storage"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/observability/errs"
 	"github.com/warmbly/warmbly/internal/pkg/mailhtml"
@@ -383,7 +384,7 @@ func (s *campaignService) copyAttachments(ctx context.Context, orgID, src, dst u
 			continue
 		}
 		key := models.AttachmentObjectKey(dst, att.Filename)
-		err = s.storage.Put(ctx, key, body, att.MimeType)
+		err = s.storage.Put(ctx, key, body, storage.DownloadType(att.MimeType))
 		body.Close()
 		if err != nil {
 			errs.CaptureException(fmt.Errorf("campaign %s duplicate: write %s: %w", src, key, err))
@@ -1055,7 +1056,7 @@ func (s *campaignService) VerifyCampaignTrackingDomain(ctx context.Context, orgI
 	}
 
 	target := config.TrackingHostname()
-	res := trackdns.Verify(ctx, campaign.TrackingDomain, target)
+	res := s.customHosts.Gate(ctx, trackdns.Verify(ctx, campaign.TrackingDomain, target), orgID, campaign.TrackingDomainVerified)
 
 	status := &models.TrackingDomainStatus{
 		TrackingDomain:           res.Domain,
@@ -1066,6 +1067,7 @@ func (s *campaignService) VerifyCampaignTrackingDomain(ctx context.Context, orgI
 		Observed:                 res.Observed,
 		TrackingHostUnresolvable: res.TargetUnresolvable,
 	}
+	status.TXTName, status.TXTValue = s.customHosts.Record(orgID, res.Domain)
 	if res.Verified {
 		now := time.Now().UTC()
 		status.TrackingDomainVerifiedAt = &now

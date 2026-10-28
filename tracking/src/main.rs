@@ -18,7 +18,7 @@ mod unsubscribe;
 mod unsubscribe_i18n;
 
 use axum::{
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, MatchedPath},
     routing::{get, post},
     Router,
 };
@@ -174,7 +174,17 @@ async fn main() {
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
-        .layer(TraceLayer::new_for_http())
+        // Spans name the route, never the URI: unsubscribe and click paths carry tokens.
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|req: &axum::http::Request<_>| {
+                let route = req
+                    .extensions()
+                    .get::<MatchedPath>()
+                    .map(MatchedPath::as_str)
+                    .unwrap_or("unmatched");
+                tracing::info_span!("request", method = %req.method(), route)
+            }),
+        )
         .with_state(state);
 
     // Start server

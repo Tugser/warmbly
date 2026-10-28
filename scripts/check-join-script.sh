@@ -20,6 +20,11 @@
 #     created without ever truncating one that is already there
 #   - --dry-run masks every credential, including the ones that hide inside a
 #     URL, and does it with an expression this sed actually supports
+#   - the rendered updater, run against fake docker, systemctl and curl: digest
+#     pulls, local rollback on a crash loop, no retry of a failed tag or env
+#     revision, node files never followed through a symlink, the node token
+#     kept off argv, an env refresh keeping local keys, and --adopt refusing a
+#     node the control plane would move
 set -eu
 
 SCRIPT="internal/api/handler/nodescript/join.sh"
@@ -169,8 +174,13 @@ ok "--dry-run masks every credential and keeps the addresses"
 # body_of prints one function's body. Tolerant about the definition's spacing,
 # and loud when the function is not found: an empty body would otherwise fail
 # every assertion below with a message about the wrong thing.
+# Heredoc bodies are skipped: the rendered updater defines its own main().
 body_of() {
   out=$(awk -v fn="$1" '
+    !inside && term != "" { if ($0 == term) term = ""; next }
+    !inside && match($0, /<<-?[ \t]*'"'"'?[A-Za-z_]+'"'"'?/) {
+      term = substr($0, RSTART, RLENGTH); gsub(/^<<-?[ \t]*|'"'"'/, "", term)
+    }
     $0 ~ "^" fn "[ \t]*\\([ \t]*\\)[ \t]*{" { inside = 1 }
     inside { print }
     inside && $0 == "}" { exit }' "$SCRIPT")
@@ -306,5 +316,247 @@ rm -rf "$join_fixture/config"
 run_enrol success true || fail "dry-run fixture failed"
 [ ! -e "$join_fixture/config" ] || fail "dry-run persisted an identity or lock"
 ok "dry-run leaves no pending identity or lock"
+
+# The updater runs as root every two minutes and reads files the node wrote, so
+# its static shape is asserted first and its behaviour below, against fakes.
+for fn in install_units adopt; do
+  fn_body=$(body_of "$fn")
+  printf '%s\n' "$fn_body" | awk '$1 == "install_updater" { found = 1 } END { exit !found }' \
+    || fail "$fn must call install_updater as a standalone statement, or the node never updates"
+done
+ok "join and adopt both install the updater"
+
+write_body=$(body_of write_config)
+printf '%s\n' "$write_body" | grep -q "WARMBLY_ENV_REFRESH=true" \
+  || fail "write_config must opt a new join into env refresh"
+ok "a new join opts into env refresh"
+
+updater="$join_fixture/warmbly-node-update"
+sh "$SCRIPT" --print-updater > "$updater" || fail "--print-updater failed"
+parse_check "$updater"
+if command -v shellcheck >/dev/null 2>&1; then
+  shellcheck -s sh "$updater" || fail "shellcheck failed on the rendered updater"
+fi
+[ "$(tail -n 1 "$updater")" = 'main "$@"' ] || fail "the rendered updater must end with main \"\$@\""
+ok "rendered updater parses, passes shellcheck and ends with main"
+
+mkdir -p "$join_fixture/bin"
+cat > "$join_fixture/bin/docker" <<'FAKE'
+#!/bin/sh
+case "$1" in
+  pull) printf '%s\n' "$2" >> "$FIX/pulls"; [ "${FIX_PULL:-ok}" = ok ] ;;
+  inspect)
+    n=$(cat "$FIX/inspects" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$FIX/inspects"
+    if [ -s "$FIX/crash-if" ] && cat "$WARMBLY_UPDATER_ROOT/var/lib/warmbly/image-ref" \
+      "$WARMBLY_UPDATER_ROOT/etc/warmbly/node.env" | grep -q -f "$FIX/crash-if"; then
+      echo "true start-$n"
+    else
+      echo "true start-0"
+    fi ;;
+esac
+FAKE
+cat > "$join_fixture/bin/systemctl" <<'FAKE'
+#!/bin/sh
+printf '%s\n' "$*" >> "$FIX/systemctl"
+FAKE
+cat > "$join_fixture/bin/curl" <<'FAKE'
+#!/bin/sh
+printf '%s\n' "$*" >> "$FIX/curl-argv"
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -K) [ "$2" = - ] && cat >> "$FIX/curl-stdin"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cat "$FIX/env-reply" > "$out"
+printf '%s' "${FIX_CODE:-200}"
+FAKE
+chmod +x "$join_fixture/bin/docker" "$join_fixture/bin/systemctl" "$join_fixture/bin/curl"
+
+U="$join_fixture/upd"
+NODE_ID="44444444-4444-4444-8444-444444444444"
+DIGEST="sha256:$(printf '%064d' 7)"
+upd_reset() {
+  rm -rf "$U"
+  mkdir -p "$U/root/etc/warmbly" "$U/root/var/lib/warmbly/node" "$U/root/run" "$U/fix"
+  printf 'ghcr.io/warmbly/warmbly/worker\n' > "$U/root/var/lib/warmbly/image"
+  printf 'WARMBLY_IMAGE_REF=ghcr.io/warmbly/warmbly/worker:v1\n' > "$U/root/var/lib/warmbly/image-ref"
+  printf 'WARMBLY_NODE_ID=%s\nWARMBLY_NODE_ROLE=worker\nWARMBLY_BACKEND_URL=https://fixture.invalid\nNODE_BROKER_TOKEN=fixture-broker-old\nWARMBLY_VERSION=v1\nNODE_LOG_TOKEN=fixture-log\n' \
+    "$NODE_ID" > "$U/root/etc/warmbly/node.env"
+  printf 'NODE_CREDENTIAL=fixture-node-credential\n' >> "$U/root/etc/warmbly/node.env"
+  : > "$U/fix/pulls"; : > "$U/fix/systemctl"; : > "$U/fix/curl-argv"; : > "$U/fix/curl-stdin"
+}
+run_updater() {
+  PATH="$join_fixture/bin:$PATH" FIX="$U/fix" WARMBLY_UPDATER_ROOT="$U/root" \
+    WARMBLY_UPDATE_SETTLE_SECONDS=0 WARMBLY_UPDATE_HEALTH_SECONDS=1 WARMBLY_UPDATE_POLL_SECONDS=1 \
+    sh "$updater" "$@" > "$U/fix/out" 2>&1
+}
+agent() { printf '%s\n' "$2" > "$U/root/var/lib/warmbly/node/$1"; }
+count() { wc -l < "$1" | tr -d ' '; }
+
+upd_reset
+agent target-version v2
+agent target-digest "v2 $DIGEST"
+run_updater || fail "a healthy update failed"
+grep -qx "ghcr.io/warmbly/warmbly/worker@$DIGEST" "$U/fix/pulls" || fail "a pinned digest must be pulled by digest"
+grep -qx "WARMBLY_IMAGE_REF=ghcr.io/warmbly/warmbly/worker@$DIGEST" "$U/root/var/lib/warmbly/image-ref" \
+  || fail "the unit must run the digest that was pulled"
+grep -qx 'WARMBLY_VERSION=v2' "$U/root/etc/warmbly/node.env" || fail "a healthy update must record the new version"
+ok "updater pulls the pinned digest and keeps a healthy update"
+
+upd_reset
+agent target-version v2
+agent target-digest "v1 $DIGEST"
+run_updater || fail "update by tag failed"
+grep -qx 'ghcr.io/warmbly/warmbly/worker:v2' "$U/fix/pulls" || fail "a digest pinned for another tag must not be used"
+ok "a digest for another tag falls back to the tag"
+
+upd_reset
+agent target-version v2
+printf 'keep\n' > "$U/fix/victim"
+ln -s "$U/fix/victim" "$U/root/var/lib/warmbly/node/update-failed"
+printf 'worker:v2\n' > "$U/fix/crash-if"
+run_updater || fail "a rolled-back update must still exit 0"
+grep -qx 'WARMBLY_VERSION=v1' "$U/root/etc/warmbly/node.env" || fail "an unhealthy update must restore the old version"
+grep -qx 'WARMBLY_IMAGE_REF=ghcr.io/warmbly/warmbly/worker:v1' "$U/root/var/lib/warmbly/image-ref" \
+  || fail "an unhealthy update must restore the old image"
+[ "$(count "$U/fix/systemctl")" = "2" ] || fail "a rollback must restart onto the old image"
+[ ! -L "$U/root/var/lib/warmbly/node/update-failed" ] || fail "write_agent followed a symlink the node planted"
+[ "$(cat "$U/fix/victim")" = "keep" ] || fail "write_agent wrote through a symlink the node planted"
+grep -qx v2 "$U/root/var/lib/warmbly/node/update-failed" || fail "a rollback must report the failed tag"
+pulls=$(count "$U/fix/pulls")
+run_updater || fail "second pass after a rollback failed"
+[ "$(count "$U/fix/pulls")" = "$pulls" ] || fail "a tag that failed its health check was retried"
+ok "an unhealthy update rolls back, reports the tag and is not retried"
+
+upd_reset
+printf 'v3\n' > "$U/fix/outside"
+ln -s "$U/fix/outside" "$U/root/var/lib/warmbly/node/target-version"
+run_updater || fail "updater failed on a symlinked target"
+[ "$(count "$U/fix/pulls")" = "0" ] || fail "the updater followed a symlinked target-version"
+agent target-version 'v3;reboot'
+run_updater || fail "updater failed on a malformed target"
+[ "$(count "$U/fix/pulls")" = "0" ] || fail "the updater acted on a malformed target"
+ok "symlinked or malformed node files are ignored"
+
+reply() {
+  printf 'WARMBLY_NODE_ID=%s\nWARMBLY_NODE_ROLE=worker\nWARMBLY_BACKEND_URL=https://fixture.invalid\nNODE_BROKER_TOKEN=fixture-broker-new\n%s' \
+    "${1:-$NODE_ID}" "${2:-}" > "$U/fix/env-reply"
+  agent target-env-revision "$(sha256sum "$U/fix/env-reply" | cut -c1-32)"
+}
+
+upd_reset
+reply
+run_updater || fail "updater failed without env refresh"
+[ "$(count "$U/fix/curl-argv")" = "0" ] || fail "env was fetched without WARMBLY_ENV_REFRESH=true"
+ok "env refresh stays off unless node.env opts in"
+
+upd_reset
+printf 'WARMBLY_ENV_REFRESH=true\n' >> "$U/root/etc/warmbly/node.env"
+reply
+run_updater || fail "env refresh failed"
+envf="$U/root/etc/warmbly/node.env"
+grep -qx 'NODE_BROKER_TOKEN=fixture-broker-new' "$envf" || fail "the refreshed env was not applied"
+for kept in WARMBLY_VERSION=v1 NODE_LOG_TOKEN=fixture-log WARMBLY_ENV_REFRESH=true; do
+  grep -qx "$kept" "$envf" || fail "an env refresh dropped $kept"
+done
+[ "$(stat -c %a "$envf")" = "600" ] || fail "the refreshed node.env must be mode 600"
+[ "$(cat "$U/root/var/lib/warmbly/node/env-revision")" = "$(cat "$U/root/var/lib/warmbly/node/target-env-revision")" ] \
+  || fail "a refresh must report the revision it applied"
+if grep -q 'fixture-broker-old' "$U/fix/curl-argv"; then fail "the node token reached curl's argv"; fi
+grep -q 'Authorization: Bearer fixture-broker-old' "$U/fix/curl-stdin" || fail "the node token must reach curl on stdin"
+grep -qx 'NODE_CREDENTIAL=fixture-node-credential' "$envf" || fail "an env refresh dropped the node credential"
+if grep -q 'fixture-node-credential' "$U/fix/curl-argv"; then fail "the node credential reached curl's argv"; fi
+grep -q 'X-Warmbly-Node-Credential: fixture-node-credential' "$U/fix/curl-stdin" || fail "the node credential must reach curl on stdin"
+ok "env refresh applies, keeps local keys and never puts the token on argv"
+
+upd_reset
+printf 'WARMBLY_ENV_REFRESH=true\n' >> "$U/root/etc/warmbly/node.env"
+cp "$U/root/etc/warmbly/node.env" "$U/fix/before"
+reply "" "CRASH=1
+"
+printf 'CRASH=1\n' > "$U/fix/crash-if"
+run_updater || fail "a rolled-back env refresh must still exit 0"
+cmp -s "$U/fix/before" "$U/root/etc/warmbly/node.env" || fail "an unhealthy env refresh must restore the previous env"
+grep -qx "$(cat "$U/root/var/lib/warmbly/node/target-env-revision")-failed" "$U/root/var/lib/warmbly/node/env-revision" \
+  || fail "an unhealthy env refresh must report the failed revision"
+fetches=$(count "$U/fix/curl-argv")
+run_updater || fail "second pass after an env rollback failed"
+[ "$(count "$U/fix/curl-argv")" = "$fetches" ] || fail "a revision that failed its health check was retried"
+ok "an unhealthy env refresh restores the previous env and is not retried"
+
+upd_reset
+printf 'WARMBLY_ENV_REFRESH=true\n' >> "$U/root/etc/warmbly/node.env"
+cp "$U/root/etc/warmbly/node.env" "$U/fix/before"
+reply "55555555-5555-4555-8555-555555555555"
+run_updater || fail "updater failed on another node's env"
+cmp -s "$U/fix/before" "$U/root/etc/warmbly/node.env" || fail "an env naming another node was applied"
+ok "an env naming another node is refused"
+
+upd_reset
+printf 'WORKER_PUBLIC_IP=203.0.113.9\n' >> "$U/root/etc/warmbly/node.env"
+reply
+if run_updater --check-env; then fail "--check-env passed with a key a refresh would drop"; fi
+grep -q 'WORKER_PUBLIC_IP' "$U/fix/out" || fail "--check-env must name the key a refresh would drop"
+if grep -q '203.0.113.9' "$U/fix/out"; then fail "--check-env printed a value"; fi
+printf 'WORKER_PUBLIC_IP=203.0.113.9\n' > "$U/root/etc/warmbly/node.local.env"
+run_updater --check-env || fail "--check-env must accept a key kept in node.local.env"
+[ "$(count "$U/fix/systemctl")" = "0" ] || fail "--check-env restarted the node"
+ok "--check-env names dropped keys without values and changes nothing"
+
+upd_reset
+printf 'CREDENTIALS_ENCRYPTION_KEY=fixture-instance-key\nKMS_LOCAL_MASTER_KEY=fixture-master-key\n' >> "$U/root/etc/warmbly/node.env"
+reply
+run_updater --check-env || fail "--check-env must not ask a worker to keep keys the control plane withdrew"
+ok "--check-env lets a worker drop the keys it is no longer sent"
+
+# adopt reads a passed --check-env as consent, so a held update lock must fail it.
+upd_reset
+reply
+flock "$U/root/run/warmbly-node-update.lock" sleep 10 &
+holder=$!
+sleep 1
+export WARMBLY_UPDATE_LOCK_SECONDS=1
+if run_updater --check-env; then fail "--check-env passed while another update held the lock"; fi
+unset WARMBLY_UPDATE_LOCK_SECONDS
+kill "$holder" 2>/dev/null || true
+wait "$holder" 2>/dev/null || true
+run_updater --check-env || fail "--check-env must pass once the lock is free"
+ok "--check-env fails while another update holds the lock"
+
+# --adopt must refuse before writing anything when the control plane would move the node.
+cat > "$join_fixture/adopt.sh" <<'FIXTURE'
+#!/bin/sh
+set -eu
+. "$JOIN_FUNCTIONS"
+CONFIG_DIR="$ADOPT_ROOT/etc/warmbly"
+STATE_DIR="$ADOPT_ROOT/var/lib/warmbly"
+AGENT_DIR="$STATE_DIR/node"
+ADOPT_ACCEPT_TARGET="false"
+id() { echo 0; }
+adopt
+FIXTURE
+upd_reset
+rm -f "$U/root/var/lib/warmbly/image"
+agent target-version v2
+if PATH="$join_fixture/bin:$PATH" JOIN_FUNCTIONS="$join_fixture/functions.sh" ADOPT_ROOT="$U/root" \
+  sh "$join_fixture/adopt.sh" > "$U/fix/out" 2>&1; then
+  fail "--adopt accepted a node the control plane would move"
+fi
+grep -q 'accept-target' "$U/fix/out" || fail "--adopt must explain how to accept the target"
+[ ! -e "$U/root/var/lib/warmbly/image" ] || fail "--adopt wrote state before refusing"
+ok "--adopt refuses a version mismatch before writing anything"
+
+upd_reset
+rm -f "$U/root/var/lib/warmbly/image" "$U/root/var/lib/warmbly/image-ref"
+if PATH="$join_fixture/bin:$PATH" JOIN_FUNCTIONS="$join_fixture/functions.sh" ADOPT_ROOT="$U/root" \
+  sh "$join_fixture/adopt.sh" > "$U/fix/out" 2>&1; then
+  fail "--adopt accepted a node with no image-ref"
+fi
+grep -q 'image-ref' "$U/fix/out" || fail "--adopt must name the missing image-ref"
+[ ! -e "$U/root/var/lib/warmbly/image" ] || fail "--adopt wrote state with no image-ref"
+ok "--adopt refuses a node with no image-ref before writing anything"
 
 printf 'check-join-script: all checks passed\n'

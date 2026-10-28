@@ -39,3 +39,17 @@ func TestReadOnlyPostRoutesExist(t *testing.T) {
 		}
 	}
 }
+
+// A list parameter's route that is renamed would start refusing its repeated values; this keeps the allowlist honest.
+func TestRepeatableQueryRoutesExist(t *testing.T) {
+	r := Run(&handler.Handler{}, &middleware.Handler{}, &middleware.OidcHandler{}, "", gin.TestMode, nil)
+	registered := map[string]bool{}
+	for _, rt := range r.Routes() {
+		registered[rt.Path] = true
+	}
+	for path := range middleware.RepeatableQuery {
+		if !registered[path] {
+			t.Errorf("repeatable-query route %q is not registered", path)
+		}
+	}
+}

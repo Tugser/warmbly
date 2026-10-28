@@ -1,5 +1,13 @@
 import Config
 
+# API keys and OAuth tokens are read from the x-warmbly-token header; the query
+# string carries them only when an operator turns this on for an older client.
+if config_env() != :test do
+  config :realtime,
+    allow_query_credentials:
+      String.trim(System.get_env("REALTIME_ALLOW_QUERY_CREDENTIALS", "")) == "true"
+end
+
 if config_env() == :prod do
   # Required environment variables
   jwt_secret =

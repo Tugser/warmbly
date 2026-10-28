@@ -120,12 +120,14 @@ func (s *Service) StartLinkVerify(ctx context.Context, userID uuid.UUID, code st
 // flow was started by this user for this code, and Slack signed in the code's
 // Slack account.
 func (s *Service) verifyProof(ctx context.Context, userID uuid.UUID, code string, c *models.SlackLinkCode, p LinkProof) *errx.Error {
-	key := verifyKey(p.State)
-	raw := s.guard.get(ctx, key)
-	if p.State == "" || raw == "" {
+	if p.State == "" {
 		return ErrSlackVerifyFailed
 	}
-	s.guard.del(ctx, key)
+	// Taken in one step, so a state completes at most one verification.
+	raw := s.guard.take(ctx, verifyKey(p.State))
+	if raw == "" {
+		return ErrSlackVerifyFailed
+	}
 	var st verifyState
 	if json.Unmarshal([]byte(raw), &st) != nil || st.UserID != userID || st.CodeHash != hex.EncodeToString(hashLinkCode(code)) {
 		return ErrSlackVerifyFailed

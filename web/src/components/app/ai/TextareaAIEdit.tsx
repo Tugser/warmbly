@@ -18,6 +18,7 @@ import type { AppError } from "@/lib/api/client/normalizeError";
 import buildError from "@/lib/helper/buildError";
 import { Kbd } from "@/components/ui/shortcut-tooltip";
 import AIEditPopover, { type AIEditPhase } from "./AIEditPopover";
+import { AI_PILL_CLASS } from "./AIBusyStatus";
 import { AI_CARD_WIDTH, clampCardLeft } from "./floatingBounds";
 import { clampContext, restoreEdges } from "./richTextPassage";
 import textareaRangeRect, {
@@ -439,7 +440,11 @@ export default function TextareaAIEdit({
                                 ? { bottom: window.innerHeight - rect.top + 8 }
                                 : { top: rect.bottom + 8 }),
                         }}
-                        className="rounded-lg border border-slate-200 bg-white shadow-[0_12px_32px_-8px_rgba(15,23,42,0.22)] overflow-hidden"
+                        className={
+                            phase === "busy"
+                                ? AI_PILL_CLASS
+                                : "rounded-lg border border-slate-200 bg-white shadow-[0_12px_32px_-8px_rgba(15,23,42,0.22)] overflow-hidden"
+                        }
                     >
                         <AIEditPopover
                             phase={phase}

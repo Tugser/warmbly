@@ -62,6 +62,7 @@ func (d Deps) registerTeamTools(r *Registry) {
 
 	r.Register(Tool{
 		Name:        "remove_member",
+		FreshAuth:   true,
 		Description: "Remove a member from the organization. Destructive; requires user approval.",
 		InputSchema: objectSchema(map[string]any{
 			"member_user_id": strProp("The member's user UUID."),

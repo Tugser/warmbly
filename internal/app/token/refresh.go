@@ -27,9 +27,9 @@ func (s *tokenService) RefreshToken(ctx context.Context, refreshToken string) (*
 		return nil, err
 	}
 
-	// Don't let a revoked session refresh itself back to life.
-	if sess.RevokedAt != nil {
-		return nil, errx.ErrToken
+	// Neither a revoked session nor one past its absolute expiry refreshes back to life.
+	if !sess.Live(time.Now()) {
+		return nil, errx.ErrSessionEnded
 	}
 
 	if sess.RefreshNonce != t.Nonce {
@@ -38,7 +38,7 @@ func (s *tokenService) RefreshToken(ctx context.Context, refreshToken string) (*
 
 	issuedAt := time.Now()
 
-	accessTokenExpiresAt := issuedAt.Add(AccessTokenLifeTime)
+	accessTokenExpiresAt := capAtSessionExpiry(issuedAt.Add(AccessTokenLifeTime), sess)
 	accessNonce, xerr := crypt.Nonce()
 	if xerr != nil {
 		errs.CaptureException(xerr)
@@ -51,7 +51,7 @@ func (s *tokenService) RefreshToken(ctx context.Context, refreshToken string) (*
 		return nil, errx.InternalError()
 	}
 
-	refreshTokenExpiresAt := issuedAt.Add(RefreshTokenLifeTime)
+	refreshTokenExpiresAt := capAtSessionExpiry(issuedAt.Add(RefreshTokenLifeTime), sess)
 	refreshNonce, xerr := crypt.Nonce()
 	if xerr != nil {
 		errs.CaptureException(xerr)
@@ -99,6 +99,14 @@ func (s *tokenService) RefreshToken(ctx context.Context, refreshToken string) (*
 		RefreshToken:          newRefreshToken,
 		RefreshTokenExpiresAt: refreshTokenExpiresAt,
 	}, nil
+}
+
+// capAtSessionExpiry keeps a rotated token from outliving the session that issued it.
+func capAtSessionExpiry(at time.Time, sess *models.Session) time.Time {
+	if sess.ExpiresAt != nil && sess.ExpiresAt.Before(at) {
+		return *sess.ExpiresAt
+	}
+	return at
 }
 
 // refreshRaceWindow is how long the refresh token a session just rotated away

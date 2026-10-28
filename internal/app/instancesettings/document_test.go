@@ -69,6 +69,21 @@ func TestDocumentUnmarshalOverDefaultsKeepsDeliverability(t *testing.T) {
 	}
 }
 
+// An invitation lives at most 48 hours, including one stored with a longer value.
+func TestInvitationTTLIsAtMostTwoDays(t *testing.T) {
+	doc := Defaults()
+	if err := json.Unmarshal([]byte(`{"invitations":{"links_enabled":true,"ttl_hours":168}}`), &doc); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	doc.Normalize()
+	if got := doc.TTL(); got != 48*time.Hour {
+		t.Errorf("TTL() = %v, want 48h", got)
+	}
+	if got := Defaults().TTL(); got != 48*time.Hour {
+		t.Errorf("default TTL() = %v, want 48h", got)
+	}
+}
+
 // An operator turning the gate off is an explicit false, which must survive the
 // round trip. A pointer field in the patch is what makes false distinguishable
 // from absent.

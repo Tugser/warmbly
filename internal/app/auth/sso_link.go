@@ -87,10 +87,17 @@ func (s *authService) SSOLinkConfirm(ctx context.Context, data *SSOLinkData, ipa
 	}
 	// Both budgets are charged before the check, so concurrent guesses cannot
 	// share one; a spent address budget costs the challenge nothing.
-	if !s.reserveLoginAttempt(ctx, pend.Email) {
+	if ok, xerr := s.reserveLoginAttempt(ctx, pend.Email); xerr != nil {
+		return nil, xerr
+	} else if !ok {
 		return nil, errx.ErrAuthLimit
 	}
-	if !s.reserveSSOLinkAttempt(ctx, claims.SessionID, time.Until(claims.ExpiresAt.Time)) {
+	ok, xerr := s.reserveSSOLinkAttempt(ctx, claims.SessionID, time.Until(claims.ExpiresAt.Time))
+	if xerr != nil {
+		s.releaseLoginAttempt(ctx, pend.Email)
+		return nil, xerr
+	}
+	if !ok {
 		s.releaseLoginAttempt(ctx, pend.Email)
 		s.deleteSSOLinkPending(ctx, claims.SessionID)
 		return nil, errx.ErrSSOLinkExpired
@@ -158,7 +165,7 @@ func (s *authService) identityUnclaimed(ctx context.Context, userID uuid.UUID, i
 
 // reserveSSOLinkAttempt charges one password attempt to the challenge and
 // reports whether it is still within AuthAttempts.
-func (s *authService) reserveSSOLinkAttempt(ctx context.Context, sessionID uuid.UUID, ttl time.Duration) bool {
+func (s *authService) reserveSSOLinkAttempt(ctx context.Context, sessionID uuid.UUID, ttl time.Duration) (bool, *errx.Error) {
 	return s.reserveAttempt(ctx, getSSOLinkTriesKey(sessionID), AuthAttempts, ttl)
 }
 

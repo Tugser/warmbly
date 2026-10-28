@@ -161,6 +161,9 @@ func awaitVerdict(ctx context.Context, sub *redis.PubSub, workerID, processID uu
 		// the digit, and a payload that is neither is skipped.
 		switch msg.Payload {
 		case "1":
+			// A worker that predates verdicts checked against the CA.
+			adoptProbedCertificate(credentials.SMTP, models.EmailValidationLeg{})
+			adoptProbedCertificate(credentials.IMAP, models.EmailValidationLeg{})
 			return nil, true
 		case "0":
 			return errx.ErrEmailCredentials, true
@@ -177,8 +180,16 @@ func awaitVerdict(ctx context.Context, sub *redis.PubSub, workerID, processID uu
 			errs.CaptureException(err)
 			return errx.InternalError(), true
 		}
+		if credentials.SMTP != nil {
+			credentials.SMTP.Observed = verdict.SMTP.Certificate
+		}
+		if credentials.IMAP != nil {
+			credentials.IMAP.Observed = verdict.IMAP.Certificate
+		}
 		if verdict.OK {
 			adoptProbedPort(credentials.SMTP, verdict.SMTP)
+			adoptProbedCertificate(credentials.SMTP, verdict.SMTP)
+			adoptProbedCertificate(credentials.IMAP, verdict.IMAP)
 			return nil, true
 		}
 		return validationError(verdict, credentials), true
@@ -199,4 +210,25 @@ func adoptProbedPort(svc *models.Service, leg models.EmailValidationLeg) {
 	}
 	svc.Port = leg.Port
 	svc.Security = leg.Security
+}
+
+// adoptProbedCertificate settles a server's certificate policy from a passing
+// check. An opt-out is kept only for a certificate that fails CA verification,
+// and it is pinned to exactly what the worker saw; the worker refused any
+// certificate other than a pin the caller supplied.
+func adoptProbedCertificate(svc *models.Service, leg models.EmailValidationLeg) {
+	if svc == nil {
+		return
+	}
+	if !svc.TLSUnverified {
+		svc.TLSPin = ""
+		return
+	}
+	cert := leg.Certificate
+	if cert == nil || cert.Trusted || models.NormalizeTLSPin(cert.Fingerprint) == "" {
+		// No TLS to pin, a CA-valid chain, or a worker that checked against the CA.
+		svc.TLSUnverified, svc.TLSPin = false, ""
+		return
+	}
+	svc.TLSPin = models.NormalizeTLSPin(cert.Fingerprint)
 }

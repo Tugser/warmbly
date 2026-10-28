@@ -2,15 +2,18 @@ package form
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/warmbly/warmbly/internal/app/customhost"
 	"github.com/warmbly/warmbly/internal/config"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/pkg/trackdns"
+	"github.com/warmbly/warmbly/internal/repository"
 )
 
 // OrgStore is the slice of the organization repository the form service
@@ -22,6 +25,7 @@ type OrgStore interface {
 	GetFormsDomain(ctx context.Context, orgID uuid.UUID) (string, bool, error)
 	SetFormsDomain(ctx context.Context, orgID uuid.UUID, domain string) error
 	SetFormsDomainVerified(ctx context.Context, orgID uuid.UUID, verified bool, at *time.Time) error
+	FormsDomainHeldElsewhere(ctx context.Context, orgID uuid.UUID, domain string) (bool, error)
 }
 
 // FormsHost returns the host every form URL for this organization is built
@@ -76,8 +80,14 @@ func (s *service) FormsDomainStatus(ctx context.Context, orgID uuid.UUID) (*mode
 		out.Status = "pending"
 		out.Message = "Not verified yet; form links use the shared host until it resolves."
 	}
+	if domain != "" {
+		out.TXTName, out.TXTValue = s.customHosts.Record(orgID, domain)
+	}
 	return out, nil
 }
+
+// verifyCNAME is the DNS half of a forms domain check; a variable so tests run without DNS.
+var verifyCNAME = trackdns.Verify
 
 // SetFormsDomain stores a new custom forms domain and immediately resolves
 // it, so saving and verifying are one action for the customer. An empty value
@@ -87,8 +97,13 @@ func (s *service) SetFormsDomain(ctx context.Context, orgID uuid.UUID, raw strin
 		return nil, errx.InternalError()
 	}
 	domain := config.NormalizeTrackingHost(raw)
-	if domain != "" && !validFormsDomain(domain) {
+	if domain != "" && (!validFormsDomain(domain) || customhost.Platform(domain)) {
 		return nil, errx.New(errx.BadRequest, "that does not look like a domain name")
+	}
+	if held, err := s.domains.FormsDomainHeldElsewhere(ctx, orgID, domain); err != nil {
+		return nil, errx.InternalError()
+	} else if held {
+		return nil, errx.ErrFormsDomainTaken
 	}
 	if err := s.domains.SetFormsDomain(ctx, orgID, domain); err != nil {
 		return nil, errx.InternalError()
@@ -101,18 +116,26 @@ func (s *service) SetFormsDomain(ctx context.Context, orgID uuid.UUID, raw strin
 
 // VerifyFormsDomain re-resolves the stored domain and records the verdict.
 // An unresolved record is not an error: it stays unverified with a reason the
-// customer can act on, and form links keep working on the shared host.
+// customer can act on, and form links keep working on the shared host. A new
+// verification needs the workspace's TXT proof beside the CNAME.
 func (s *service) VerifyFormsDomain(ctx context.Context, orgID uuid.UUID) (*models.FormsDomainStatus, *errx.Error) {
 	if s.domains == nil {
 		return nil, errx.InternalError()
 	}
-	domain, _, err := s.domains.GetFormsDomain(ctx, orgID)
+	domain, verified, err := s.domains.GetFormsDomain(ctx, orgID)
 	if err != nil {
 		return nil, errx.InternalError()
 	}
 
 	target := config.FormsHostname()
-	res := trackdns.Verify(ctx, domain, target)
+	res := s.customHosts.Gate(ctx, verifyCNAME(ctx, domain, target), orgID, verified)
+	if res.Verified && !verified {
+		if held, herr := s.domains.FormsDomainHeldElsewhere(ctx, orgID, res.Domain); herr != nil {
+			return nil, errx.InternalError()
+		} else if held {
+			return nil, errx.ErrFormsDomainTaken
+		}
+	}
 
 	out := &models.FormsDomainStatus{
 		FormsDomain:           res.Domain,
@@ -123,11 +146,17 @@ func (s *service) VerifyFormsDomain(ctx context.Context, orgID uuid.UUID) (*mode
 		Observed:              res.Observed,
 		FormsHostUnresolvable: res.TargetUnresolvable,
 	}
+	if res.Domain != "" {
+		out.TXTName, out.TXTValue = s.customHosts.Record(orgID, res.Domain)
+	}
 	if res.Verified {
 		now := time.Now().UTC()
 		out.FormsDomainVerifiedAt = &now
 	}
 	if err := s.domains.SetFormsDomainVerified(ctx, orgID, res.Verified, out.FormsDomainVerifiedAt); err != nil {
+		if errors.Is(err, repository.ErrFormsDomainTaken) {
+			return nil, errx.ErrFormsDomainTaken
+		}
 		return nil, errx.InternalError()
 	}
 	return out, nil

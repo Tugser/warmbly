@@ -27,10 +27,12 @@ type Form struct {
 	Design         FormDesign  `json:"design"`
 	SuccessMessage string      `json:"success_message"`
 	RedirectURL    string      `json:"redirect_url"`
-	CampaignID     *uuid.UUID  `json:"campaign_id,omitempty"`
-	CategoryIDs    []uuid.UUID `json:"category_ids"`
-	AllowedDomains []string    `json:"allowed_domains"`
-	CaptchaEnabled bool        `json:"captcha_enabled"`
+	// RedirectURLActive is false when RedirectURL is not on one of the workspace's own domains, so visitors see SuccessMessage instead.
+	RedirectURLActive *bool       `json:"redirect_url_active,omitempty"`
+	CampaignID        *uuid.UUID  `json:"campaign_id,omitempty"`
+	CategoryIDs       []uuid.UUID `json:"category_ids"`
+	AllowedDomains    []string    `json:"allowed_domains"`
+	CaptchaEnabled    bool        `json:"captcha_enabled"`
 	// TriageEnabled classifies each submission through TypeSafe; junk is kept
 	// but creates no contact and joins no campaign.
 	TriageEnabled bool `json:"triage_enabled"`
@@ -517,7 +519,7 @@ func ValidateFormRedirectURL(raw string) (string, *errx.Error) {
 		return "", nil
 	}
 	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
 		return "", errx.New(errx.BadRequest, "redirect URL must be an absolute http(s) URL")
 	}
 	if len(raw) > 2048 {

@@ -32,7 +32,7 @@ function metricIsStale(metric: MonitoringMetric, source: MonitoringSource, now: 
 function metricTone(metric: MonitoringMetric, stale: boolean): Tone {
     if (metric.availability === "unavailable") return "neutral";
     if (stale) return "warning";
-    if (needsMonitoringAttention(metric)) return isBrokerQueue(metric) ? "info" : metric.severity === "error" ? "danger" : "warning";
+    if (needsMonitoringAttention(metric)) return metric.severity === "error" ? "danger" : "warning";
     if (metric.condition === "healthy") return "success";
     return "info";
 }
@@ -49,7 +49,7 @@ function MetricRow({ metric: m, source, mask, now, compact }: {
             <div className="flex flex-wrap items-start justify-between gap-2">
                 <h4 className="min-w-0 break-words text-[13px] font-medium">{m.title}</h4>
                 <div className="flex flex-wrap gap-1.5">
-                    <StatusBadge tone={!measured ? "neutral" : metricTone(m, stale)}>{unavailable ? "Unavailable" : !measured ? "Unknown" : CONDITION_LABELS[m.condition] ?? "Unknown"}</StatusBadge>
+                    <StatusBadge tone={!measured ? "neutral" : metricTone(m, stale)}>{unavailable ? "Unavailable" : !measured ? "Unknown" : isBrokerQueue(m) ? "Measured" : CONDITION_LABELS[m.condition] ?? "Unknown"}</StatusBadge>
                     {!unavailable && stale && <StatusBadge tone="warning">Stale observation</StatusBadge>}
                     {isBrokerQueue(m) && <StatusBadge tone="info">Queue measurement, not outage</StatusBadge>}
                 </div>
@@ -127,8 +127,6 @@ export function InstanceMonitoringPanel({ compact = false }: { compact?: boolean
         return query.isError && permitted.availability === "fresh" ? { ...permitted, availability: "stale" as const } : permitted;
     }) ?? [];
     const attention = sources.flatMap((source) => source.availability === "unavailable" ? [] : source.metrics.filter(needsMonitoringAttention).map((metric) => ({ source, metric })));
-    const queues = attention.filter(({ metric }) => isBrokerQueue(metric));
-    const issues = attention.filter(({ metric }) => !isBrokerQueue(metric));
     const gaps = sources.filter((s) => s.availability === "unavailable" || s.coverage !== "complete" || s.metrics.length === 0 || s.metrics.some((m) => m.availability === "unavailable" || m.count === null));
     const stale = sources.filter((s) => s.availability === "stale" || s.availability !== "unavailable" && (observationIsOld(s.observed_at, now) || s.metrics.some((m) => metricIsStale(m, s, now))));
     const unknown = sources.filter((s) => s.metrics.some((m) => ["unknown", "no_recent_evidence"].includes(m.condition)));
@@ -164,13 +162,8 @@ export function InstanceMonitoringPanel({ compact = false }: { compact?: boolean
                     </Callout>
                     <p className="text-xs leading-relaxed text-muted-foreground">Counts are per metric and may overlap. Scheduled, retry, budget and daily-limit waits are informational; safety holds are restrictions, not provider outages. Heartbeats, completed tasks and sync ticks do not prove sends or recovery.</p>
                     {compact ? <>
-                        {queues.length > 0 && <section className="overflow-hidden rounded-lg border border-border bg-card" aria-label="Positive broker queue measurements">
-                            <h3 className="px-4 pt-3 text-sm font-medium">{queues.length} positive broker queue measurements</h3>
-                            <p className="px-4 py-2 text-xs text-muted-foreground">Observed pending or lag counts, not a proven outage or delivery rate. Separate scopes and metrics must not be added together.</p>
-                            <ul className="max-h-96 divide-y divide-border overflow-auto">{queues.map(({ source, metric }, i) => <MetricRow key={`${source.id}:${metric.id}:${i}`} metric={metric} source={source} mask={mask} now={now} compact />)}</ul>
-                        </section>}
-                        {issues.length > 0 && <div className="overflow-hidden rounded-lg border border-border bg-card"><ul className="divide-y divide-border">{issues.slice(0, 6).map(({ source, metric }, i) => <MetricRow key={`${source.id}:${metric.id}:${i}`} metric={metric} source={source} mask={mask} now={now} compact />)}</ul></div>}
-                        {issues.length > 6 && <p className="text-xs text-muted-foreground">{issues.length - 6} more signals in operational details.</p>}
+                        {attention.length > 0 && <div className="overflow-hidden rounded-lg border border-border bg-card"><ul className="divide-y divide-border">{attention.slice(0, 6).map(({ source, metric }, i) => <MetricRow key={`${source.id}:${metric.id}:${i}`} metric={metric} source={source} mask={mask} now={now} compact />)}</ul></div>}
+                        {attention.length > 6 && <p className="text-xs text-muted-foreground">{attention.length - 6} more signals in operational details.</p>}
                     </> : <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-2">{sources.map((source) => <SourcePanel key={source.id} source={source} mask={mask} now={now} />)}</div>}
                 </>}
             </>}

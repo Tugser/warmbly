@@ -155,3 +155,38 @@ func TestProjectSenderDayHealthHoldLapses(t *testing.T) {
 		t.Fatalf("an open-ended hold sends nothing: %+v", d)
 	}
 }
+
+func TestEveryDayWindowsFillsTheWeekend(t *testing.T) {
+	var weekdays models.ScheduleWindows
+	for d := time.Monday; d <= time.Friday; d++ {
+		weekdays[d] = []models.TimeInterval{{Start: 8 * 60, End: 18 * 60}}
+	}
+	got, widened := everyDayWindows(weekdays)
+	if !widened || len(got[time.Saturday]) != 1 || len(got[time.Sunday]) != 1 || got[time.Sunday][0].End != 18*60 {
+		t.Fatalf("weekend not filled from the weekday window: %+v", got)
+	}
+	if len(weekdays[time.Saturday]) != 0 {
+		t.Fatal("the campaign's own windows must not change")
+	}
+	if _, widened := everyDayWindows(got); widened {
+		t.Fatal("a seven-day schedule has nothing to widen")
+	}
+	if _, widened := everyDayWindows(models.ScheduleWindows{}); widened {
+		t.Fatal("an unconstrained schedule already sends every day")
+	}
+}
+
+func TestSimulateLeadsWithReadsPastDays(t *testing.T) {
+	base := simulateLeads(flat(10), 200, nil, 100)
+	// Capacity that grows with what was already sent finishes sooner.
+	grown := simulateLeadsWith(func(i int, past []simDay) int {
+		sent := 0
+		for _, d := range past {
+			sent += d.first
+		}
+		return 10 + sent/10
+	}, 200, nil, 100)
+	if base.finishDay != 19 || grown.finishDay >= base.finishDay {
+		t.Fatalf("base finishes day %d, grown day %d", base.finishDay, grown.finishDay)
+	}
+}

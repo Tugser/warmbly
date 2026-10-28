@@ -442,10 +442,30 @@ func validateMailSecurity(smtp, imap *models.Service) *errx.Error {
 	if imap.Security != "" && !models.ValidMailSecurity(imap.Security) {
 		return errx.ErrEmailIMAPSecurity
 	}
+	if err := normalizeTLSPin(smtp, errx.ErrEmailSMTPTLSPin); err != nil {
+		return err
+	}
+	if err := normalizeTLSPin(imap, errx.ErrEmailIMAPTLSPin); err != nil {
+		return err
+	}
 	if err := validateCleartextHost(smtp.Security, smtp.Host, errx.ErrEmailSMTPSecurityNotLocal, errx.ErrEmailSMTPSecurityHosted); err != nil {
 		return err
 	}
 	return validateCleartextHost(imap.Security, imap.Host, errx.ErrEmailIMAPSecurityNotLocal, errx.ErrEmailIMAPSecurityHosted)
+}
+
+// normalizeTLSPin accepts a pin in any common fingerprint spelling and stores it as lowercase hex.
+func normalizeTLSPin(svc *models.Service, invalid *errx.Error) *errx.Error {
+	if strings.TrimSpace(svc.TLSPin) == "" {
+		svc.TLSPin = ""
+		return nil
+	}
+	pin := models.NormalizeTLSPin(svc.TLSPin)
+	if pin == "" {
+		return invalid
+	}
+	svc.TLSPin = pin
+	return nil
 }
 
 // validateCleartextHost is the "none" gate for one leg.

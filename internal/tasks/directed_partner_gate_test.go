@@ -179,3 +179,86 @@ func TestDirectedWarmupPartnerRefusesStoppedRecipient(t *testing.T) {
 		}
 	}
 }
+
+// executorSender reports which mailboxes a linked instance executes.
+type executorSender struct {
+	EmailSender
+
+	executed map[uuid.UUID]bool
+}
+
+func (e executorSender) SelfExecutionReady(_ context.Context, a models.Email) (bool, bool, error) {
+	return e.executed[a.ID], e.executed[a.ID], nil
+}
+
+// Two instance-executed mailboxes never pair, so neither side's report is the only evidence of the other's mail.
+func TestDirectedWarmupPartnerRefusesTwoSelfExecutedMailboxes(t *testing.T) {
+	sender, target := uuid.New(), uuid.New()
+	for _, tc := range []struct {
+		name     string
+		executed map[uuid.UUID]bool
+		want     bool
+	}{
+		{"both self-executed", map[uuid.UUID]bool{sender: true, target: true}, false},
+		{"sender only", map[uuid.UUID]bool{sender: true}, true},
+		{"recipient only", map[uuid.UUID]bool{target: true}, true},
+	} {
+		s := &tasksService{
+			taskRepo:    &directedTaskRepo{target: target},
+			emailRepo:   directedEmailRepo{},
+			emailSender: executorSender{executed: tc.executed},
+		}
+		got := s.directedWarmupPartner(context.Background(), uuid.New(), &Email{ID: sender}, "premium")
+		if (got != nil) != tc.want {
+			t.Fatalf("%s: partner = %v, want answered %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// inboxRoomRepo answers the recipient-capacity check the reservation enforces.
+type inboxRoomRepo struct {
+	standingRepo
+
+	room  bool
+	err   error
+	asked []string
+}
+
+func (r *inboxRoomRepo) WarmupInboxHasRoom(_ context.Context, _ uuid.UUID, poolType string) (bool, error) {
+	r.asked = append(r.asked, poolType)
+	return r.room, r.err
+}
+
+// A reply holds the mailbox's only pending task, so one to a full inbox closes
+// instead of being refused by the reservation every few minutes for days.
+func TestDirectedWarmupPartnerClosesAReplyToAFullInbox(t *testing.T) {
+	org := uuid.New()
+	for _, tc := range []struct {
+		name string
+		repo *inboxRoomRepo
+		want bool
+	}{
+		{"a full inbox ends the thread", &inboxRoomRepo{room: false}, false},
+		{"an inbox with room is answered", &inboxRoomRepo{room: true}, true},
+		{"an unreadable capacity leaves the decision to the reservation", &inboxRoomRepo{err: errors.New("db down")}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := uuid.New()
+			tc.repo.state = models.WarmupHealthHealthy
+			s := &tasksService{
+				taskRepo:     &directedTaskRepo{target: target},
+				emailRepo:    directedEmailRepo{},
+				warmupRepo:   tc.repo,
+				warmupHealth: &pinnedGate{poolOf: map[uuid.UUID]string{target: "free"}},
+				orgRiskRepo:  riskRepo{state: models.OrgRiskTrusted},
+			}
+			sender := &Email{ID: uuid.New(), OrganizationID: &org, WarmupPoolType: "free"}
+			if got := s.directedWarmupPartner(context.Background(), uuid.New(), sender, "free"); (got != nil) != tc.want {
+				t.Fatalf("partner = %v, want answered %v", got, tc.want)
+			}
+			if len(tc.repo.asked) != 1 || tc.repo.asked[0] != "free" {
+				t.Fatalf("capacity asked for pools %v, want the sender's free share", tc.repo.asked)
+			}
+		})
+	}
+}

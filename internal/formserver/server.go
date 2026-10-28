@@ -32,6 +32,9 @@ import (
 // is dozens of short answers.
 const formMaxSubmitBytes = 64 << 10
 
+// formNotFoundMessage answers a form that does not exist or is not published.
+const formNotFoundMessage = "This form does not exist or is not published."
+
 const (
 	submitWindow       = 10 * time.Minute
 	submitDefaultLimit = 30
@@ -140,7 +143,7 @@ func (s *Server) Router(trustedProxies []string) (*gin.Engine, error) {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	r := gin.New()
-	r.Use(middleware.RequestLogger(), gin.Recovery(), middleware.PageHeaders(formsHost()))
+	r.Use(middleware.ForwardedHeaders(), middleware.RequestLogger(), gin.Recovery(), middleware.PageHeaders(formsHost()))
 	// Same posture as the backend: trust no proxy unless the operator names
 	// it, so a forged X-Forwarded-For cannot dodge the submit limiter.
 	if len(trustedProxies) > 0 {
@@ -160,7 +163,7 @@ func (s *Server) Router(trustedProxies []string) (*gin.Engine, error) {
 	// page.
 	r.NoRoute(func(c *gin.Context) {
 		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
+			abortJSON(c, http.StatusNotFound, "not_found", "No forms API route matches this path.")
 			return
 		}
 		notFoundPage(c)
@@ -174,11 +177,29 @@ func (s *Server) Router(trustedProxies []string) (*gin.Engine, error) {
 
 	// Every JSON call needs the render token minted with the page shell, so
 	// scripted clients that never load the page get nothing.
-	api := r.Group("/api", s.requireRenderToken)
+	api := r.Group("/api", singleValued, s.requireRenderToken)
 	api.GET("/forms/:publicID", s.GetPublicForm)
 	api.POST("/forms/:publicID/submit", s.SubmitForm)
 	api.POST("/forms/:publicID/events", s.RecordFormEvent)
 	return r, nil
+}
+
+// singleValued refuses a repeated query parameter or render token; no forms route reads a list.
+func singleValued(c *gin.Context) {
+	if name, dup := middleware.DuplicateQueryParam(c.Request.URL.RawQuery, nil); dup {
+		abortJSON(c, http.StatusBadRequest, "duplicate_query_parameter", middleware.DuplicateMessage("query parameter", name))
+		return
+	}
+	if len(c.Request.Header.Values("X-Warmbly-Render")) > 1 {
+		abortJSON(c, http.StatusBadRequest, "duplicate_header", middleware.DuplicateMessage("header", "X-Warmbly-Render"))
+		return
+	}
+	c.Next()
+}
+
+// abortJSON answers with the same {error, message, code} shape as the API.
+func abortJSON(c *gin.Context, status int, code, message string) {
+	c.AbortWithStatusJSON(status, gin.H{"error": code, "message": message, "code": code})
 }
 
 // requireRenderToken rejects API calls whose X-Warmbly-Render token is
@@ -187,7 +208,7 @@ func (s *Server) Router(trustedProxies []string) (*gin.Engine, error) {
 func (s *Server) requireRenderToken(c *gin.Context) {
 	token := c.GetHeader("X-Warmbly-Render")
 	if token == "" || !verifyRenderToken(s.renderKey, c.Param("publicID"), token, time.Now()) {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "stale_page"})
+		abortJSON(c, http.StatusForbidden, "stale_page", "This page has been open too long. Reload it and try again.")
 		return
 	}
 	c.Next()
@@ -199,7 +220,7 @@ func (s *Server) fetchForm(c *gin.Context) (*formwire.PublicForm, error) {
 	if publicID == "" || len(publicID) > 64 {
 		return nil, errFormNotFound
 	}
-	return s.client.Form(c.Request.Context(), publicID)
+	return s.client.Form(c.Request.Context(), publicID, requestHost(c.Request.Host))
 }
 
 // wfTokenPlaceholder is the meta tag forms/index.html ships; the shell serve
@@ -264,16 +285,16 @@ func (s *Server) GetPublicForm(c *gin.Context) {
 	var f *formwire.PublicForm
 	var err error
 	if token := c.Query("t"); token != "" && len(token) <= 64 {
-		f, err = s.client.FormWithToken(c.Request.Context(), c.Param("publicID"), token)
+		f, err = s.client.FormWithToken(c.Request.Context(), c.Param("publicID"), token, requestHost(c.Request.Host))
 	} else {
 		f, err = s.fetchForm(c)
 	}
 	if errors.Is(err, errFormNotFound) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
+		abortJSON(c, http.StatusNotFound, "not_found", formNotFoundMessage)
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "unavailable"})
+		abortJSON(c, http.StatusServiceUnavailable, "unavailable", "This form is temporarily unavailable. Try again in a few minutes.")
 		return
 	}
 	c.Header("Cache-Control", "no-store")
@@ -341,6 +362,7 @@ func (s *Server) RecordFormEvent(c *gin.Context) {
 		LinkToken:  truncateStr(body.LinkToken, 64),
 		RemoteIP:   ip,
 		UserAgent:  truncateStr(c.GetHeader("User-Agent"), 512),
+		Host:       requestHost(c.Request.Host),
 	})
 	c.Status(http.StatusNoContent)
 }
@@ -369,7 +391,7 @@ type submitBody struct {
 // Same-origin with the app, so there is no CORS surface.
 func (s *Server) SubmitForm(c *gin.Context) {
 	fail := func(status int, msg string) {
-		c.JSON(status, gin.H{"error": "form_submit_failed", "message": msg})
+		c.JSON(status, gin.H{"error": "form_submit_failed", "message": msg, "code": "form_submit_failed"})
 	}
 
 	if ip := c.ClientIP(); ip != "" && !s.limits.Allow(ip) {
@@ -411,6 +433,7 @@ func (s *Server) SubmitForm(c *gin.Context) {
 		RenderedAt:     body.WT,
 		LinkToken:      truncateStr(body.LinkToken, 64),
 		VisitorKey:     truncateStr(body.VisitorKey, 64),
+		Host:           requestHost(c.Request.Host),
 	}
 
 	out, err := s.client.Submit(c.Request.Context(), c.Param("publicID"), req)
@@ -420,7 +443,7 @@ func (s *Server) SubmitForm(c *gin.Context) {
 	}
 	switch {
 	case out.NotFound:
-		c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
+		abortJSON(c, http.StatusNotFound, "not_found", formNotFoundMessage)
 		return
 	case out.Rejected != "":
 		fail(http.StatusBadRequest, out.Rejected)

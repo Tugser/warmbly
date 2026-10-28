@@ -135,6 +135,7 @@ type WMail struct {
 	// transportFailures counts consecutive passes that could not reach the
 	// mail server, which paces the retry and keeps one outage to one warning.
 	transportFailures int
+	syncStartupError  *errx.MailError
 
 	Ctx           context.Context
 	Cancel        context.CancelFunc
@@ -311,10 +312,14 @@ func NewWMail(
 				AuthType:    models.AuthPlain,
 				Credentials: data.SmtpImap.Credentials.IMAP,
 			}
-			if err := conn.Connect(); err != nil {
-				return nil, err
-			}
 			mail.SmtpImapData.ImapClient = conn
+			if err := conn.Connect(); err != nil {
+				if !isTransportError(err) && err.Code != errx.MailErrorCodeSendingTooFast {
+					return nil, err
+				}
+				// SMTP stays usable while the sync loop retries a temporary IMAP failure.
+				mail.syncStartupError = err
+			}
 		}
 		// Keep saved cursors even while IMAP sync is temporarily disabled.
 		for i := range data.SmtpImap.Mailboxes {

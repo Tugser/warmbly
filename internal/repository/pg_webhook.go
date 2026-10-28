@@ -15,6 +15,7 @@ import (
 	"github.com/warmbly/warmbly/internal/pkg/encrypt"
 
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/observability/legacysecret"
 )
 
 // WebhookRepository persists webhook endpoints and per-attempt delivery
@@ -285,14 +286,15 @@ func (r *webhookRepository) GetEndpointSecret(ctx context.Context, endpointID uu
 		return "", errors.New("webhook signing secret is unreadable under this instance's key; rotate it")
 	}
 	if legacy {
-		// Re-seal on first read, the same way mailbox credentials convert, so
-		// the plaintext window closes on its own rather than waiting for the
-		// owner to rotate. Best effort: a failure here still returns a working
-		// secret, and the next delivery tries again.
-		if sealed, serr := r.sealSecret(plain); serr == nil && sealed != plain {
-			_, _ = r.db.Exec(ctx,
-				`UPDATE webhook_endpoints SET secret = $2 WHERE id = $1 AND secret = $3`,
-				endpointID, sealed, secret)
+		// Resealed on first read; a failure still returns a working secret and the next delivery retries.
+		legacysecret.Read(legacysecret.WebhookSecret)
+		sealed, serr := r.sealSecret(plain)
+		if serr != nil {
+			legacysecret.ResealFailed(legacysecret.WebhookSecret, "seal")
+		} else if _, err := r.db.Exec(ctx,
+			`UPDATE webhook_endpoints SET secret = $2 WHERE id = $1 AND secret = $3`,
+			endpointID, sealed, secret); err != nil {
+			legacysecret.ResealFailed(legacysecret.WebhookSecret, "write")
 		}
 	}
 	return plain, nil

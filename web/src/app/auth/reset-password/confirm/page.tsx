@@ -26,7 +26,9 @@ export default function ResetPasswordConfirmPage() {
                 </div>
                 <div>
                     <h2 className="text-[24px] font-bold text-slate-900 tracking-tight">Link expired</h2>
-                    <p className="text-sm text-slate-400 mt-1.5">This password reset link is no longer valid.</p>
+                    <p className="text-sm text-slate-400 mt-1.5">
+                        This password reset link has expired or was already used. Each link works once, for a limited time, and stops working when the password changes. Request a new one to continue.
+                    </p>
                 </div>
                 <Link
                     to="/auth/reset-password"

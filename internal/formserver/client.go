@@ -92,16 +92,21 @@ func (b *backendClient) store(publicID string, f *formwire.PublicForm, ttl time.
 	b.cache[publicID] = cacheEntry{form: f, expires: time.Now().Add(ttl)}
 }
 
-// Form resolves a published form, TTL-cached. errFormNotFound for unknown or
-// unpublished ids; any other error means the backend was unreachable.
-func (b *backendClient) Form(ctx context.Context, publicID string) (*formwire.PublicForm, error) {
-	if e, ok := b.cached(publicID); ok {
+// cacheKey scopes a cached answer to the host it was given for, since a custom host answers only for its workspace's forms.
+func cacheKey(host, publicID string) string { return host + "\x00" + publicID }
+
+// Form resolves a published form as seen on host, TTL-cached. errFormNotFound
+// for unknown or unpublished ids and for a form another workspace's custom
+// host does not serve; any other error means the backend was unreachable.
+func (b *backendClient) Form(ctx context.Context, publicID, host string) (*formwire.PublicForm, error) {
+	key := cacheKey(host, publicID)
+	if e, ok := b.cached(key); ok {
 		if e.form == nil {
 			return nil, errFormNotFound
 		}
 		return e.form, nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.formURL(publicID, ""), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.formURL(publicID, "?host="+url.QueryEscape(host)), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -116,10 +121,10 @@ func (b *backendClient) Form(ctx context.Context, publicID string) (*formwire.Pu
 		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&f); err != nil {
 			return nil, err
 		}
-		b.store(publicID, &f, formCacheTTL)
+		b.store(key, &f, formCacheTTL)
 		return &f, nil
 	case http.StatusNotFound:
-		b.store(publicID, nil, formNegCacheTTL)
+		b.store(key, nil, formNegCacheTTL)
 		return nil, errFormNotFound
 	default:
 		return nil, fmt.Errorf("formserver: backend returned %d for form fetch", resp.StatusCode)
@@ -174,8 +179,8 @@ func (b *backendClient) Submit(ctx context.Context, publicID string, in *formwir
 // FormWithToken resolves a form together with its ?t= prefill. Deliberately
 // uncached: per-contact prefill must never be served to another visitor, and
 // the render-token gate plus the event budget bound the extra backend hits.
-func (b *backendClient) FormWithToken(ctx context.Context, publicID, linkToken string) (*formwire.PublicForm, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.formURL(publicID, "?t="+url.QueryEscape(linkToken)), nil)
+func (b *backendClient) FormWithToken(ctx context.Context, publicID, linkToken, host string) (*formwire.PublicForm, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.formURL(publicID, "?t="+url.QueryEscape(linkToken)+"&host="+url.QueryEscape(host)), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +197,7 @@ func (b *backendClient) FormWithToken(ctx context.Context, publicID, linkToken s
 		}
 		return &f, nil
 	case http.StatusNotFound:
-		b.store(publicID, nil, formNegCacheTTL)
+		b.store(cacheKey(host, publicID), nil, formNegCacheTTL)
 		return nil, errFormNotFound
 	default:
 		return nil, fmt.Errorf("formserver: backend returned %d for form fetch", resp.StatusCode)

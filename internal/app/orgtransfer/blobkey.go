@@ -2,13 +2,38 @@ package orgtransfer
 
 import (
 	"context"
+	"io"
 	"path"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/pkg/imagetype"
 )
+
+// maxPublicBlobBytes bounds a public image read back out of an archive; every
+// upload path that writes one caps it well below this.
+const maxPublicBlobBytes = 16 << 20
+
+// publicImage reads a public object out of the archive and accepts it only when
+// its bytes decode as the raster format its key's extension names, so the type
+// the object is served with is what it actually is.
+func publicImage(r io.Reader, key string) ([]byte, string, bool) {
+	want, ok := imagetype.ByExt(path.Ext(key))
+	if !ok {
+		return nil, "", false
+	}
+	body, err := io.ReadAll(io.LimitReader(r, maxPublicBlobBytes+1))
+	if err != nil || len(body) > maxPublicBlobBytes {
+		return nil, "", false
+	}
+	got, _, err := imagetype.Detect(body, want)
+	if err != nil {
+		return nil, "", false
+	}
+	return body, got.MIME, true
+}
 
 // The object keys an archive may write, and nothing else.
 //

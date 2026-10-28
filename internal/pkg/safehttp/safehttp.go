@@ -19,11 +19,11 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"github.com/warmbly/warmbly/internal/config"
 )
 
 // ErrBlockedAddress is returned when a request targets a non-public address.
@@ -41,11 +41,8 @@ var blockedIPv6 = []netip.Prefix{
 	netip.MustParsePrefix("fec0::/10"),
 }
 
-// allowUnsafe mirrors the existing WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS escape hatch
-// so local/self-hosted development can reach private hosts.
-func allowUnsafe() bool {
-	return strings.EqualFold(os.Getenv("WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS"), "true")
-}
+// allowUnsafe is the WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS opt-out, honoured only off hosted production.
+func allowUnsafe() bool { return config.UnsafeWebhookURLsAllowed() }
 
 // blockedHostnames are denied before DNS resolution: cloud-metadata service
 // names that resolve to link-local IPs (covered by the IP check too, but denying

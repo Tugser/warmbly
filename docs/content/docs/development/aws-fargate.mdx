@@ -1,6 +1,6 @@
 ---
 title: Prepare AWS Fargate
-description: Provision an AWS foundation with Terraform and plan a coordinated control plane cutover.
+description: Provision AWS with Terraform, plan the control plane cutover, then deploy releases, rotate keys and apply infrastructure changes from CI.
 ---
 
 The configurations in `deploy/terraform/` manage infrastructure through separate
@@ -127,9 +127,10 @@ switches. Put passwords, tokens, encryption material and credential-bearing
 connection strings in Secrets Manager. Reference both stores from ECS task
 definitions. Running tasks must be replaced to pick up updated injected values.
 
-The foundation also creates a separate rotation secret for pending key
-replacements. Keep that secret restricted to operators. Generating pending keys
-does not activate them or retire the keys used by the running deployment.
+The foundation also creates a separate rotation secret. It holds the state of a
+[key rotation](#rotate-keys) in progress, including the pending and previous
+values, so the rotator task can resume or undo it. Keep that secret restricted
+to operators and the rotator; the deployment role reads no secret value.
 
 Preserve current configuration before preparing replacements. Keep a dependency
 map of each value's readers, encrypted data and rollback requirements. The
@@ -191,3 +192,170 @@ before changing it. A successful sign-in check alone does not verify these paths
 The infrastructure foundation alone does not provide a zero-outage migration.
 Credential rotation, scheduler ownership, shared state and connection draining
 must all be coordinated before the traffic switch.
+
+## Deploy releases
+
+Once the cutover is done, releases reach production on their own. A stable tag
+(`vX.Y.Z`, never a prerelease) builds and publishes the images, and the release
+workflow then calls `.github/workflows/deploy-aws.yml` for that tag when the
+repository variable `AWS_DEPLOY_ENABLED` is `true`. Set it to anything else to
+stop automatic deploys; nothing else changes. Deploys, key rotations and
+Terraform applies share one queue, so only one change reaches production at a
+time and none is cancelled by the next.
+
+Terraform owns the shape of every task definition (environment, secret
+references, sizes, health checks) and the workflow owns only the image. A deploy:
+
+1. Checks that the tag's commit is on `main`, that every image digest carries
+   build provenance from the release workflow, and that the tag is not older
+   than the one running.
+2. Registers a revision of each service from its latest Terraform revision with
+   the release's digests, choosing the `-kafka` image where the task definition
+   says so, and refuses one that would stop referencing a secret the running
+   service reads.
+3. Runs the dependency validation task, then the migration task on the backend's
+   image. Either failing stops the deploy before any service moves.
+4. Rolls backend, then consumer, then forms, tracking and realtime together.
+   Each service is watched for a bake (five minutes by default) after it is
+   stable.
+5. Starts a [canary rollout](/development/warmblyctl/#fleet) of the worker and
+   consumer hosts from the `ops` task. The first host moves alone and the rest
+   follow after it has stayed healthy for 30 minutes.
+
+During the bake, a service fails when one of its alarms fires or ECS rolls it
+back. Each public service has two alarms, which ECS also uses to roll back on
+its own: more than 5% of requests answered with a 5xx in two of three minutes
+(counted only once a minute sees at least 20 requests), and any unhealthy target
+for three minutes. A failure at any step puts every service already moved back
+on its previous revision and task count, newest first, and the run fails with a
+summary. The schema stays where the migration left it, which the previous
+release reads.
+
+### Redeploy, roll back or change a secret
+
+Dispatch **Deploy AWS control plane** from the Actions tab:
+
+| Mode | Use it to |
+|---|---|
+| `redeploy` | Roll the running release again, for example to pick up task definitions Terraform changed |
+| `rollback` | Go back to an earlier release. The migration is skipped and the fleet follows in a canary rollout |
+| `deploy` | Deploy a release by hand, for example while `AWS_DEPLOY_ENABLED` is off |
+| `refresh-secrets` | Roll out a value changed in Secrets Manager, such as a database password or a third-party API key. Leave the tag empty to keep the running images |
+
+`refresh-secrets` repins every secret reference to the version currently marked
+`AWSCURRENT` and rolls with the same bake and rollback, so a wrong value is
+caught and put back like a bad release. Change the value in Secrets Manager
+first; the workflow only ever sees version ids. Nodes on worker hosts pick up a
+change to a value they hold once their env refreshes
+([keeping a node's env current](/development/configuration/#keeping-a-nodes-env-current)).
+
+`services` limits a run to some of the five services, and `bake_seconds` changes
+the bake. Releases published before build provenance existed fail the provenance
+check; dispatch those once with `require_attestation` off. The automatic
+redeploy after a Terraform apply cannot turn it off, so until a release with
+provenance is running it stops at that check and changes nothing.
+
+## Rotate keys
+
+Dispatch **Rotate instance keys** from the Actions tab and choose a key and an
+action. A rotator task inside AWS generates the replacement, writes it as a new
+secret version and reports only version ids, so no key passes through GitHub or
+a log. The workflow then rolls the services onto those versions, waits for the
+worker and consumer hosts to apply their new env, and runs `warmblyctl` in the
+`ops` task to prove each step before the previous value is retired.
+
+| Key | What a rotation does |
+|---|---|
+| `INTERNAL_API_TOKEN` | The backend accepts the previous token for up to seven days while tracking, forms and the hosts move to the new one, then it is retired |
+| `NODE_BROKER_TOKEN` | The same, for the hosts' broker routes |
+| `CREDENTIALS_ENCRYPTION_KEY` | The new key is first made readable everywhere, then made primary, stored values are resealed under it, and the old key is retired once `warmblyctl keys status` finds nothing left under it |
+| `TWOFA_SECRET` | The new secret seals new enrollments, existing ones are resealed, then the old secret is retired |
+| `UNSUBSCRIBE_SIGNING_SECRET` | New links are signed with the new secret. Links already in inboxes stay valid for a year, so the old secret is kept for reads until then |
+
+`rotate` runs every step it can prove safe in one run. It stops, and says what
+it is waiting for, when hosts have not applied the new env within
+`node_wait_minutes` (30 by default) or values still open only under the old key.
+Run `rotate` again to continue, or `retire` once the reason has cleared.
+`retire` refuses while it still has a reason to. `abort` puts the previous value
+back as primary; a replacement key that may already have sealed or signed
+something stays readable. `status` reports where a rotation stands. Only one key
+rotates at a time.
+
+The [Keys tab](/development/admin-panel/#instance) under Configuration in the
+admin panel shows the same checks without starting anything.
+
+### Before the first rotation
+
+Each service reads the previous value from an overlap key that has to exist and
+be referenced before a rotation can use it:
+
+1. Run the workflow with `prepare` for the key. It adds the empty overlap keys
+   (such as `INTERNAL_API_PREVIOUS_TOKENS` and `INTERNAL_API_PREVIOUS_UNTIL` on
+   the backend) to every service that reads the key, and lists those services.
+2. Add those names to each listed service's `secret_keys` in the runtime var
+   file and apply the runtime stack.
+3. Confirm the backend runs a release deployed by the workflow. A rotation rolls
+   the running release, and a backend started any other way carries no release
+   tag to roll.
+
+A rotation leaves the services pinned to newer secret versions than the runtime
+var file names. Deploys always use the newest pin, so nothing reverts, but
+update the version ids in the var file afterwards to keep Terraform's revisions
+current. Authentication keys (`AUTH_SECRET` and realtime's `JWT_SECRET`) are not
+offered: they have no overlap, and rotating them signs everyone out.
+
+## Run Terraform from CI
+
+Changes to `deploy/terraform/aws/` are planned and applied by
+`.github/workflows/terraform-aws.yml`. Var files never enter the repository;
+they live in the private state bucket, every value in them is masked before
+Terraform runs, and only resource addresses and actions are printed. No full
+plan reaches a log, a comment or an artifact.
+
+- A pull request from this repository gets one comment with the runtime and
+  workers plans. The foundation plans on merge, because it reads the cache
+  password, which the plan role may not.
+- On merge, each stack is planned in order: foundation, runtime, workers. A
+  stack that only creates and updates applies on its own. One that replaces or
+  destroys anything stops and waits for approval in the
+  `aws-infrastructure-approval` environment, and the stacks after it wait too.
+  On approval it plans again and applies only if the plan is still the one that
+  was approved. A new task definition revision counts as an update, because the
+  previous revision is kept.
+- When an apply changes a service's task definition, the running release is
+  redeployed so the change reaches the services.
+
+The bootstrap stack stays manual. So does any change to the CI roles themselves: the apply role cannot
+change its own permissions or trust, or the plan role's, so an administrator
+applies those by hand.
+
+## One-time GitHub setup
+
+1. On the `aws-production` environment, allow the `v*.*.*` tag pattern next to
+   `main` in deployment branches and tags, and add a tag ruleset so only release
+   managers can create `v*` tags.
+2. Set `terraform_ci = true` (with `github_repository`) in the runtime var file
+   and apply it once by hand. Its `terraform_role_arns` output names the plan
+   and apply roles.
+3. Upload `foundation.tfvars.json`, `runtime.tfvars.json` and
+   `workers.tfvars.json` to `s3://<state bucket>/warmbly/production/vars/`.
+4. Create three environments: `aws-infrastructure-plan` with no branch limit,
+   because pull requests plan in it and its role only reads, `aws-infrastructure`
+   limited to `main`, and `aws-infrastructure-approval` limited to `main` with
+   required reviewers.
+5. Set these variables. `AWS_DEPLOY_ENABLED` and `AWS_TERRAFORM_ENABLED` have
+   to be repository variables, because job conditions read them before any
+   environment applies:
+
+| Variable | Value |
+|---|---|
+| `AWS_DEPLOY_ENABLED` | `true` to deploy stable releases automatically |
+| `AWS_DEPLOY_ROLE_ARN`, `AWS_ECS_CLUSTER`, `AWS_ECS_SERVICE_PREFIX` | Runtime outputs, on the `aws-production` environment as the runtime README describes |
+| `AWS_TERRAFORM_ENABLED` | `true` to plan and apply from CI |
+| `AWS_TERRAFORM_PLAN_ROLE_ARN` | The `plan` entry of `terraform_role_arns` |
+| `AWS_TERRAFORM_APPLY_ROLE_ARN` | The `apply` entry of `terraform_role_arns` |
+| `AWS_TERRAFORM_STATE_BUCKET` | The state bucket name |
+
+Hand each worker host's updates to the fleet once its worker runs, with the
+`--adopt --env-refresh` step in the workers README. Until then it neither follows
+releases nor receives rotated values.

@@ -33,6 +33,10 @@ func (r *emailRepository) GetSMTPIMAP(ctx context.Context, userID, emailAccountI
     	 smtp.imap_user,
     	 smtp.imap_password,
     	 smtp.imap_security,
+    	 smtp.smtp_tls_unverified,
+    	 COALESCE(smtp.smtp_tls_pin, ''),
+    	 smtp.imap_tls_unverified,
+    	 COALESCE(smtp.imap_tls_pin, ''),
     	 smtp.updated_at
 	 	FROM 
     	 email_accounts ea
@@ -55,6 +59,7 @@ func (r *emailRepository) GetSMTPIMAP(ctx context.Context, userID, emailAccountI
 	).Scan(
 		&orgID, &smtp.Host, &smtp.Port, &smtp.Username, &smtp.Password, &smtp.Security,
 		&imap.Host, &imap.Port, &imap.Username, &imap.Password, &imap.Security,
+		&smtp.TLSUnverified, &smtp.TLSPin, &imap.TLSUnverified, &imap.TLSPin,
 		&ts,
 	)
 	if err != nil {
@@ -219,12 +224,14 @@ func (r *emailRepository) ReplaceSMTPIMAPCredentials(ctx context.Context, id uui
 	query := `
 		UPDATE email_accounts_smtp_imap
 		SET smtp_host = $1, smtp_port = $2, smtp_user = $3, smtp_password = $4, smtp_security = $5,
-		    imap_host = $6, imap_port = $7, imap_user = $8, imap_password = $9, imap_security = $10
-		WHERE email_account_id = $11
+		    imap_host = $6, imap_port = $7, imap_user = $8, imap_password = $9, imap_security = $10,
+		    smtp_tls_unverified = $11, smtp_tls_pin = $12, imap_tls_unverified = $13, imap_tls_pin = $14
+		WHERE email_account_id = $15
 	`
 	if _, err := r.DB.Exec(ctx, query,
 		sealed[0], creds.SMTP.Port, sealed[1], sealed[2], models.ResolveSMTPSecurity(creds.SMTP.Security, creds.SMTP.Port),
 		sealed[3], creds.IMAP.Port, sealed[4], sealed[5], models.ResolveIMAPSecurity(creds.IMAP.Security, creds.IMAP.Port),
+		creds.SMTP.TLSUnverified, creds.SMTP.StoredTLSPin(), creds.IMAP.TLSUnverified, creds.IMAP.StoredTLSPin(),
 		id); err != nil {
 		db.CaptureError(err, query, nil, "exec")
 		return err

@@ -1,0 +1,70 @@
+name: Rotate instance keys
+
+# New values are generated inside AWS by the rotator task and never reach this
+# runner or its logs; it only sees secret version ids. See the AWS Fargate
+# runbook in the self-hosting docs for what each step proves.
+on:
+  workflow_dispatch:
+    inputs:
+      key:
+        description: Key to rotate
+        type: choice
+        options:
+          - INTERNAL_API_TOKEN
+          - NODE_BROKER_TOKEN
+          - CREDENTIALS_ENCRYPTION_KEY
+          - TWOFA_SECRET
+          - UNSUBSCRIBE_SIGNING_SECRET
+      action:
+        description: rotate runs every step it can prove safe; retire and abort finish or undo a staged rotation
+        type: choice
+        default: status
+        options: [status, prepare, rotate, retire, abort]
+      node_wait_minutes:
+        description: How long to wait for every node to apply the new env
+        default: "30"
+        type: string
+      bake_seconds:
+        description: Seconds each rolled service is watched against its alarms
+        default: "300"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  rotate:
+    name: ${{ inputs.action }} ${{ inputs.key }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    environment: aws-production
+    # Same group as deploy-aws.yml: a rotation and a deploy never overlap.
+    concurrency:
+      group: aws-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install deployment client
+        run: npm ci --prefix .github/aws-deploy --omit=dev --ignore-scripts --no-audit --no-fund
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Rotate
+        env:
+          NODE_PATH: ${{ github.workspace }}/.github/aws-deploy/node_modules
+          AWS_ECS_CLUSTER: ${{ vars.AWS_ECS_CLUSTER }}
+          AWS_ECS_SERVICE_PREFIX: ${{ vars.AWS_ECS_SERVICE_PREFIX }}
+          ROTATE_KEY: ${{ inputs.key }}
+          ROTATE_ACTION: ${{ inputs.action }}
+          ROTATE_NODE_WAIT_MINUTES: ${{ inputs.node_wait_minutes }}
+          DEPLOY_BAKE_SECONDS: ${{ inputs.bake_seconds }}
+        run: node .github/scripts/aws-rotate.cjs

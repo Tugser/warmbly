@@ -18,7 +18,7 @@ import {
     useRealtimeStatus,
     type LiveEvent,
 } from "@/lib/realtime/eventsStore";
-import type { RealtimeStatus } from "@/lib/realtime/socket";
+import { getRefusal, refusalMessage, type RealtimeStatus } from "@/lib/realtime/socket";
 
 // ---------------------------------------------------------------- families
 
@@ -65,6 +65,7 @@ const STATUS_META: Record<RealtimeStatus, { label: string; tone: Tone; pulse: bo
     connected: { label: "Connected", tone: "success", pulse: true },
     connecting: { label: "Connecting", tone: "warning", pulse: true },
     disconnected: { label: "Disconnected", tone: "danger", pulse: false },
+    refused: { label: "Not available", tone: "danger", pulse: false },
 };
 
 function ConnectionStatus({ status }: { status: RealtimeStatus }) {
@@ -247,11 +248,13 @@ export default function EventsPage() {
                 {filtered.length === 0 ? (
                     <EmptyState
                         icon={Radio}
-                        title={events.length === 0 ? "No events yet" : "No matching events"}
+                        title={status === "refused" ? "Live events are not available" : events.length === 0 ? "No events yet" : "No matching events"}
                         hint={
-                            events.length === 0
-                                ? "Events appear here as platform activity happens. The connection status is shown above."
-                                : "Try a different filter or family chip."
+                            status === "refused"
+                                ? (refusalMessage(getRefusal()) ?? "The live event feed refused this session. Sign in again.")
+                                : events.length === 0
+                                  ? "Events appear here as platform activity happens. The connection status is shown above."
+                                  : "Try a different filter or family chip."
                         }
                     />
                 ) : (

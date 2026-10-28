@@ -119,6 +119,12 @@ func (r *Runner) selfImageID(ctx context.Context) string {
 	return strings.TrimSpace(string(out))
 }
 
+// selfRecreateArgs runs a constant script whose compose arguments arrive as positional parameters.
+func (r *Runner) selfRecreateArgs() []string {
+	args := r.composeArgs("run", "-d", "--rm", "--no-deps", "--entrypoint", "sh", selfService, "-c", `sleep 3; exec docker "$@"`, "sh")
+	return append(args, r.composeArgs("up", "-d", "--no-build", "--no-deps", selfService)...)
+}
+
 // recreateSelf moves the updater onto the image it just built or pulled. It
 // cannot run `compose up updater` in-process (that stops this container half
 // way), so a detached one-off container from the new image does it a few
@@ -137,9 +143,7 @@ func (r *Runner) recreateSelf(ctx context.Context, job *Job) {
 		return
 	}
 	r.logf(job, "updater image changed; recreating the updater itself")
-	inner := fmt.Sprintf("sleep 3; docker %s", strings.Join(r.composeArgs("up", "-d", "--no-build", "--no-deps", selfService), " "))
-	args := r.composeArgs("run", "-d", "--rm", "--no-deps", "--entrypoint", "sh", selfService, "-c", inner)
-	cmd := exec.Command("docker", args...)
+	cmd := exec.Command("docker", r.selfRecreateArgs()...)
 	cmd.Dir = r.cfg.RepoDir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		r.logf(job, "could not schedule the updater's own recreate (ignored): %s", strings.TrimSpace(string(out)))

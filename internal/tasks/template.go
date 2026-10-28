@@ -183,19 +183,71 @@ func RenderTemplateWith(tmpl string, contact models.Contact, context TemplateCon
 	return strings.ReplaceAll(out, "<no value>", "")
 }
 
-// Recover standalone actions with the same engine, leaving broken control syntax literal.
+// RenderHTMLTemplateWith renders an HTML body: every value is escaped for the
+// context it lands in (text, attribute, URL, CSS), so contact data can never
+// add markup or a script: link. Template text, comments included, is kept.
+func RenderHTMLTemplateWith(tmpl string, contact models.Contact, context TemplateContext) string {
+	if !strings.Contains(tmpl, "{{") {
+		return tmpl
+	}
+	data := buildTemplateData(contact, context)
+	if body := compiledHTMLTemplate(tmpl); body != nil {
+		if out, err := tmplfuncs.Execute(body.t, data); err == nil {
+			return body.restore(out)
+		}
+	}
+	return fallbackRenderHTML(tmpl, data)
+}
+
+// Recover standalone actions with the same engine, leaving broken control
+// syntax literal; all of them share one MaxOutput budget.
 func fallbackRenderTemplate(tmpl string, data map[string]any) string {
-	return templateAction.ReplaceAllStringFunc(tmpl, func(action string) string {
+	return fallbackRender(tmpl, data, nil)
+}
+
+// fallbackRenderHTML is fallbackRenderTemplate with each value escaped for
+// where it sits in the document.
+func fallbackRenderHTML(tmpl string, data map[string]any) string {
+	return fallbackRender(tmpl, data, &htmlScanner{})
+}
+
+func fallbackRender(tmpl string, data map[string]any, scan *htmlScanner) string {
+	budget := tmplfuncs.MaxOutput
+	var b strings.Builder
+	last := 0
+	for _, loc := range templateAction.FindAllStringIndex(tmpl, -1) {
+		literal, action := tmpl[last:loc[0]], tmpl[loc[0]:loc[1]]
+		b.WriteString(literal)
+		last = loc[1]
+		var at htmlPosition
+		if scan != nil {
+			scan.feed(literal)
+			at = scan.position()
+			scan.sawValue()
+		}
 		t := compiledTemplate(action)
 		if t == nil {
-			return action
+			b.WriteString(action)
+			continue
 		}
-		out, err := tmplfuncs.Execute(t, data)
+		out, err := tmplfuncs.ExecuteLimit(t, data, budget)
 		if err != nil {
-			return action
+			b.WriteString(action)
+			continue
 		}
-		return strings.ReplaceAll(out, "<no value>", "")
-	})
+		out = strings.ReplaceAll(out, "<no value>", "")
+		if scan != nil {
+			out = at.escape(out)
+		}
+		if len(out) > budget {
+			b.WriteString(action)
+			continue
+		}
+		budget -= len(out)
+		b.WriteString(out)
+	}
+	b.WriteString(tmpl[last:])
+	return b.String()
 }
 
 // TemplatePreview is the result of rendering a campaign template against one
@@ -233,7 +285,7 @@ func PreviewTemplates(subject, bodyHTML, bodyPlain string, contact models.Contac
 func previewTemplatesWith(subject, bodyHTML, bodyPlain string, contact models.Contact, context TemplateContext) TemplatePreview {
 	p := TemplatePreview{
 		Subject:   expandSpintax(RenderTemplateWith(subject, contact, context)),
-		BodyHTML:  expandSpintax(RenderTemplateWith(bodyHTML, contact, context)),
+		BodyHTML:  expandSpintax(RenderHTMLTemplateWith(bodyHTML, contact, context)),
 		BodyPlain: expandSpintax(RenderTemplateWith(bodyPlain, contact, context)),
 	}
 	for _, f := range []struct{ name, raw string }{{"subject", subject}, {"body", bodyHTML}, {"plain text", bodyPlain}} {

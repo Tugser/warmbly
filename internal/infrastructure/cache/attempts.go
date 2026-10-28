@@ -21,7 +21,7 @@ return n`)
 
 // ReserveAttempt charges one attempt to key before the secret is compared and
 // reports whether it is within limit for the window. On error the result is
-// false and the caller decides whether to fail open.
+// false, and a verifier refuses rather than compare an uncharged attempt.
 func (c *Cache) ReserveAttempt(ctx context.Context, key string, limit int64, window time.Duration) (bool, error) {
 	ms := window.Milliseconds()
 	if ms < 1 {

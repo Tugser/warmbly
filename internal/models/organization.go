@@ -137,6 +137,8 @@ type OrganizationInvitation struct {
 	ExpiresAt      time.Time              `json:"expires_at"`
 	CreatedAt      time.Time              `json:"created_at"`
 	Access         *MemberAccess          `json:"access,omitempty"`
+	// Expired is set on rows listed for sending again; such an invitation grants nothing.
+	Expired bool `json:"expired,omitempty"`
 
 	// Joined data
 	Organization  *Organization `json:"organization,omitempty"`

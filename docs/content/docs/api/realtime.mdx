@@ -25,15 +25,27 @@ Three token types are accepted:
 
 - **API key** (`wmbly_…`): send a key with the `REALTIME_SUBSCRIBE` permission (bit 11) in the `X-Warmbly-Token` request header of the WebSocket handshake. See [Permissions](/api/permissions/) for how to grant it.
 - **OAuth access token** (`wmat_…`): send an access token whose grant includes the realtime scope (the lowercased permission, `realtime_subscribe`) in the same `X-Warmbly-Token` header. It connects on the granting user's behalf with exactly the scopes they approved. See [OAuth](/api/oauth/).
-- **Short-lived JWT**: browser sessions call the authenticated socket endpoint to mint a 10-minute connection token and pass it as the `token` query parameter. This is what the dashboard itself uses.
+- **Short-lived JWT**: browser sessions call the authenticated socket endpoint to mint a 10-minute connection token and pass it as the `token` query parameter. This is what the dashboard itself uses. Each token opens one socket, and only while the session that minted it is still signed in, so mint a fresh one for every connection attempt.
 
-Send API keys and OAuth access tokens in the `x-warmbly-token` header. Putting one in the URL as `token` still works but is deprecated: URLs end up in proxy and access logs, and these credentials outlive any session, so it will stop working in a later API version. The 10-minute connection token belongs in the query string. Browsers cannot set headers on a WebSocket, so connect with an API key or OAuth token from a server-side client.
+Send API keys and OAuth access tokens in the `x-warmbly-token` header. An API key or OAuth token in the URL as `token` is refused with code `4003`: URLs end up in proxy and access logs, and these credentials outlive any session. A self-hosted instance with an older client that cannot set the header can accept them there again with `REALTIME_ALLOW_QUERY_CREDENTIALS=true` on the realtime service (see [Configuration](/development/configuration/)). The 10-minute connection token belongs in the query string. Browsers cannot set headers on a WebSocket, so connect with an API key or OAuth token from a server-side client.
 
 `POST /v1/getaway` continues returning the direct gateway `url` and `expires_in`. It also returns `proxy_path` when a gateway is configured. The dashboard resolves that path against its versioned API base and uses the API origin for its WebSocket, so a self-host does not depend on realtime CSP discovery succeeding during dashboard startup. Failed connection attempts alternate with the direct gateway for older proxy configurations. The proxy accepts only short-lived WebSocket tickets, not access tokens, API keys or OAuth credentials; developer clients continue connecting directly. It preserves the dashboard Origin and realtime authorization and connection limits. The backend signs a ticket-bound client-address proof so per-IP limits do not treat every proxied user as the same client.
 
 A credential stops working on the socket as soon as it does on the REST API: a revoked key or token, a holder banned from signing in, or a suspended OAuth app is refused at the handshake. Signing out, signing out everywhere, changing or resetting a password, and an account ban also close every socket that user has open; the dashboard reconnects on its own with a fresh connection token if its session is still valid.
 
 In short, both developer auth methods work here: an API key with `REALTIME_SUBSCRIBE`, or an OAuth access token with the realtime scope. They authenticate through the same gate, so everything below applies to either.
+
+A key or token reaches only the workspace it was created in, and there only the events its read scopes cover, never more than its holder's own member permissions:
+
+| Scope | Event families it receives |
+| --- | --- |
+| `READ_EMAILS` | Mailbox, warmup and mailbox import events, and the `account:` channel |
+| `READ_CAMPAIGNS` | Campaign activity, task progress and send, open, click and reply pulses |
+| `READ_CONTACTS` | Contact, page hit, form and research events |
+| `READ_UNIBOX` | Inbox events and AI reply drafts |
+| `READ_ANALYTICS` | Placement tests and direct email events |
+
+Team, billing and settings events never reach a key or token. Joining another workspace's `org:`, `campaign:` or `account:` topic is refused with `not_a_member`, and bulk operation progress arrives only for operations in the credential's own workspace.
 
 If the key (or OAuth app) has IP restrictions configured, they are enforced on the socket handshake as well.
 
@@ -243,9 +255,10 @@ function connectRealtime({ token, orgId, intents = ["CUSTOM"], onEvent }) {
 
     ws.onclose = (e) => {
       stopHeartbeats();
-      // Connect-level rejections currently surface as a failed handshake (HTTP 403
-      // carrying the reason), not a close code; either way, reconnect with backoff.
-      // Re-mint the token first if it may have expired (4004).
+      // Connect-level rejections surface as a failed handshake (HTTP 403 with
+      // { code, reason }), not a close code; either way, reconnect with backoff.
+      // An API key reconnects as is; a 10-minute connection token opens one socket,
+      // so mint a new one first. ws's "unexpected-response" event exposes the 403 body.
       if (closedByUs) return;
       console.warn("closed", e.code, e.reason, "- retrying in", backoff, "ms");
       setTimeout(open, backoff);
@@ -347,21 +360,34 @@ Ephemeral [live-collaboration](#live-collaboration) frames (`live:cursor`, `live
 
 A connection can be refused at two points, and the two surface differently today:
 
-- **Connect-level** (authentication, the realtime permission, the IP allowlist, the rate limit, the connection cap): the WebSocket upgrade is refused at the HTTP layer. The handshake returns an **HTTP 403** carrying the reason, and the client observes a failed upgrade rather than an application close frame.
+- **Connect-level** (authentication, the realtime permission, the IP allowlist, the rate limit, the connection cap): the WebSocket upgrade is refused at the HTTP layer. The handshake returns an **HTTP 403** with a JSON body `{ code, reason }` (plus `retry_after_ms` when rate limited), where `reason` is a sentence saying what to do, and the client observes a failed upgrade rather than an application close frame.
 - **Post-join** (a `phx_join` that fails after the socket is open, for example a channel you may not see): the join reply comes back with `status: "error"` and a structured error object `{ code, reason }` in its `response`. `reason` is a stable slug naming the specific refusal (`not_a_member`, `campaign_not_found`, `rate_limited`, ...); `code` is the coarse class to branch on.
 
 Both paths use the same reason codes:
 
 | Code | Meaning | Client action |
 | --- | --- | --- |
-| 4003 | Not authenticated (token missing) | Add a valid `token` to the connection URL |
-| 4004 | Authentication failed: token expired, or invalid key | Re-mint the token (or check the key), then reconnect |
+| 4003 | Not authenticated (token missing, or an API key or OAuth token sent in the URL) | Add a valid `token` to the connection URL, or move the key to the `x-warmbly-token` header |
+| 4004 | Authentication failed: token expired, already used, its session signed out, or invalid key | Re-mint the token (or check the key), then reconnect |
 | 4005 | Malformed topic, for example an id that is not a UUID | Fix the topic; retrying will not help |
 | 4007 | Rate limited | Wait out `retry_after_ms`, then retry |
 | 4009 | Connection limit exceeded | Reduce concurrent sockets |
 | 4010 | Permission denied, not a member, or no such record | Do not retry this topic |
 
-Because connect-level rejections are an HTTP 403 and not a WebSocket close frame today, a client cannot branch on the connect-level code programmatically: treat any failed upgrade as "re-mint the token if it expired, otherwise back off". Post-join rejections are already machine-readable through `{ code, reason }`. Surfacing connect-level reasons as application close codes too is planned.
+The connect-level refusals you are most likely to meet:
+
+| Code | `reason` | What to do |
+| --- | --- | --- |
+| 4003 | `Send API keys and OAuth tokens in the x-warmbly-token header, not the URL` | Move the key or token from the `token` query parameter to the `x-warmbly-token` header |
+| 4004 | `This connection token was already used; mint a new one for each connection` | Call `POST /v1/getaway` again before every connection attempt, including reconnects |
+| 4004 | `The session that minted this connection token has signed out; sign in again` | Sign in again, then mint a new token |
+| 4004 | `Token expired` | Mint a new token; each lasts 10 minutes |
+| 4004 | `Invalid API key`, `API key inactive`, `API key expired`, `Access token revoked` | Check the credential in the dashboard; retrying the same one will not help |
+| 4010 | `Permission denied`, `IP address not allowed` | Grant `REALTIME_SUBSCRIBE`, or connect from an address the key allows |
+
+A server-side client can read that body from the failed upgrade. A browser's `WebSocket` exposes no handshake body, so there treat any failed upgrade as "mint a new token, then back off". Post-join rejections are machine-readable through `{ code, reason }` everywhere.
+
+The admin panel's own `admin:platform` feed is not open to developers. Its join is refused with `jwt_required` for an API key or OAuth token, `admin_mfa_required` when the session that minted the connection token did not verify a second factor (sign in again with your authenticator or passkey), and `not_an_admin` for anyone without platform admin permissions.
 
 ## Delivery guarantees
 

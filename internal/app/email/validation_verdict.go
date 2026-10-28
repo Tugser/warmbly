@@ -2,8 +2,10 @@ package email
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
+	"github.com/warmbly/warmbly/internal/config"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/pkg/mailcause"
@@ -71,6 +73,9 @@ func validationError(v models.EmailValidationVerdict, creds *models.SmtpImap) *e
 	if hint := providerHint(lead); hint != "" {
 		msg += " " + hint
 	}
+	for _, hint := range connectionHints(legs) {
+		msg += " " + hint
+	}
 
 	id := ErrIDMailboxServerDeclined
 	switch lead.res.Reason {
@@ -81,7 +86,11 @@ func validationError(v models.EmailValidationVerdict, creds *models.SmtpImap) *e
 	case models.MailProbeTLS:
 		id = ErrIDMailboxTLSFailed
 	}
-	return withCause(errx.NewWithIdentifier(errx.BadRequest, id, msg), v, creds, lead)
+	e := errx.NewWithIdentifier(errx.BadRequest, id, msg)
+	if id == ErrIDMailboxTLSFailed && slices.ContainsFunc(legs, untrustedCertificate) {
+		e.Reason = ReasonCertificateUntrusted
+	}
+	return withCause(e, v, creds, lead)
 }
 
 // withCause attaches the grouping key an import reads; a single connect ignores it.
@@ -154,7 +163,7 @@ func legSentence(leg string, svc *models.Service, res models.EmailValidationLeg)
 	case models.MailProbeUnreachable:
 		return fmt.Sprintf("%s could not be reached from the worker%s.", where, detail)
 	case models.MailProbeTLS:
-		return fmt.Sprintf("%s did not complete a secure connection%s.", where, detail)
+		return fmt.Sprintf("%s did not complete a secure connection%s.%s", where, detail, presented(res.Certificate))
 	case models.MailProbeTemporary:
 		return fmt.Sprintf("%s declined the sign-in for now and asks for a retry%s.", where, detail)
 	case models.MailProbeCleartext:
@@ -164,6 +173,60 @@ func legSentence(leg string, svc *models.Service, res models.EmailValidationLeg)
 	default:
 		return fmt.Sprintf("%s did not accept the sign-in%s.", where, detail)
 	}
+}
+
+// presented names the certificate a server showed, so its owner can compare it before trusting it.
+func presented(cert *models.MailCertificate) string {
+	if cert == nil || cert.Fingerprint == "" {
+		return ""
+	}
+	s := " It presented a certificate"
+	if cert.Subject != "" {
+		s += " for " + cert.Subject
+	}
+	if cert.SelfSigned {
+		s += " (self-signed)"
+	} else if cert.Issuer != "" {
+		s += " issued by " + cert.Issuer
+	}
+	return s + " with SHA-256 key fingerprint " + cert.Fingerprint + "."
+}
+
+// ReasonCertificateUntrusted is the response reason on a mailbox_tls_failed the owner can resolve by trusting the server's own certificate.
+const ReasonCertificateUntrusted = "certificate_untrusted"
+
+// TrustCertificateHint follows a failure on a certificate no authority vouches for.
+const TrustCertificateHint = "If this is your own server with a self-signed or company certificate, compare that fingerprint with the one its owner gives you, then test again trusting the server's own certificate (tls_unverified in the API)."
+
+// untrustedCertificate reports a leg that failed on a certificate no authority vouches for and that is not already trusted on its own.
+func untrustedCertificate(l failedLeg) bool {
+	return l.res.Reason == models.MailProbeTLS && l.res.Certificate != nil && !l.res.Certificate.Trusted &&
+		l.res.Certificate.Fingerprint != "" && (l.svc == nil || !l.svc.TLSUnverified)
+}
+
+// connectionHints says what to do about failures the server's own words do not explain.
+func connectionHints(legs []failedLeg) []string {
+	var private, untrusted bool
+	for _, l := range legs {
+		switch {
+		case l.res.Reason == models.MailProbeUnreachable && l.res.Detail == models.MailProbeDetailPrivateHost:
+			private = true
+		case untrustedCertificate(l):
+			untrusted = true
+		}
+	}
+	var hints []string
+	if private {
+		hint := "Use the host name your provider gives for connecting from outside your network."
+		if config.SelfHosted() {
+			hint += " To connect mailboxes on a private network, the instance's operator can set MAIL_ALLOW_PRIVATE_HOSTS=true."
+		}
+		hints = append(hints, hint)
+	}
+	if untrusted {
+		hints = append(hints, TrustCertificateHint)
+	}
+	return hints
 }
 
 // failedLeg is one side of a verdict that did not pass, with the service it

@@ -31,7 +31,9 @@ defmodule RealtimeWeb.CampaignChannel do
       # Verify user has access to this campaign via organization membership
       checked_at = System.monotonic_time(:millisecond)
 
-      case Auth.check_campaign_access(user_id, campaign_id) do
+      case user_id
+           |> Auth.check_campaign_access(campaign_id)
+           |> Auth.confine(socket.assigns[:credential]) do
         {:ok, member} ->
           Logger.debug("User #{user_id} joined campaign:#{campaign_id}")
 
@@ -90,7 +92,9 @@ defmodule RealtimeWeb.CampaignChannel do
     ChannelGuard.refresh_authorization(
       socket,
       fn ->
-        Auth.check_campaign_access(socket.assigns.user_id, socket.assigns.campaign_id)
+        socket.assigns.user_id
+        |> Auth.check_campaign_access(socket.assigns.campaign_id)
+        |> Auth.confine(socket.assigns[:credential])
       end,
       force
     )

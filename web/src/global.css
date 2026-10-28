@@ -293,8 +293,17 @@ svg.loading circle {
 .ai-caret {
   animation: ai-caret-blink 1s steps(1) infinite;
 }
-/* Soft diagonal light sweep over an input while AI writes into it. */
-.ai-sheen {
+/* Soft diagonal light sweep over an input while AI writes into it. An editor
+   gets it as .ai-writing, drawn over its text by a pseudo-element. */
+.ai-writing { position: relative; }
+.ai-writing::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: 4px;
+}
+.ai-sheen, .ai-writing::after {
   background: linear-gradient(
     100deg,
     transparent 25%,
@@ -305,6 +314,24 @@ svg.loading circle {
   );
   background-size: 220% 100%;
   animation: ai-shimmer 1.6s linear infinite;
+}
+/* A passage AI is writing into an editor, or has written and awaits review,
+   and the caret at the end of it while text arrives. */
+.ai-written {
+  background: rgba(14, 165, 233, 0.08);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  border-radius: 2px;
+}
+.ai-stream-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 1px;
+  transform: translateY(0.15em);
+  border-radius: 1px;
+  background: #0ea5e9;
+  animation: ai-caret-blink 1s steps(1) infinite;
 }
 /* A soft blur over the newest streamed characters. */
 .ai-stream-tail {
@@ -426,7 +453,8 @@ svg.loading circle {
 @media (prefers-reduced-motion: reduce) {
   .ai-shimmer-text { animation: none; background: none; color: #64748b; }
   .ai-caret { animation: none; }
-  .ai-sheen { animation: none; background: rgba(14, 165, 233, 0.06); }
+  .ai-stream-caret { animation: none; }
+  .ai-sheen, .ai-writing::after { animation: none; background: rgba(14, 165, 233, 0.06); }
   .ai-stream-tail { filter: none; -webkit-mask-image: none; mask-image: none; }
 }
 

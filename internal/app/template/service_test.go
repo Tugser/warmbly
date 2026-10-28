@@ -314,3 +314,15 @@ func TestService_Render_NotFound(t *testing.T) {
 		t.Fatalf("expected NotFound, got %v", xerr)
 	}
 }
+
+func TestRenderHTMLStringEscapesValuesAndNeverRescansThem(t *testing.T) {
+	vars := map[string]string{"name": `<img src=x onerror=alert(1)>`, "a": "{{.b}}", "b": "SECOND"}
+	if got := RenderHTMLString(`<p title="{{.name}}">{{.name}}</p>`, vars); got != `<p title="&lt;img src=x onerror=alert(1)&gt;">&lt;img src=x onerror=alert(1)&gt;</p>` {
+		t.Fatalf("html: %q", got)
+	}
+	for i := 0; i < 20; i++ {
+		if got := RenderString(`{{.a}}`, vars); got != "{{.b}}" {
+			t.Fatalf("a value was rescanned: %q", got)
+		}
+	}
+}

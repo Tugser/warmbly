@@ -101,6 +101,8 @@ export default interface Form {
     design: FormDesign;
     success_message: string;
     redirect_url: string;
+    /** False when redirect_url is not on one of the workspace's own domains, so visitors see the success message. */
+    redirect_url_active?: boolean;
     campaign_id?: string;
     category_ids: string[];
     allowed_domains: string[];

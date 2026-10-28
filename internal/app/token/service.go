@@ -20,6 +20,8 @@ type TokenService interface {
 	// minted for one flow cannot be spent on another.
 	GenerateTokenFor(purpose string, userID, sessionID uuid.UUID, email, nonce string, issuedAt, expiresAt time.Time) (string, error)
 	GenerateWebsocketProxyProof(ticket *TokenClaims, clientIP string) (string, error)
+	// GenerateWebsocketTicket mints a socket ticket bound to the session it was minted from.
+	GenerateWebsocketTicket(userID, ticketID, sessionID uuid.UUID, nonce string, issuedAt, expiresAt time.Time) (string, error)
 	VerifyToken(tokenStr string) (*TokenClaims, *errx.Error)
 	// VerifyTokenFor also requires the token to have been minted for this
 	// purpose, so one flow's token cannot be spent on another.

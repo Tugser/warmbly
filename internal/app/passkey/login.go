@@ -11,6 +11,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/token"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/observability/errs"
 )
 
 func (s *service) BeginLogin(ctx context.Context) (*LoginChallenge, *errx.Error) {
@@ -79,10 +80,14 @@ func (s *service) FinishLogin(ctx context.Context, session string, credential []
 	user := resolved.user
 
 	// Ban-scope enforcement — parity with password login (auth/login.go).
-	if scope, scopeErr := s.userRepo.GetBanState(ctx, user.ID); scopeErr == nil {
-		if models.BanScope(scope).Has(models.BanScopeLogin) {
-			return nil, errx.New(errx.Forbidden, "this account has been suspended")
-		}
+	// A ban state that cannot be read refuses the sign-in.
+	scope, scopeErr := s.userRepo.GetBanState(ctx, user.ID)
+	if scopeErr != nil {
+		errs.CaptureException(scopeErr)
+		return nil, errx.InternalError()
+	}
+	if models.BanScope(scope).Has(models.BanScopeLogin) {
+		return nil, errx.ErrAccountSuspended
 	}
 
 	// No TOTP step: a user-verified passkey is possession plus a PIN or

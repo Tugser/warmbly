@@ -8,7 +8,7 @@
 // Constants:
 //
 //   - max size: 2 MiB. Anything larger gets a 400.
-//   - accepted MIME: image/png, image/jpeg (see allowedAvatarMIME).
+//   - accepted formats: PNG, JPEG, decided from the bytes (see avatarFormats).
 //   - object key: avatars/{kind}/{id}-{epoch_ms}-{nonce}.{ext}
 //
 // The epoch suffix forces cache busting on replacement so the
@@ -22,13 +22,10 @@ package handler
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"image"
-	_ "image/jpeg"
-	_ "image/png"
 	"io"
 	"net/http"
-	"path"
 	"strings"
 	"time"
 
@@ -40,6 +37,7 @@ import (
 	"github.com/warmbly/warmbly/internal/infrastructure/storage"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/observability/errs"
+	"github.com/warmbly/warmbly/internal/pkg/imagetype"
 	"github.com/warmbly/warmbly/internal/repository"
 )
 
@@ -63,11 +61,7 @@ const (
 //
 // The client-side resizer always re-encodes to JPEG anyway, so this
 // list constrains what survives a bypass of the JS path.
-var allowedAvatarMIME = map[string]string{
-	"image/png":  ".png",
-	"image/jpg":  ".jpg",
-	"image/jpeg": ".jpg",
-}
+var avatarFormats = []imagetype.Format{imagetype.PNG, imagetype.JPEG}
 
 // UploadUserAvatar — POST /me/avatar (multipart, field "file")
 func (h *Handler) UploadUserAvatar(c *gin.Context) {
@@ -284,8 +278,13 @@ func (h *Handler) requireOrgOwner(c *gin.Context, orgID, userID uuid.UUID) *errx
 }
 
 // readAvatarUpload pulls the "file" field out of the request, enforces
-// the size cap, sniffs the mime, and returns the bytes ready for S3.
+// the size cap, decides the format from the bytes, and returns them ready for S3.
 func readAvatarUpload(c *gin.Context) ([]byte, string, string, *errx.Error) {
+	return readImageUpload(c, avatarLimits)
+}
+
+// readImageUpload is readAvatarUpload with the refusals worded for lim.
+func readImageUpload(c *gin.Context, lim imageLimits) ([]byte, string, string, *errx.Error) {
 	// Cap the request body before parsing so a 50MB upload doesn't
 	// pin a gin worker.
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, avatarMaxBytes+1024)
@@ -295,7 +294,7 @@ func readAvatarUpload(c *gin.Context) ([]byte, string, string, *errx.Error) {
 		return nil, "", "", errx.New(errx.BadRequest, "file is required")
 	}
 	if fh.Size > avatarMaxBytes {
-		return nil, "", "", errx.New(errx.BadRequest, "avatar must be smaller than 2 MB")
+		return nil, "", "", lim.tooLarge()
 	}
 
 	src, err := fh.Open()
@@ -310,39 +309,22 @@ func readAvatarUpload(c *gin.Context) ([]byte, string, string, *errx.Error) {
 	}
 	body := buf.Bytes()
 
-	// Trust the client-declared content type only if it's on the
-	// allowlist. http.DetectContentType is a stronger signal, so
-	// prefer that if it disagrees.
-	declared := strings.ToLower(fh.Header.Get("Content-Type"))
-	sniffed := http.DetectContentType(body)
-	mime := declared
-	if _, ok := allowedAvatarMIME[sniffed]; ok {
-		mime = sniffed
+	// The declared type and the filename take no part: the sniff and the
+	// format's own decoder have to agree.
+	format, cfg, err := imagetype.Detect(body, avatarFormats...)
+	if errors.Is(err, imagetype.ErrUnreadable) {
+		return nil, "", "", lim.unreadable()
 	}
-	ext, ok := allowedAvatarMIME[mime]
-	if !ok {
-		return nil, "", "", errx.New(errx.BadRequest, "avatar must be a PNG or JPG")
+	if err != nil {
+		return nil, "", "", lim.wrongFormat()
 	}
-	// Fallback ext from the filename when mime sniff is ambiguous.
-	if ext == "" {
-		ext = strings.ToLower(path.Ext(fh.Filename))
-		if ext == "" {
-			ext = ".png"
-		}
-	}
+	mime, ext := format.MIME, format.Ext
 
 	// Dimension cap. We expect the client to resize before upload —
 	// this is a backstop against a raw camera dump or a bypass of the
 	// JS resizer.
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(body))
-	if err != nil {
-		return nil, "", "", errx.New(errx.BadRequest, "image could not be parsed")
-	}
 	if cfg.Width > avatarMaxDimension || cfg.Height > avatarMaxDimension {
-		return nil, "", "", errx.New(
-			errx.BadRequest,
-			fmt.Sprintf("avatar dimensions must be %dpx or smaller — please resize before uploading", avatarMaxDimension),
-		)
+		return nil, "", "", lim.tooWide()
 	}
 	return body, mime, ext, nil
 }

@@ -8,7 +8,7 @@ import (
 )
 
 func (r *poolLinkRepository) ListReportMailboxes(ctx context.Context, instanceID uuid.UUID, remoteIDs []uuid.UUID) ([]models.PoolLinkMailbox, error) {
-	const query = `SELECT instance_id, remote_id, email_account_id, enrolled_at, managed, last_token_at
+	const query = `SELECT instance_id, remote_id, email_account_id, enrolled_at, managed, last_token_at, executor
 		FROM pool_link_mailboxes WHERE instance_id = $1 AND remote_id = ANY($2::uuid[])`
 	rows, err := r.db.Query(ctx, query, instanceID, remoteIDs)
 	if err != nil {

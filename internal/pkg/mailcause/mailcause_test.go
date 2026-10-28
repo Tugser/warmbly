@@ -94,6 +94,9 @@ func TestClassify(t *testing.T) {
 			SMTP: Leg{Reason: models.MailProbeUnreachable, Host: "mail.example.org", Port: 25, Detail: "dial tcp: i/o timeout"}}, PortBlocked},
 		{"587 unreachable is not a blocked port", Input{IMAP: ok("IMAP"),
 			SMTP: Leg{Reason: models.MailProbeUnreachable, Host: "mail.example.org", Port: 587, Detail: "connect: connection refused"}}, HostUnreachable},
+		{"private host", Input{
+			SMTP: Leg{Reason: models.MailProbeUnreachable, Host: "mail.corp.example", Port: 25, Detail: models.MailProbeDetailPrivateHost},
+			IMAP: Leg{Reason: models.MailProbeUnreachable, Host: "mail.corp.example", Port: 993, Detail: models.MailProbeDetailPrivateHost}}, PrivateHost},
 		{"no such host", Input{IMAP: ok("IMAP"),
 			SMTP: Leg{Reason: models.MailProbeUnreachable, Host: "smtp.exmaple.org", Port: 465, Detail: "dial tcp: lookup smtp.exmaple.org: no such host"}}, HostNotFound},
 		{"tls", Input{IMAP: ok("IMAP"),
@@ -103,6 +106,8 @@ func TestClassify(t *testing.T) {
 			SMTP: Leg{Reason: models.MailProbeProtocol, Detail: "530 5.7.0 Must issue a STARTTLS command first"}}, CleartextRefused},
 		{"auth unavailable", Input{IMAP: ok("IMAP"),
 			SMTP: Leg{Reason: models.MailProbeProtocol, Host: "mx.example.org", Port: 25, Detail: "smtp: server doesn't support AUTH; 503 5.5.1 Error: authentication not enabled"}}, AuthUnavailable},
+		{"no supported sign-in method", Input{IMAP: ok("IMAP"),
+			SMTP: Leg{Reason: models.MailProbeProtocol, Host: "mail.example.org", Port: 587, Detail: "the server offers no sign-in method Warmbly supports: it offers XOAUTH2, and Warmbly signs in with LOGIN, PLAIN or CRAM-MD5"}}, AuthUnavailable},
 		{"timeout both", Input{IMAP: Leg{Reason: models.MailProbeTimeout, Port: 993}, SMTP: Leg{Reason: models.MailProbeTimeout, Port: 587}}, Timeout},
 		{"temporary", Input{IMAP: ok("IMAP"), SMTP: Leg{Reason: models.MailProbeTemporary, Detail: "451 4.3.0 Temporary server error"}}, Temporary},
 		{"auth outranks timeout", Input{MailHost: "other", IMAP: Leg{Reason: models.MailProbeTimeout},

@@ -626,45 +626,16 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) (result *errx
 	}
 	extra := templateContext(account, unsubscribeURL)
 
-	// STEP 10: Render email template with contact variables, then expand any
-	// {a|b|c} spintax per-recipient (only real |-groups; literal braces/CSS are
-	// left intact) so each send varies for deliverability.
-	subject := expandSpintax(RenderTemplateWith(rawSubject, *contact, extra))
-	bodyHTML := expandSpintax(RenderTemplateWith(rawBodyHTML, *contact, extra))
-	bodyPlain := expandSpintax(RenderTemplateWith(rawBodyPlain, *contact, extra))
+	// STEP 10: Pick the copy, then render it with contact variables exactly
+	// once and expand any {a|b|c} spintax per-recipient. Rendering happens after
+	// the variant pick so a contact value is never parsed as template text.
+	subject, bodyHTML, bodyPlain, sxerr := s.selectAndRender(ctx, orgID, campaign.ID, sequence.ID, *contact, extra, threadSubject, rawSubject, rawBodyHTML, rawBodyPlain)
+	if sxerr != nil {
+		return sxerr
+	}
 	// A recorded conversation subject is already rendered: reuse it verbatim.
 	if threadParent != nil && threadParent.SubjectSent && threadSubject != "" {
 		subject = threadSubject
-	}
-
-	// If no plain text provided, extract from HTML
-	if bodyPlain == "" && bodyHTML != "" {
-		bodyPlain = ExtractPlainTextFromHTML(bodyHTML)
-	}
-
-	if s.advanced != nil {
-		selection, sxerr := s.advanced.SelectVariant(ctx, orgID, campaign.ID, contact.ID, sequence.ID, subject, bodyHTML, bodyPlain)
-		if sxerr != nil {
-			return sxerr
-		}
-		if selection != nil {
-			// A chosen variant is stored template text, so it goes through the
-			// same render as the step's own copy; the control arm comes back
-			// already rendered, for which this pass is a no-op.
-			//
-			// A threading step is the exception: its subject belongs to the
-			// conversation, not to the arm, so variants on a follow-up vary
-			// the body only.
-			if threadSubject == "" {
-				subject = expandSpintax(RenderTemplateWith(selection.Subject, *contact, extra))
-			}
-			bodyHTML = expandSpintax(RenderTemplateWith(selection.BodyHTML, *contact, extra))
-			bodyPlain = expandSpintax(RenderTemplateWith(selection.BodyPlain, *contact, extra))
-			// A variant may carry HTML only; keep the plain-text alternative.
-			if bodyPlain == "" && bodyHTML != "" {
-				bodyPlain = ExtractPlainTextFromHTML(bodyHTML)
-			}
-		}
 	}
 
 	// STEP 10.5: Resolve per-recipient AI variables (AI blocks in the body that
@@ -1884,4 +1855,41 @@ func (s *tasksService) keepChainAfterFailure(rawTaskID string, handedOff bool) {
 	if err := s.createCampaignTask(ctx, campaignID, accountID, time.Now().Add(config.CampaignTickRetrySeconds*time.Second)); err != nil {
 		log.Warn().Err(err).Str("campaign_id", campaignID.String()).Msg("could not schedule the campaign's next pass after a failed one")
 	}
+}
+
+// variantSelector is the slice of advanced.Service the send path uses to pick copy.
+type variantSelector interface {
+	SelectVariant(ctx context.Context, organizationID, campaignID, contactID, sequenceID uuid.UUID, subject, bodyHTML, bodyPlain string) (*models.VariantSelection, *errx.Error)
+}
+
+// selectAndRender picks the step's copy or an A/B variant from template text, then renders it once.
+func (s *tasksService) selectAndRender(ctx context.Context, orgID, campaignID, sequenceID uuid.UUID, contact models.Contact, extra TemplateContext, threadSubject, rawSubject, rawBodyHTML, rawBodyPlain string) (string, string, string, *errx.Error) {
+	var picker variantSelector
+	if s.advanced != nil {
+		picker = s.advanced
+	}
+	return selectAndRender(ctx, picker, orgID, campaignID, sequenceID, contact, extra, threadSubject, rawSubject, rawBodyHTML, rawBodyPlain)
+}
+
+func selectAndRender(ctx context.Context, picker variantSelector, orgID, campaignID, sequenceID uuid.UUID, contact models.Contact, extra TemplateContext, threadSubject, rawSubject, rawBodyHTML, rawBodyPlain string) (string, string, string, *errx.Error) {
+	if picker != nil {
+		selection, xerr := picker.SelectVariant(ctx, orgID, campaignID, contact.ID, sequenceID, rawSubject, rawBodyHTML, rawBodyPlain)
+		if xerr != nil {
+			return "", "", "", xerr
+		}
+		if selection != nil {
+			// A threading step's subject belongs to the conversation, so variants vary the body only.
+			if threadSubject == "" {
+				rawSubject = selection.Subject
+			}
+			rawBodyHTML, rawBodyPlain = selection.BodyHTML, selection.BodyPlain
+		}
+	}
+	subject := expandSpintax(RenderTemplateWith(rawSubject, contact, extra))
+	bodyHTML := expandSpintax(RenderHTMLTemplateWith(rawBodyHTML, contact, extra))
+	bodyPlain := expandSpintax(RenderTemplateWith(rawBodyPlain, contact, extra))
+	if bodyPlain == "" && bodyHTML != "" {
+		bodyPlain = ExtractPlainTextFromHTML(bodyHTML)
+	}
+	return subject, bodyHTML, bodyPlain, nil
 }

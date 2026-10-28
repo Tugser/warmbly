@@ -26,7 +26,7 @@ import type { AppError } from "@/lib/api/client/normalizeError";
 import buildError from "@/lib/helper/buildError";
 import useTypewriter from "./useTypewriter";
 import formatUsage from "./usage";
-import AgentMark from "@/components/app/agent/AgentMark";
+import AIBusyStatus, { AI_PILL_CLASS } from "./AIBusyStatus";
 
 export interface AIDraftController {
     phase: "idle" | "busy" | "review" | "question";
@@ -37,6 +37,9 @@ export interface AIDraftController {
     question: string | null;
     // What the last draft was grounded in, when the endpoint reports it.
     grounding: AIDraftGrounding | null;
+    // Set while a streamed draft is arriving; stop keeps what has arrived.
+    streaming?: boolean;
+    stop?: () => void;
     start: (instruction?: string) => void;
     keep: () => void;
     discard: () => void;
@@ -208,21 +211,8 @@ export default function AIDraftBar({
         () => (busyLabels?.length ? busyLabels : ["Writing…"]),
         [busyLabels],
     );
-    const [stage, setStage] = React.useState(0);
     const [adjustOpen, setAdjustOpen] = React.useState(false);
     const [instruction, setInstruction] = React.useState("");
-
-    React.useEffect(() => {
-        if (ctrl.phase !== "busy") {
-            setStage(0);
-            return;
-        }
-        const t = setInterval(
-            () => setStage((s) => Math.min(s + 1, labels.length - 1)),
-            1500,
-        );
-        return () => clearInterval(t);
-    }, [ctrl.phase, labels.length]);
 
     React.useEffect(() => {
         if (ctrl.phase !== "review") {
@@ -255,29 +245,13 @@ export default function AIDraftBar({
                         animate={{ opacity: 1, y: 0, scale: 1 }}
                         exit={{ opacity: 0, y: 6, scale: 0.97 }}
                         transition={{ type: "spring", stiffness: 480, damping: 34 }}
-                        className="pointer-events-auto h-8 pl-3 pr-1.5 rounded-full border border-slate-200 bg-white/95 backdrop-blur shadow-[0_8px_24px_-8px_rgba(15,23,42,0.25)] flex items-center gap-2"
+                        className={`pointer-events-auto ${AI_PILL_CLASS}`}
                     >
-                        <AgentMark variant="bare" size={14} state="thinking" />
-                        <AnimatePresence mode="wait" initial={false}>
-                            <motion.span
-                                key={stage}
-                                initial={{ opacity: 0, y: 3 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                exit={{ opacity: 0, y: -3 }}
-                                transition={{ duration: 0.15 }}
-                                className="ai-shimmer-text text-[12px] font-medium"
-                            >
-                                {labels[stage]}
-                            </motion.span>
-                        </AnimatePresence>
-                        <button
-                            type="button"
-                            onClick={ctrl.cancel}
-                            aria-label="Cancel draft"
-                            className="size-6 rounded-full inline-flex items-center justify-center text-slate-400 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-                        >
-                            <XIcon className="w-3.5 h-3.5" />
-                        </button>
+                        <AIBusyStatus
+                            labels={labels}
+                            onCancel={ctrl.cancel}
+                            onStop={ctrl.streaming ? ctrl.stop : undefined}
+                        />
                     </motion.div>
                 )}
                 {ctrl.phase === "question" && (

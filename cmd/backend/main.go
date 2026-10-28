@@ -55,6 +55,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/creditwatch"
 	"github.com/warmbly/warmbly/internal/app/crm"
 	"github.com/warmbly/warmbly/internal/app/crmmode"
+	"github.com/warmbly/warmbly/internal/app/customhost"
 	"github.com/warmbly/warmbly/internal/app/dailythrottle"
 	"github.com/warmbly/warmbly/internal/app/dangerzone"
 	"github.com/warmbly/warmbly/internal/app/delegation"
@@ -77,6 +78,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/instanceconfig"
 	"github.com/warmbly/warmbly/internal/app/instancesettings"
 	"github.com/warmbly/warmbly/internal/app/integration"
+	"github.com/warmbly/warmbly/internal/app/keystatus"
 	"github.com/warmbly/warmbly/internal/app/leadsync"
 	"github.com/warmbly/warmbly/internal/app/mailboxavatar"
 	"github.com/warmbly/warmbly/internal/app/mailboximport"
@@ -92,9 +94,11 @@ import (
 	"github.com/warmbly/warmbly/internal/app/organization"
 	orgrisk "github.com/warmbly/warmbly/internal/app/orgrisk"
 	"github.com/warmbly/warmbly/internal/app/orgtransfer"
+	"github.com/warmbly/warmbly/internal/app/owndomain"
 	"github.com/warmbly/warmbly/internal/app/passkey"
 	"github.com/warmbly/warmbly/internal/app/pipedrive"
 	"github.com/warmbly/warmbly/internal/app/placement"
+	"github.com/warmbly/warmbly/internal/app/planoffer"
 	"github.com/warmbly/warmbly/internal/app/poollink"
 	"github.com/warmbly/warmbly/internal/app/ratelimit"
 	"github.com/warmbly/warmbly/internal/app/referral"
@@ -222,6 +226,7 @@ func main() {
 	var fleetNodeRepo repository.FleetNodeRepository
 	var fleetSettingsRepo repository.FleetSettingsRepository
 	var fleetNodeService *fleetnode.Service
+	var keyStatusDB keystatus.DB
 	var tasksService tasks.TasksService
 	var advancedService advanced.Service
 	var unsubSigner *unsublink.Signer
@@ -263,6 +268,9 @@ func main() {
 	var discountService discount.DiscountService
 	var referralService referral.Service
 	var organizationService organization.OrganizationService
+	// Private plan offers and the credential-free Cloud warmup grant; selfExecutionGrants is shared with the pool link.
+	var planOfferService planoffer.Service
+	var selfExecutionGrants repository.SelfExecutionGrantRepository
 
 	// Email send & templates
 	var templateService template.TemplateService
@@ -342,6 +350,7 @@ func main() {
 	var typeSafeClient *typesafe.Client
 	var unsubscribeLinkRepository repository.UnsubscribeLinkRepository
 	var customDomainRepository repository.CustomDomainRepository
+	var customHosts *customhost.Checker
 	// instanceSettings and the health registry are built after the handler
 	// dependencies, so the pool is hoisted out of the connection block.
 	var instanceSettings instancesettings.Service
@@ -496,6 +505,9 @@ func main() {
 			log.Println("Database migrations completed")
 		}
 		primaryDB, err := db.NewWithDirect(ctx, primaryDBEndpoint, directDBEndpoint)
+		if err == nil {
+			keyStatusDB = primaryDB.Pool
+		}
 		if err != nil {
 			errs.CaptureFatal(err)
 			log.Fatal(err)
@@ -581,12 +593,12 @@ func main() {
 		// when they cannot log in.
 		if perr := mailTransport.Preflight(ctx); perr != nil {
 			log.Printf("Warning: platform mail preflight FAILED (%s): %v", mailTransport.Description, perr)
-			log.Printf("Warning: login codes, password resets and invitations will not be delivered. Set MAIL_TRANSPORT=log to read them from these logs instead.")
+			log.Printf("Warning: login codes, password resets and invitations will not be delivered. Under MAIL_TRANSPORT=log no sign-in or signup waits on an emailed code. Reset and invitation links are not logged outside APP_ENV=dev: copy an invitation link from its row under Settings > Members > Pending invitations, and reset a password with `warmblyctl user reset-password --email <address>`.")
 		} else {
 			log.Printf("Platform mail transport: %s", mailTransport.Description)
 		}
 		if !mailTransport.Delivers {
-			log.Printf("Warning: MAIL_TRANSPORT=log — every platform email, including login codes, is printed here and never delivered. Do not use this on a deployment other people can reach.")
+			log.Printf("Warning: MAIL_TRANSPORT=log: every platform email is printed here and never delivered, so no sign-in or signup waits on an emailed code. Outside APP_ENV=dev every link's query string and fragment, where reset and invitation tokens travel, is replaced with ?[redacted]: copy an invitation link from its row under Settings > Members > Pending invitations, and reset a password with `warmblyctl user reset-password --email <address>`. Do not use this on a deployment other people can reach.")
 		}
 
 		authCfg, err := cfg.LoadAuthConfig(ctx)
@@ -702,6 +714,8 @@ func main() {
 		}
 		unsubscribeLinkRepository = repository.NewUnsubscribeLinkRepository(primaryDB.Pool)
 		customDomainRepository = repository.NewCustomDomainRepository(primaryDB.Pool)
+		// One definition of who owns a custom domain: who may verify it and what it serves.
+		customHosts = customhost.New(customDomainRepository, domainproof.New(authCfg.DomainProofSecret), nil)
 		instanceChecksDB = primaryDB.Pool
 		instanceSettings = instancesettings.NewService(instancesettings.NewStore(primaryDB.Pool))
 		bootstrapInstanceSettings(ctx, instanceSettings)
@@ -870,6 +884,8 @@ func main() {
 		}
 		workerAssignmentService = worker.NewAssignmentService(workerRepository, subscriptionRepository, planRepository)
 		subscriptionService = subscription.NewService(subscriptionRepository, planRepository)
+		selfExecutionGrants = repository.NewSelfExecutionGrantRepository(primaryDB.Pool)
+		planOfferService = planoffer.New(repository.NewPlanOfferRepository(primaryDB.Pool), selfExecutionGrants, planRepository)
 		// dailyThrottleService needs the cache that's constructed
 		// earlier in main; instantiate up here so org create can use it.
 		if dailyThrottleService == nil {
@@ -1196,6 +1212,8 @@ func main() {
 		fleetNodeRepo = repository.NewFleetNodeRepository(primaryDB)
 		fleetSettingsRepo = repository.NewFleetSettingsRepository(primaryDB)
 		fleetNodeService = fleetnode.New(fleetNodeRepo, workerRepository, fleetSettingsRepo)
+		// Idle unless a staged rollout was started; every replica may run it.
+		go fleetNodeService.RunRolloutLoop(ctx, 30*time.Second)
 		settingsRegistrar := settings.NewRegistrar(storageBackendRepo)
 		if err := settingsRegistrar.RegisterAll(ctx, []settings.Backend{
 			{Kind: "kms", Provider: kms.Name(), Display: kms.Name(), ReadOnly: true},
@@ -1260,7 +1278,9 @@ func main() {
 		})
 		updatesService.Start(ctx)
 
-		eventsPublisher := events.NewPublisher(bus, s3, codecImpl, cipherService)
+		// Warmup for a mailbox a linked instance runs is queued for that instance instead of a worker.
+		eventsPublisher := poollink.NewSelfExecutionPublisher(events.NewPublisher(bus, s3, codecImpl, cipherService),
+			repository.NewPoolLinkRepository(primaryDB.Pool, primaryDB.ConnectSession), cipherService)
 
 		// apiCfg.Hostname is the bind address, not a reachable base. Building
 		// the mailbox-connect redirect_uri from it sends the provider
@@ -1309,6 +1329,9 @@ func main() {
 		if aware, ok := emailService.(email.LifecycleAware); ok {
 			aware.WireLifecycle(repository.NewSendLifecycleRepository(primaryDB))
 		}
+		if aware, ok := emailService.(email.CustomHostsAware); ok {
+			aware.WireCustomHosts(customHosts)
+		}
 		analyticsRepository := repository.NewAnalyticsRepository(primaryDB)
 		emailAccountErrorRepository := repository.NewEmailAccountErrorRepository(primaryDB)
 		// A successful mailbox reconnect resolves the credential errors it fixed.
@@ -1338,9 +1361,24 @@ func main() {
 		if w, ok := poolLinkService.(interface{ WireCampaigns(poollink.CampaignUsage) }); ok {
 			w.WireCampaigns(campaignRepostory)
 		}
+		if w, ok := poolLinkService.(interface {
+			WireSelfExecution(poollink.SelfExecutionDeps)
+		}); ok && selfExecutionGrants != nil {
+			deps := poollink.SelfExecutionDeps{Grants: selfExecutionGrants, Cipher: cipherService, Jobs: poollink.NewJobPublisher(bus, codecImpl), Workers: eventsPublisher}
+			if r, ok := emailRepostory.(poollink.CredentialRestorer); ok {
+				deps.Restorer = r
+			}
+			if opsNotifier != nil {
+				deps.Notifier = opsNotifier
+			}
+			w.WireSelfExecution(deps)
+		}
 		cloudLinkRepository := repository.NewCloudLinkRepository(primaryDB.Pool, credEncrypter, primaryDB.ConnectSession)
 		emailService.WireCloudLink(cloudLinkRepository)
 		cloudLinkService = cloudlink.NewService(cloudLinkRepository, emailRepostory, emailService)
+		if w, ok := cloudLinkService.(cloudlink.ExecutionWirer); ok {
+			w.WireExecution(repository.NewCloudLinkExecRepository(primaryDB.Pool))
+		}
 		cloudLinkService.OnStandingChange(func(ctx context.Context, change models.CloudLinkStandingChange) {
 			state, cloudUnknown, err := warmupRepository.GetKnownHealthState(ctx, change.EmailAccountID)
 			// A missing Cloud report is no verdict; only a real hold beside it moves the band.
@@ -1409,8 +1447,12 @@ func main() {
 		formService.SetLinks(repository.NewFormLinkRepository(primaryDB))
 		formService.SetEvents(formEventRepository)
 		formService.SetDomains(organizationRepoForHandler)
+		// One definition of the workspace's own domains, the only destinations a form or domain redirect may send a visitor to.
+		ownDomains := owndomain.New(emailRepostory, organizationRepoForHandler)
+		formService.SetOwnDomains(ownDomains)
 		go jobs.NewFormEventsRetentionJob(formEventRepository).WireRetention(instanceSettings).Start(ctx, 12*time.Hour)
-		go jobs.NewFormsDomainSweep(organizationRepoForHandler).Start(ctx, time.Hour)
+		formService.SetCustomHosts(customHosts)
+		go jobs.NewFormsDomainSweep(organizationRepoForHandler, customHosts).Start(ctx, time.Hour)
 		go jobs.NewContactMailHostSweep(contactRepoForHandler, cache, streamingPublisher).Start(ctx)
 		// A visibly bad import is filed on the workspace's posture. On its own
 		// it can only reach `watch`, which changes nothing.
@@ -1425,6 +1467,8 @@ func main() {
 		leadSyncServiceForHandler = leadsync.NewService(leadSyncRepository, integrationServiceForHandler, contactService)
 
 		apiKeyService = apikey.NewService(cache, apiKeyRepository)
+		// A password change or reset can also end the user's app grants and the API keys they created.
+		authService.WireCredentialRevokers(oauthService, apiKeyService)
 		// `warmbly auth login`: the browser approval mints an ordinary API key
 		// through the service above, so it has to be built after it.
 		cliAuthService = cliauth.NewService(repository.NewCLIAuthRepository(primaryDB.Pool), apiKeyService, organizationService, userService, organizationRepository)
@@ -1514,6 +1558,9 @@ func main() {
 		// The wizard's audience-versus-pool estimate counts segment members.
 		if aware, ok := campaignService.(campaign.SegmentAware); ok {
 			aware.WireSegments(segmentService)
+		}
+		if aware, ok := campaignService.(campaign.CustomHostsAware); ok {
+			aware.WireCustomHosts(customHosts)
 		}
 		// Delete drops attachment objects and duplicate copies them, so the
 		// campaign service needs the store the attachment handler writes to.
@@ -1806,6 +1853,11 @@ func main() {
 			advancedService.WireBounceJudge(typeSafeClient)
 		}
 		emailSender := tasks.NewEmailSender(emailRepostory, eventsPublisher)
+		if x, ok := poolLinkService.(tasks.SelfExecution); ok {
+			if w, ok := emailSender.(interface{ WireSelfExecution(tasks.SelfExecution) }); ok {
+				w.WireSelfExecution(x)
+			}
+		}
 		if aware, ok := emailSender.(interface {
 			WireSendAdmission(repository.OutboundAdmissionRepository)
 		}); ok {
@@ -1924,6 +1976,8 @@ func main() {
 		// Sending domains: tracking host per domain and the bare-domain redirect.
 		sendingDomainService = sendingdomain.NewService(repository.NewDomainRedirectRepository(primaryDB), emailRepostory, nil, domainProver)
 		sendingDomainService.WireAuditor(auditService)
+		sendingDomainService.WireOwnDomains(ownDomains)
+		sendingDomainService.WireCustomHosts(customHosts)
 		// A linked self-hosted instance can have Warmbly Cloud serve a redirect instead.
 		sendingDomainService.WireCloud(cloudLinkService)
 		cloudLinkService.OnDisconnect(sendingDomainService.MarkCloudUnlinked)
@@ -1984,6 +2038,18 @@ func main() {
 			WireScheduler(poollink.WarmupScheduler)
 		}); ok {
 			w.WireScheduler(tasksService)
+		}
+		if w, ok := poolLinkService.(interface {
+			WireOutboundValidator(poollink.OutboundValidator)
+		}); ok {
+			if v, ok := tasksService.(poollink.OutboundValidator); ok {
+				w.WireOutboundValidator(v)
+			}
+		}
+		// Linked-instance commands nobody answered in time, and the placement audit of the mailboxes those instances run.
+		if j, ok := poolLinkService.(poollink.SelfExecutionService); ok {
+			go jobrun.Loop(ctx, "pool_link_command_expiry", time.Minute, true, j.SweepSelfExecution)
+			go jobrun.Loop(ctx, "pool_link_reporter_trust", time.Hour, false, j.AuditReporterTrust)
 		}
 		// Stops Cloud warmup on mailboxes of links revoked before revocation stopped it; a no-op once complete.
 		if j, ok := poolLinkService.(interface{ StopDetachedWarmup(context.Context) error }); ok {
@@ -2457,6 +2523,7 @@ func main() {
 		StripeService:       stripeService,
 		DiscountService:     discountService,
 		ReferralService:     referralService,
+		PlanOfferService:    planOfferService,
 
 		// Trial & feature gates
 		TrialService:            trialService,
@@ -2563,6 +2630,7 @@ func main() {
 		InboxTagRepo:           inboxTagRepository,
 		UnsubscribeTickets:     unsubscribeLinkRepository,
 		CustomDomains:          customDomainRepository,
+		CustomHosts:            customHosts,
 		WebsiteTrackingService: websiteTrackingService,
 		UserRepo:               userRepoForHandler,
 		OrgRepo:                organizationRepoForHandler,
@@ -2572,6 +2640,7 @@ func main() {
 		FleetNodeRepo:          fleetNodeRepo,
 		FleetSettingsRepo:      fleetSettingsRepo,
 		FleetNodes:             fleetNodeService,
+		KeyStatusDB:            keyStatusDB,
 
 		// Danger zone
 		DangerZoneService:  dangerZoneService,

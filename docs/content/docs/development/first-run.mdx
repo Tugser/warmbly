@@ -32,7 +32,7 @@ Both print a single-use link when they finish. `make claim`, or `warmblyctl setu
 
 Open it, pick a password, and you are the owner and platform admin of the instance.
 
-If no link is in the logs yet, `make claim` mints a fresh one instead of printing nothing, which retires any outstanding link.
+The backend log carries the link only when `APP_ENV` is `dev` (the compose default from a clone). Anywhere else it carries a line naming `warmblyctl setup-link` instead, so a log shipped to a collector never holds a way in. If no link is in the logs, `make claim` mints a fresh one instead of printing nothing, which retires any outstanding link.
 
 The link is derived from `APP_URL`, so outside compose set `APP_URL` before the first boot or the printed link points at the hosted service instead of at your deployment. Only the hash of the token is stored, so reading the database does not yield a working link, and it is invalidated the moment it is used.
 
@@ -42,7 +42,7 @@ Opening the dashboard without a token also works: while the instance is unclaime
 
 Four things make a claim link disappear, and all four have the same answer:
 
-- the logs rotated, or the container was recreated
+- the logs rotated, the container was recreated, or `APP_ENV` is not `dev`, so the log never carried it
 - 24 hours passed
 - Redis was flushed or restarted without persistence
 - you are on Kubernetes or a bare binary and never saw a compose log at all
@@ -210,6 +210,8 @@ Loads the showcase workspace: mailboxes, campaigns, contacts and two weeks of hi
 
 <Callout type="warn" title="The demo seed plants a published super-admin credential">
 `make seed-demo` runs with `SEED_FULL=true`, which also inserts `admin@warmbly.local` with the password `Test1234!`, **every platform admin permission**, and a full-access API key whose secret is a constant in this repository. All three values are public. Never run it on an instance anyone else can reach, and if you already did, delete that account and revoke the key before you expose the instance.
+
+The seeder runs only when `APP_ENV` is `dev`, `development` or `local`. An unset `APP_ENV` or `prod` refuses before anything is written, so an instance configured for production cannot be seeded.
 </Callout>
 
 Seeding also spends the first-launch exemption, so a seeded instance never issues a claim link again. That is fine when you seeded on purpose; it is the surprise described in [if the instance already has accounts](#if-the-instance-already-has-accounts) when you did not.

@@ -16,7 +16,7 @@ import type { AppError } from "@/lib/api/client/normalizeError";
 import buildError from "@/lib/helper/buildError";
 import { cn } from "@/lib/utils";
 import { DEFAULT_TRACKING_LABEL, labelProblem, vendorForwards } from "@/components/app/emails/import/domainChoiceRules";
-import { commonWebsite, noDnsControl, redirectTargetProblem, trackingHostProblem, trackingState, vendorCanCname } from "./rules";
+import { OWN_DOMAIN_HINT, commonWebsite, noDnsControl, redirectTargetProblem, trackingHostProblem, trackingState, vendorCanCname } from "./rules";
 import { Chip } from "./parts";
 import { PerDomainList, type DomainOverride, type PerDomainRow } from "./PerDomainList";
 import { ServedByPicker } from "./RedirectServing";
@@ -346,6 +346,7 @@ function Dialog({
                             >
                                 <TextInput value={url} onChange={setUrl} placeholder="https://yourcompany.com" invalid={!!up && url.trim() !== ""} className="w-full" />
                                 {up && url.trim() !== "" && <p className="text-[11px] text-rose-700">{up}</p>}
+                                <p className="text-[11px] text-slate-500 leading-relaxed">{OWN_DOMAIN_HINT}</p>
                                 {cloud.choosable && (
                                     <ServedByPicker value={server} onChange={setServedPick} onConnect={() => setConnecting(true)} cloud={cloud} />
                                 )}

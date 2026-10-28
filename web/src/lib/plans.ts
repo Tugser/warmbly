@@ -8,8 +8,10 @@
 // "Warmup" is the $15 pool plan: the premium pool, with no mailbox cap, and
 // nothing else, bought from the mailboxes page or a linked instance rather
 // than from the plans grid. Its pitch lives in WARMUP_PLAN_* below.
+// "Partnership" carries the Warmup plan's entitlements at a partner price and
+// is sold only to a workspace Warmbly has offered it to.
 
-export type PlanID = "free" | "warmup" | "starter" | "grow" | "business" | "enterprise";
+export type PlanID = "free" | "warmup" | "partnership" | "starter" | "grow" | "business" | "enterprise";
 
 export const TEST_PLAN_ID = "00000000-0000-0000-0000-0000000000e1";
 
@@ -57,6 +59,17 @@ export const PLAN_CATALOG: Record<PlanID, PlanDef> = {
         priceAnnual: 12,
         sendsPerDay: 0,
         bullets: ["Better deliverability", "Reputation protected", "Every mailbox, no cap"],
+        accent: "sky",
+        isolatedSending: false,
+    },
+    partnership: {
+        id: "partnership",
+        label: "Partnership",
+        description: "The Warmup plan for partners: the premium warmup pool and no mailbox cap, offered by Warmbly.",
+        priceMonthly: 90,
+        priceAnnual: null,
+        sendsPerDay: 0,
+        bullets: ["Premium warmup pool", "Every mailbox, no cap", "Offered by Warmbly"],
         accent: "sky",
         isolatedSending: false,
     },
@@ -120,6 +133,13 @@ export const PLAN_CATALOG: Record<PlanID, PlanDef> = {
 
 // The Warmup plan's server id (models.WarmupPlanID); matched by id so a renamed plan stays warmup-only.
 export const WARMUP_PLAN_ID = "00000000-0000-0000-0000-000000000002";
+// The Partnership plan's server id (models.PartnershipPlanID); warming only, like the Warmup plan.
+export const PARTNERSHIP_PLAN_ID = "00000000-0000-0000-0000-000000000003";
+
+/** Plans that pay for warming only; the server refuses sending to them like a free workspace. */
+export function isWarmupOnlyPlan(id: PlanID): boolean {
+    return id === "warmup" || id === "partnership";
+}
 
 export const PAID_PLANS: PlanID[] = ["starter", "grow", "business", "enterprise"];
 
@@ -148,6 +168,8 @@ export const WARMUP_PLAN_BENEFITS: { title: string; body: string }[] = [
 ];
 
 export function planOrder(id: PlanID): number {
+    // Partnership sits with Warmup: both warm only, so neither reaches a sending tier.
+    if (id === "partnership") return 1;
     return (["free", "warmup", "starter", "grow", "business", "enterprise"] as PlanID[]).indexOf(id);
 }
 

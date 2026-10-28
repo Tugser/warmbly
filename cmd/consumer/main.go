@@ -37,6 +37,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/notification"
 	"github.com/warmbly/warmbly/internal/app/opsnotify"
 	"github.com/warmbly/warmbly/internal/app/pipedrive"
+	"github.com/warmbly/warmbly/internal/app/poollink"
 	"github.com/warmbly/warmbly/internal/app/replyclassify"
 	"github.com/warmbly/warmbly/internal/app/salesforce"
 	warmupapp "github.com/warmbly/warmbly/internal/app/warmup"
@@ -65,6 +66,7 @@ import (
 	"github.com/warmbly/warmbly/internal/pkg/nodeagent"
 	"github.com/warmbly/warmbly/internal/pkg/typesafe"
 	"github.com/warmbly/warmbly/internal/repository"
+	"github.com/warmbly/warmbly/internal/tasks"
 )
 
 func main() {
@@ -487,7 +489,9 @@ func main() {
 		advancedService.WireBounceJudge(typeSafeClient)
 	}
 
-	eventsPublisher := events.NewPublisher(consumerBus, s3Client, consumerCodec, cipherService)
+	// Warmup actions for a mailbox a linked instance runs are queued for that instance instead of a worker.
+	eventsPublisher := poollink.NewSelfExecutionPublisher(events.NewPublisher(consumerBus, s3Client, consumerCodec, cipherService),
+		repository.NewPoolLinkRepository(primaryDB.Pool, primaryDB.ConnectSession), cipherService)
 
 	// Every consumer loop records to scheduled_job_runs, so the admin panel
 	// lists it next to the backend's and can ask it to run now.
@@ -523,6 +527,21 @@ func main() {
 	}
 	advancedService.WireInboxTags(inboxTagRepo)
 
+	cloudLinkC := cloudlink.NewService(repository.NewCloudLinkRepository(primaryDB.Pool, credEncrypter, primaryDB.ConnectSession), emailRepo, nil)
+	// Runs Cloud's warmup for mailboxes whose only credential stays on this instance.
+	outboundAdmission, _ := taskRepo.(repository.OutboundAdmissionRepository)
+	cloudExec := cloudlink.NewExecution(cloudLinkC, cloudlink.ExecutionDeps{
+		Repo:      repository.NewCloudLinkExecRepository(primaryDB.Pool),
+		Publisher: eventsPublisher,
+		Admission: outboundAdmission,
+		Liveness:  tasks.NewWorkerLiveness(workerRepo, redisCache.Client),
+		Cipher:    cipherService,
+	})
+	var cloudExecution jobs.CloudExecution
+	if cloudExec != nil {
+		cloudExecution = cloudExec
+	}
+
 	jobsService := &jobs.JobsService{
 		Bus:                         consumerBus,
 		Codec:                       consumerCodec,
@@ -536,7 +555,8 @@ func main() {
 		EmailAccountErrorRepository: emailAccountErrorRepo,
 		WarmupRepo:                  warmupRepo,
 		PoolLinkRepo:                repository.NewPoolLinkRepository(primaryDB.Pool, primaryDB.ConnectSession),
-		CloudLink:                   cloudlink.NewService(repository.NewCloudLinkRepository(primaryDB.Pool, credEncrypter, primaryDB.ConnectSession), emailRepo, nil),
+		CloudLink:                   cloudLinkC,
+		CloudExec:                   cloudExecution,
 		WarmupContentRepo:           repository.NewWarmupContentRepository(primaryDB.Pool),
 		WarmupEngagementRepo:        repository.NewWarmupEngagementRepository(primaryDB.Pool),
 		WarmupRecoveryRepo:          repository.NewWarmupRecoveryRepository(primaryDB.Pool),
@@ -619,6 +639,7 @@ func main() {
 	go jobsService.StartCloudStandingSync(ctx, 5*time.Minute)
 	// Mirrors the warmup settings Warmbly Cloud owns, so edits made there show here.
 	go jobsService.StartCloudSettingsSync(ctx, 15*time.Minute)
+	go cloudExec.Run(ctx)
 
 	// Start dead worker detection (every 5 minutes)
 	go jobsService.StartDeadWorkerDetection(ctx, 5*time.Minute)
@@ -627,8 +648,8 @@ func main() {
 	// result never came back, so a lead is never held in flight forever.
 	go jobsService.StartStuckSendReclaimer(ctx, 5*time.Minute)
 
-	if mailboxCredentials.SealsForOrganizations() {
-		// Moves credentials stored under the instance key onto workspace keys.
+	if mailboxCredentials.Reseals() {
+		// Moves credentials onto workspace keys, or seals legacy plaintext OAuth tokens under the instance key.
 		go jobsService.StartMailboxCredentialReseal(ctx)
 	}
 

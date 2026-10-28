@@ -5,7 +5,8 @@
 
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { onEvent, startRealtime, stopRealtime } from "./socket";
+import { toast } from "sonner";
+import { getRefusal, onEvent, onStatusChange, refusalMessage, startRealtime, stopRealtime } from "./socket";
 import { pushEvent } from "./eventsStore";
 
 // At most one invalidation per group per window; the feed itself is
@@ -88,8 +89,15 @@ export default function RealtimeManager() {
                 }
             }
         });
+        // A refused join stops the socket for good; say why once.
+        const unwatch = onStatusChange((next) => {
+            if (next !== "refused") return;
+            const message = refusalMessage(getRefusal());
+            if (message) toast.error(message, { id: "realtime-refused", duration: 15_000 });
+        });
         return () => {
             unsubscribe();
+            unwatch();
             stopRealtime();
         };
     }, [queryClient]);

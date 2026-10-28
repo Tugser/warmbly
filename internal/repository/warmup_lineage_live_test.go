@@ -181,12 +181,19 @@ func TestLiveLineageQueueRevisionsRejectStaleAcknowledgements(t *testing.T) {
 	if ok, err := r.ClaimWarmupTask(ctx, f.task, later.Add(time.Second)); err != nil || ok {
 		t.Fatal("duplicate callback claimed active task")
 	}
+	if _, err := f.pool.Exec(ctx, `INSERT INTO warmup_tokens(token,task_id,sender_account_id,recipient_account_id)VALUES(gen_random_uuid(),$1,$2,$3)`, f.task, f.sender, f.recipient); err != nil {
+		t.Fatal(err)
+	}
 	if err := r.ReleaseUnpublishedWarmupTask(ctx, f.task, later.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	var status string
 	if err := f.pool.QueryRow(ctx, `SELECT status FROM tasks WHERE id=$1`, f.task).Scan(&status); err != nil || status != "pending" {
 		t.Fatal("unpublished task was lost")
+	}
+	var tokens int
+	if err := f.pool.QueryRow(ctx, `SELECT COUNT(*) FROM warmup_tokens WHERE task_id=$1`, f.task).Scan(&tokens); err != nil || tokens != 0 {
+		t.Fatalf("released task kept %d unsent tokens, which count against the recipient's day", tokens)
 	}
 }
 

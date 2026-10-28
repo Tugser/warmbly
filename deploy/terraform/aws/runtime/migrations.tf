@@ -77,6 +77,7 @@ resource "aws_ecs_task_definition" "migration" {
       }
     }
   }])
+  tags       = { "warmbly-image-variant" = var.services["backend"].image_variant }
   depends_on = [aws_iam_role_policy.migration_execution]
 }
 
@@ -133,4 +134,32 @@ resource "aws_ecs_task_definition" "realtime_database_check" {
 
 output "realtime_database_check_task_definition" {
   value = aws_ecs_task_definition.realtime_database_check.arn
+}
+
+# warmblyctl with the backend's configuration, for the commands a deploy or rotation runs.
+resource "aws_ecs_task_definition" "ops" {
+  skip_destroy             = true
+  family                   = "${var.name}-ops"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = aws_iam_role.execution["backend"].arn
+  task_role_arn            = aws_iam_role.application["backend"].arn
+  runtime_platform {
+    cpu_architecture        = "ARM64"
+    operating_system_family = "LINUX"
+  }
+  container_definitions = jsonencode([merge({
+    for key, value in local.service_containers["backend"] : key => value if !contains(["portMappings", "healthCheck"], key)
+    }, {
+    name       = "ops"
+    entryPoint = ["warmblyctl"]
+    command    = ["status"]
+  })])
+  tags = { "warmbly-image-variant" = var.services["backend"].image_variant }
+}
+
+output "ops_task_definition" {
+  value = aws_ecs_task_definition.ops.arn
 }

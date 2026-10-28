@@ -108,6 +108,17 @@ Execution must have been unresolved for at least two minutes, so a normal in-fli
 
 The PATCH atomically queues an immutable audited result; it does **not** immediately clear the hold. The consumer checks recorded results every 15 seconds and applies the normal success/failure accounting transaction exactly once. Admission stays closed until that transaction commits. If another unknown task remains, the hold moves to that task instead of reopening the mailbox. A later contradictory provider outcome produces a conflict hold rather than rewriting the earlier accounting.
 
+### From the admin panel
+
+**Sends > Holds** in the [admin panel](/development/admin-panel/) lists every held mailbox across the instance, switched-on ones first, with the held send's recipients, Message-ID when the worker recorded one, and when it was reserved. That is what to look for in the mailbox's Sent folder. The unknown hold every send takes while it runs is not listed until it is ten minutes old.
+
+**Resolve** records the verdict through the same resolution path as the mailbox PATCH, so every rule above still applies:
+
+- an unknown hold takes **It went out** (with the Message-ID of the sent copy) or **It did not go out**
+- an authentication, permanent or conflict hold takes a provider confirmation, with the held send as its evidence. Reconnecting the mailbox remains the normal way to clear a sign-in hold
+
+Each verdict needs a one-line note saying where it was checked, and is written to the admin audit log. The button is offered only when the hold can be resolved. Otherwise the row says why: the mailbox is switched off, the send is still running or finished under two minutes ago, a verdict is already queued, the worker's own result is being applied, other unknown sends are queued behind it, or the mailbox changed provider. Reading the tab needs `view_campaigns`; resolving needs `stop_campaigns`, the same bit as a dead-letter replay.
+
 ### Campaign placement and result reporting
 
 Campaign routing, placement, day plans and estimates share durable mailbox send admission. Recovery-held or currently cooling mailboxes contribute no immediately available capacity and do not trap a lead when another healthy sender is available. Plans identify send recovery and provider cooldown separately. When the entire pool is unavailable, the campaign defers with a bounded recheck rather than completing or repeatedly dispatching refused sends. An admission read failure also closes the affected mailbox for that pass.

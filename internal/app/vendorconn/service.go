@@ -572,8 +572,8 @@ func (s *Service) reconnectOne(ctx context.Context, cand repository.VendorReconn
 		return
 	}
 	creds := &models.SmtpImap{
-		SMTP: &models.Service{Host: stored.SMTPHost, Port: stored.SMTPPort, Username: stored.SMTPUser, Password: smtpPw, Security: stored.SMTPSecurity},
-		IMAP: &models.Service{Host: stored.IMAPHost, Port: stored.IMAPPort, Username: stored.IMAPUser, Password: imapPw, Security: stored.IMAPSecurity},
+		SMTP: &models.Service{Host: stored.SMTPHost, Port: stored.SMTPPort, Username: stored.SMTPUser, Password: smtpPw, Security: stored.SMTPSecurity, TLSUnverified: stored.SMTPTLSUnverified, TLSPin: stored.SMTPTLSPin},
+		IMAP: &models.Service{Host: stored.IMAPHost, Port: stored.IMAPPort, Username: stored.IMAPUser, Password: imapPw, Security: stored.IMAPSecurity, TLSUnverified: stored.IMAPTLSUnverified, TLSPin: stored.IMAPTLSPin},
 	}
 	orgID := cand.OrgID
 	if _, xerr := s.reconnect.UpdateSMTPIMAPCredentials(ctx, &orgID, cand.AccountID, creds); xerr != nil {

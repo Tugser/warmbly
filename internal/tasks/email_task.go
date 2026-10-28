@@ -187,6 +187,16 @@ func (s *tasksService) HandleEmailTask(task *proto.ProcessTask) *errx.Error {
 		return nil
 	}
 
+	// An instance-executed mailbox waits, rather than ending its chain, while its instance is offline or ungranted.
+	if executed, ready, err := s.selfExecutionReady(ctx, account); err != nil {
+		return errx.InternalError()
+	} else if executed && !ready {
+		if err := lineage.RescheduleWarmupTask(ctx, taskID, time.Now().Add(5*time.Minute)); err != nil {
+			return errx.InternalError()
+		}
+		return nil
+	}
+
 	if s.warmupHealth != nil {
 		canParticipate, err := s.warmupRepo.IsPoolEligible(ctx, account.ID, poolType, true)
 		if err != nil {
@@ -417,10 +427,19 @@ func (s *tasksService) HandleEmailTask(task *proto.ProcessTask) *errx.Error {
 		return errx.InternalError()
 	}
 	dispatch, ok := s.taskRepo.(repository.WarmupDispatchRepository)
-	if !ok || account.WorkerID == nil {
+	if !ok {
 		return errx.InternalError()
 	}
-	nonce, err := dispatch.AuthorizeWarmupDispatch(ctx, taskID, account.ID, *account.WorkerID)
+	dispatchWorker := uuid.Nil
+	if executed, _, err := s.selfExecutionReady(ctx, account); err != nil {
+		return errx.InternalError()
+	} else if !executed {
+		if account.WorkerID == nil {
+			return errx.InternalError()
+		}
+		dispatchWorker = *account.WorkerID
+	}
+	nonce, err := dispatch.AuthorizeWarmupDispatch(ctx, taskID, account.ID, dispatchWorker)
 	if err != nil {
 		return errx.InternalError()
 	}
@@ -659,6 +678,7 @@ func (s *tasksService) selectWarmupPartner(ctx context.Context, account Email) (
 		starvation:      starvation,
 		filterJunk:      filterJunk,
 		arrival:         arrival,
+		warmWhereJunked: account.ConsumerMailbox(),
 	}
 
 	// A pick that fails the gate is dropped and the draw repeats; an emptied
@@ -728,6 +748,10 @@ const (
 	// weight *= 1/(1 + k*rate). Never an exclusion: a sender that stops mailing
 	// a host cannot discover it recovered there.
 	hostPlacementPenaltyK = 4.0
+	// weight *= 1 + k*rate at Google, Microsoft and Yahoo for a free Gmail or
+	// Outlook.com sender: its mail is rescued at the recovery rate, so warming
+	// where it is junked is what repairs its standing there.
+	junkedHostBoostK = 1.0
 	// Below this many verified deliveries a host's rate is noise, not a pattern.
 	hostPlacementMinDelivered = 5
 	hostPlacementWindow       = 7 * 24 * time.Hour
@@ -760,6 +784,8 @@ type partnerSignals struct {
 	// arrival is the share of the pool's mail to a candidate that verifiably
 	// arrived; absent below the sample or when nothing was lost.
 	arrival map[uuid.UUID]float64
+	// warmWhereJunked turns the major-provider host penalty into a boost.
+	warmWhereJunked bool
 }
 
 // arrivalWeight draws a recipient in proportion to the chance the mail
@@ -800,6 +826,9 @@ func (sig partnerSignals) hostPenalty(partnerID uuid.UUID) float64 {
 	stat, ok := sig.placementByHost[host]
 	if !ok || stat.Delivered < hostPlacementMinDelivered {
 		return 1.0
+	}
+	if sig.warmWhereJunked && models.WarmupRecipientGroup(host, "") != models.WarmupRecipientOther {
+		return 1.0 + junkedHostBoostK*stat.Rate()
 	}
 	return 1.0 / (1.0 + hostPlacementPenaltyK*stat.Rate())
 }
@@ -1340,10 +1369,27 @@ func (s *tasksService) directedWarmupPartner(ctx context.Context, taskID uuid.UU
 	if xerr != nil || partner == nil {
 		return nil
 	}
+	// Two instance-executed mailboxes never pair, in either direction.
+	if executed, _, err := s.selfExecutionReady(ctx, account); err != nil {
+		return nil
+	} else if executed {
+		if partnerExecuted, _, err := s.selfExecutionReady(ctx, partner); err != nil || partnerExecuted {
+			return nil
+		}
+	}
 	// An exclusion is about who this mailbox may mail, so it holds for a reply
 	// too; the thread exists because the other side started it (#501).
 	if rules := s.warmupRoutingRules(ctx, account, poolType); len(rules) > 0 {
 		if routingMultiplier(rules, account.Email, partner.Email) <= 0 {
+			return nil
+		}
+	}
+	// A reply holds the mailbox's only warmup task, so one to a full inbox ends the thread rather than waiting on the reservation's refusal.
+	if room, ok := s.warmupRepo.(interface {
+		WarmupInboxHasRoom(context.Context, uuid.UUID, string) (bool, error)
+	}); ok {
+		if has, err := room.WarmupInboxHasRoom(ctx, partner.ID, poolType); err == nil && !has {
+			log.Info().Str("task_id", taskID.String()).Str("email_account_id", account.ID.String()).Msg("warmup reply closed: the recipient's inbox is full today")
 			return nil
 		}
 	}

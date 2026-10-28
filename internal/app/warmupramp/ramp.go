@@ -11,6 +11,11 @@ const (
 	// campaign, so warmup does not stack on production sending pressure.
 	ActiveCampaignCap = 5
 
+	// BoostedReplyRate is the least chance a pool partner answers warmup mail
+	// from a recovering or campaign-backing sender, so the estimate and the
+	// consumer quote one number.
+	BoostedReplyRate = 60
+
 	// SoftThrottleMultiplier is the cut applied while a placement is fresh.
 	// The bands cannot do this: each needs a sample floor a new mailbox has
 	// not reached (20 warmup sends in 7 days, 100 delivered in 30).

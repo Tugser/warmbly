@@ -56,9 +56,10 @@ export function permittedSource(source: MonitoringSource, mask: number | undefin
 
 const ATTENTION = new Set<MonitoringCondition>(["recent_failure", "persistent_failure", "recovery_unverified", "safety_hold", "backlog", "stale_telemetry"]);
 
+// A live consumer always trails the head a little, so a broker queue count is a measurement, never an attention signal.
 export function needsMonitoringAttention(metric: MonitoringMetric): boolean {
-    return metric.availability !== "unavailable" && typeof metric.count === "number" && metric.count > 0 &&
-        (ATTENTION.has(metric.condition) || metric.severity === "warning" || metric.severity === "error" || isBrokerQueue(metric));
+    return metric.availability !== "unavailable" && typeof metric.count === "number" && metric.count > 0 && !isBrokerQueue(metric) &&
+        (ATTENTION.has(metric.condition) || metric.severity === "warning" || metric.severity === "error");
 }
 
 export function isBrokerQueue(metric: MonitoringMetric): boolean {
@@ -72,7 +73,7 @@ export function monitoringAttentionCount(sources: MonitoringSource[]): number {
 export function investigationPath(path: string | undefined, mask: number | undefined): string | null {
     if (!path) return null;
     let required: number | undefined;
-    if (/^\/sends\?tab=(in-flight|failures|dead-letters)$/.test(path)) required = AdminPerm.ViewCampaigns;
+    if (/^\/sends\?tab=(in-flight|failures|dead-letters|holds)$/.test(path)) required = AdminPerm.ViewCampaigns;
     else if (path === "/sends?tab=webhooks") required = AdminPerm.ViewCampaigns | AdminPerm.ViewOrganizations;
     else if (/^\/(sync|mailboxes)(\?state=(throttled|backfilling|stalled|pending|complete))?$/.test(path)) required = AdminPerm.ViewUsers;
     else if (/^\/(workers|fleet)(\/[0-9a-f-]{36})?$/.test(path)) required = AdminPerm.ViewWorkers;

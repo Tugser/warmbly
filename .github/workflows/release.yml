@@ -54,6 +54,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 
@@ -68,6 +70,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -91,6 +94,13 @@ jobs:
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      # The production deploy refuses a digest this workflow did not attest.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}
+          subject-digest: ${{ steps.build.outputs.digest }}
 
   # Frontends (web dashboard, admin panel): the pnpm build runs once on the
   # build platform and its static output is served from nginx, so a single
@@ -247,6 +257,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     steps:
       - name: Download digests
         uses: actions/download-artifact@v4
@@ -274,6 +286,20 @@ jobs:
             -t ${{ env.IMAGE_PREFIX }}/${{ matrix.target.service }}:v${{ needs.validate-tag.outputs.major }}${{ matrix.target.suffix }} \
             -t ${{ env.IMAGE_PREFIX }}/${{ matrix.target.service }}:prod${{ matrix.target.suffix }} \
             $(printf '${{ env.IMAGE_PREFIX }}/${{ matrix.target.service }}@sha256:%s ' *)
+
+      - name: Read the manifest digest
+        id: manifest
+        run: |
+          digest=$(docker buildx imagetools inspect \
+            "${{ env.IMAGE_PREFIX }}/${{ matrix.target.service }}:${{ github.ref_name }}${{ matrix.target.suffix }}" \
+            --format '{{json .Manifest}}' | jq -r .digest)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE_PREFIX }}/${{ matrix.target.service }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
 
   # The `warmbly` CLI is a plain static binary, so it cross-compiles for every
   # platform on one runner.
@@ -371,6 +397,11 @@ jobs:
           ./scripts/check-images-public.sh --prefix "$IMAGE_PREFIX" --tag "$TAG" \
             backend consumer worker forms updater web admin tracking realtime \
             | grep -E '^[a-z]+[[:space:]]+sha256:' > /tmp/digests.tsv
+          # The Kafka builds the hosted deploy and its fleet run, keyed <svc>-kafka.
+          ./scripts/check-images-public.sh --prefix "$IMAGE_PREFIX" --tag "$TAG-kafka" \
+            backend consumer worker tracking \
+            | grep -E '^[a-z]+[[:space:]]+sha256:' \
+            | sed -E 's/^([a-z]+)/\1-kafka/' > /tmp/digests-kafka.tsv
           {
             printf '{\n'
             printf '  "tag": "%s",\n' "$TAG"
@@ -381,7 +412,7 @@ jobs:
               [ "$first" = 1 ] || printf ',\n'
               first=0
               printf '    "%s": "%s"' "$svc" "$digest"
-            done < /tmp/digests.tsv
+            done < <(cat /tmp/digests.tsv /tmp/digests-kafka.tsv)
             printf '\n  }\n}\n'
           } > /tmp/images.json
           cat /tmp/images.json
@@ -389,6 +420,8 @@ jobs:
           # and the installer would silently skip whatever is missing.
           [ "$(wc -l < /tmp/digests.tsv)" -eq 9 ] || {
             echo "::error::expected 9 image digests, got $(wc -l < /tmp/digests.tsv)"; exit 1; }
+          [ "$(wc -l < /tmp/digests-kafka.tsv)" -eq 4 ] || {
+            echo "::error::expected 4 Kafka image digests, got $(wc -l < /tmp/digests-kafka.tsv)"; exit 1; }
 
       - name: Generate release notes
         env:
@@ -451,9 +484,7 @@ jobs:
           | Updater | `${{ env.IMAGE_PREFIX }}/updater:${{ github.ref_name }}` |
           | CLI | `${{ env.IMAGE_PREFIX }}/cli:${{ github.ref_name }}` |
 
-          ## Deployment
-
-          This release will be automatically deployed to production.
+          The `-kafka` entries are the same release built for a Kafka event bus.
           EOF
           } > /tmp/release-body.md
 
@@ -504,6 +535,22 @@ jobs:
             /tmp/cli/*
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+  # A stable tag on main deploys itself once the repository opts in with the
+  # AWS_DEPLOY_ENABLED variable; setting it to anything else is the kill switch.
+  deploy-production:
+    name: Deploy to production
+    needs: create-release
+    if: ${{ !contains(github.ref_name, '-') && vars.AWS_DEPLOY_ENABLED == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+    uses: ./.github/workflows/deploy-aws.yml
+    with:
+      tag: ${{ github.ref_name }}
+      mode: deploy
+    secrets: inherit
 
   pages-targets:
     name: Configure Pages release deployments

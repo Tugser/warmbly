@@ -171,6 +171,8 @@ A new token pair, same shape as the login confirm success response (`access_toke
 
 Every refresh rotates the pair: store the new refresh token and discard the old one. A refresh token that has already been exchanged is refused with `401`. If it is presented again more than two minutes after it was exchanged, it has been used twice, so the whole session is ended and every token issued to it stops working. Inside those two minutes it is treated as two callers refreshing at once and only that request is refused.
 
+A session lasts at most 180 days from the sign-in that created it, however often it is refreshed. Past that point `POST /auth/refresh` answers `401` and its access tokens stop working, and no token a refresh issues expires later than the session itself. Sign in again to start a new one.
+
 ### Start password reset
 
 `POST /auth/reset-password`
@@ -191,11 +193,11 @@ Auth: public (not available to API keys).
 
 `200 OK` with an empty body.
 
-### Confirm password reset
+### Open a reset session
 
-`POST /auth/reset-password/confirm`
+`POST /auth/reset-password/session`
 
-Sets a new password using the emailed reset code (carried inside the signed `session` token). A reset token is single-use and bound to the password it was requested against: once the password is written by any path (this endpoint, the signed-in change, or an operator reset), every reset token issued before that write answers `401` however long its own expiry has left.
+Exchanges the token from the emailed reset link for a short-lived reset session, so the confirm step carries nothing in a URL. The link token is sent in the body and is not spent: only the confirm step spends it. A client should drop the link token from the address bar once it has the session.
 
 Auth: public (not available to API keys).
 
@@ -203,8 +205,34 @@ Auth: public (not available to API keys).
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `session` | string | yes | The reset session token tied to the email. |
+| `token` | string | yes | The `session` value from the emailed reset link, carried in its fragment (`#session=`); a link from older mail carries it in the query. |
+
+#### Response
+
+```json
+{
+  "session": "q3Vh2c...",
+  "expires_at": "2026-10-23T12:15:00Z"
+}
+```
+
+The session lasts 15 minutes, or until the link expires if that is sooner. An expired, used or superseded link answers `401`.
+
+### Confirm password reset
+
+`POST /auth/reset-password/confirm`
+
+Sets a new password. A reset link is single-use and bound to the password it was requested against: once the password is written by any path (this endpoint, the signed-in change, or an operator reset), every link issued before that write answers `401` however long its own expiry has left. Every session the account holds ends before the new password is stored.
+
+Auth: public (not available to API keys).
+
+#### Request body
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `session` | string | yes | The session from [Open a reset session](#open-a-reset-session). The link token itself is still accepted, for clients that predate that step. |
 | `password` | string | yes | The new password. |
+| `revoke_api_credentials` | boolean | no | Also revoke every app you authorized (OAuth grants and their `wmat_` tokens) and every API key you created, in all your workspaces. Defaults to `false`. |
 | `turnstile` | string | yes, unless `app_attest` is sent | Cloudflare Turnstile token. |
 | `app_attest` | object | no | The native app's [App Attest proof](#app-attest-native-apps), sent instead of `turnstile`. |
 
@@ -439,7 +467,7 @@ Auth: Session only (not available to API keys).
   "first_name": "Alex",
   "last_name": "Rivera",
   "email": "alex@acme.com",
-  "avatar_url": "https://warmbly-assets.s3.amazonaws.com/avatars/users/9c2a-...jpg",
+  "avatar_url": "https://api.warmbly.com/public/avatars/users/9c2a-...jpg",
   "roles": ["b1e4..."],
   "referral_source": "google",
   "onboarding_completed_at": "2026-05-01T10:00:00Z",
@@ -517,7 +545,7 @@ Auth: Session only (not available to API keys).
 
 ```json
 {
-  "avatar_url": "https://warmbly-assets.s3.amazonaws.com/avatars/users/9c2a-1718193600.jpg"
+  "avatar_url": "https://api.warmbly.com/public/avatars/users/9c2a-1718193600.jpg"
 }
 ```
 
@@ -533,7 +561,7 @@ Auth: Session only (not available to API keys).
 
 `POST /auth/me/password`
 
-Updates the signed-in user's password. Every session the account holds is ended, the one making the request included, and the response is the token pair of a new session for the calling device. Tokens issued before the change are refused after it, so the client must replace its stored pair with the one returned. Returns `200 OK`.
+Updates the signed-in user's password. Every other session the account holds is ended before the new password is stored, and if that fails the password is left unchanged. The session making the request ends with the change too, and the response is the token pair of a new session for the calling device. Tokens issued before the change are refused after it, so the client must replace its stored pair with the one returned. Returns `200 OK`.
 
 If the new password was stored but the device could not be issued a new session, the response is `409` with code `password_changed_sign_in_again`. The old tokens are not valid in that case either: discard them and sign in with the new password.
 
@@ -545,6 +573,7 @@ Auth: Session only (not available to API keys).
 |-------|------|----------|-------------|
 | `current_password` | string | yes | The existing password. |
 | `new_password` | string | yes | The new password. |
+| `revoke_api_credentials` | boolean | no | Also revoke every app you authorized (OAuth grants and their `wmat_` tokens) and every API key you created, in all your workspaces, including keys made by `warmbly auth login`. Defaults to `false`. |
 
 ```json
 {
@@ -1562,7 +1591,7 @@ Auth: Session only (not available to API keys). Requires a selected organization
 #### Response
 
 ```json
-{ "avatar_url": "https://warmbly-assets.s3.amazonaws.com/avatars/organizations/3d11-1718193600.jpg" }
+{ "avatar_url": "https://api.warmbly.com/public/avatars/organizations/3d11-1718193600.jpg" }
 ```
 
 ### Remove organization avatar
@@ -2020,6 +2049,60 @@ Auth: Session only (not available to API keys). **Org permission** `manage_billi
 }
 ```
 
+The price must belong to a public plan, or to a private plan the workspace holds an open offer for. Any other price answers `403` with code `plan_offer_required`, and a price that is no plan on the instance answers `400`.
+
+### List offered plans
+
+`GET /subscription/offers`
+
+Lists the private plans Warmbly has offered this workspace and that are still open. See [plans offered to a workspace](/guides/billing/#plans-offered-to-a-workspace).
+
+Auth: Session only (not available to API keys). Requires a selected organization.
+
+#### Response
+
+```json
+{
+  "offers": [
+    {
+      "plan_id": "00000000-0000-0000-0000-000000000003",
+      "name": "Partnership",
+      "currency": "usd",
+      "monthly_usd": 90,
+      "monthly_available": true,
+      "yearly_available": false,
+      "available": true,
+      "warmup_only": true,
+      "expires_at": null
+    }
+  ]
+}
+```
+
+`available` is false while the instance bills nothing or the plan has no Stripe price for either period. `yearly_usd` is present only when a yearly price is set.
+
+### Check out an offered plan
+
+`POST /subscription/offers/:planId/checkout`
+
+Buys an offered plan. The Stripe price is resolved on the server from the plan, never taken from the request.
+
+Auth: Session only (not available to API keys). **Org permission** `manage_billing`, and a recent sign-in.
+
+#### Request body
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `interval` | string | no | `month` (default) or `year`. |
+
+#### Response
+
+```json
+{ "checkout_url": "https://checkout.stripe.com/c/pay/cs_test_..." }
+```
+
+A workspace with an active Stripe subscription is switched to the plan on that subscription instead, prorated, and the answer is `{ "changed": true }`. Without an open offer the answer is `403` `plan_offer_required`; a period the plan has no price for is `503`.
+
 ### Validate a discount code
 
 `POST /subscription/discount/validate`
@@ -2125,6 +2208,8 @@ Auth: Session only (not available to API keys). **Org permission** `manage_billi
   "interval": "year"
 }
 ```
+
+The target must be a public plan, or a private plan the workspace holds an open offer for; otherwise the answer is `403` `plan_offer_required`.
 
 #### Response
 

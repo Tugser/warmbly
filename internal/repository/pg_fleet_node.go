@@ -38,6 +38,11 @@ type FleetNodeRepository interface {
 	SetNotes(ctx context.Context, id uuid.UUID, notes string) error
 	// SetPinnedVersion holds one node at a version, or clears the pin with "".
 	SetPinnedVersion(ctx context.Context, id uuid.UUID, version string) error
+
+	// SetCredentialHash stores the hash of the node's own credential; only join writes it.
+	SetCredentialHash(ctx context.Context, id uuid.UUID, hash string) error
+	// CredentialHash returns the stored hash, "" for an unknown node or one that holds none.
+	CredentialHash(ctx context.Context, id uuid.UUID) (string, error)
 }
 
 type fleetNodeRepository struct {
@@ -56,7 +61,7 @@ const fleetNodeSelect = `
 	       n.active, n.last_seen_at, n.enrolled_at,
 	       n.cpu_percent, n.memory_mb, n.goroutines, n.uptime_seconds,
 	       n.cpu_scope, n.memory_scope, n.memory_used_mb, n.memory_limit_mb, n.resident_mb,
-	       n.last_error, n.created_at, n.updated_at,
+	       n.last_error, n.update_failed, n.env_revision, n.created_at, n.updated_at,
 	       w.account_count
 	  FROM fleet_nodes n
 	  LEFT JOIN workers w ON w.id = n.id`
@@ -69,7 +74,7 @@ func scanFleetNode(row pgx.Row) (*models.FleetNode, error) {
 		&n.Active, &n.LastSeenAt, &n.EnrolledAt,
 		&n.Usage.CPUPercent, &n.Usage.MemoryMB, &n.Usage.Goroutines, &n.Usage.UptimeSeconds,
 		&n.Usage.CPUScope, &n.Usage.MemoryScope, &n.Usage.MemoryUsedMB, &n.Usage.MemoryLimitMB, &n.Usage.ResidentMB,
-		&n.LastError, &n.CreatedAt, &n.UpdatedAt,
+		&n.LastError, &n.UpdateFailed, &n.EnvRevision, &n.CreatedAt, &n.UpdatedAt,
 		&n.MailboxCount,
 	)
 	if err != nil {
@@ -88,8 +93,9 @@ func (r *fleetNodeRepository) UpsertOnHeartbeat(ctx context.Context, beat models
 		INSERT INTO fleet_nodes (
 			id, role, name, region, address, capacity_target, version, active, last_seen_at,
 			cpu_percent, memory_mb, goroutines, uptime_seconds, last_error,
-			cpu_scope, memory_scope, memory_used_mb, memory_limit_mb, resident_mb, warmup_send_protocol
-		) VALUES ($1, $2, $3, $4, $5, COALESCE(NULLIF($6, 0), 100), $7, TRUE, now(), $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+			cpu_scope, memory_scope, memory_used_mb, memory_limit_mb, resident_mb, warmup_send_protocol,
+			update_failed, env_revision
+		) VALUES ($1, $2, $3, $4, $5, COALESCE(NULLIF($6, 0), 100), $7, TRUE, now(), $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 		ON CONFLICT (id) DO UPDATE SET
 			-- Role is NOT updated. A node that re-registers under a different
 			-- role would keep its workers row and the mailboxes assigned to
@@ -114,6 +120,9 @@ func (r *fleetNodeRepository) UpsertOnHeartbeat(ctx context.Context, beat models
 			resident_mb    = EXCLUDED.resident_mb,
 			warmup_send_protocol = EXCLUDED.warmup_send_protocol,
 			last_error   = EXCLUDED.last_error,
+			update_failed = EXCLUDED.update_failed,
+			-- An updater that does not report one keeps the last revision it did.
+			env_revision = CASE WHEN EXCLUDED.env_revision <> '' THEN EXCLUDED.env_revision ELSE fleet_nodes.env_revision END,
 			updated_at   = now()
 	`
 	_, err := r.db.Exec(ctx, q,
@@ -122,6 +131,7 @@ func (r *fleetNodeRepository) UpsertOnHeartbeat(ctx context.Context, beat models
 		beat.LastError,
 		beat.Usage.CPUScope, beat.Usage.MemoryScope, beat.Usage.MemoryUsedMB, beat.Usage.MemoryLimitMB, beat.Usage.ResidentMB,
 		beat.WarmupSendProtocol,
+		beat.UpdateFailed, beat.EnvRevision,
 	)
 	return err
 }
@@ -200,4 +210,19 @@ func (r *fleetNodeRepository) SetPinnedVersion(ctx context.Context, id uuid.UUID
 	_, err := r.db.Exec(ctx,
 		`UPDATE fleet_nodes SET pinned_version = $2, updated_at = now() WHERE id = $1`, id, version)
 	return err
+}
+
+func (r *fleetNodeRepository) SetCredentialHash(ctx context.Context, id uuid.UUID, hash string) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE fleet_nodes SET credential_hash = $2, updated_at = now() WHERE id = $1`, id, hash)
+	return err
+}
+
+func (r *fleetNodeRepository) CredentialHash(ctx context.Context, id uuid.UUID) (string, error) {
+	var hash string
+	err := r.db.QueryRow(ctx, `SELECT credential_hash FROM fleet_nodes WHERE id = $1`, id).Scan(&hash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return hash, err
 }

@@ -56,6 +56,13 @@ defmodule Realtime.Application do
       "Rate limits: message=#{Application.get_env(:realtime, :rate_limit_ws_message, 120)}/min, connect=#{Application.get_env(:realtime, :rate_limit_ws_connect, 30)}/min, join=#{Application.get_env(:realtime, :rate_limit_ws_join, 30)}/min, event=#{Application.get_env(:realtime, :rate_limit_ws_event, 60)}/min"
     )
 
+    if Application.get_env(:realtime, :allow_query_credentials, false) do
+      Logger.warning(
+        "REALTIME_ALLOW_QUERY_CREDENTIALS=true: API keys and OAuth tokens are accepted in the socket URL, " <>
+          "where proxies and access logs record them. Unset it once every client sends the x-warmbly-token header."
+      )
+    end
+
     Supervisor.start_link(children, opts)
   end
 

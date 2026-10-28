@@ -1276,9 +1276,9 @@ SMTP_SECURITY=$SMTP_SECURITY
 MAILEOF
     else
         cat <<MAILEOF
-# log: password resets, login codes and invitations are PRINTED TO THE
-# BACKEND LOG instead of being sent. Fine for a trial, not for a team.
-#   docker compose -p warmbly logs backend | grep -i code
+# log: platform mail is written to the backend log instead of being sent.
+# No sign-in or signup waits on an emailed code, and reset and invitation
+# links there are withheld. Fine for a trial, not for a team.
 # Switch to a relay by setting MAIL_TRANSPORT=smtp and the SMTP_* values.
 MAIL_TRANSPORT=log
 EMAIL_ADDRESS=noreply@$HOSTNAME_ANSWER
@@ -2234,7 +2234,7 @@ wiz_entry() {
     say ""
     _mdef=1; [ "$MAIL_MODE" = "smtp" ] && _mdef=2
     choose "$_mdef" \
-        "Skip it for now|Codes and reset links go to the backend log. Not for a team." \
+        "Skip it for now|Codes go to the backend log, links do not. Not for a team." \
         "An SMTP relay|Postmark, SES, Resend, or your own server."
     if [ "$CHOICE" = 2 ]; then
         MAIL_MODE=smtp
@@ -2492,13 +2492,18 @@ pull_failed() {
               "Releases: https://github.com/$REPO/releases"
 }
 
+# pull_in_dir runs in a subshell so the cd never leaks; the directory is never part of a shell string.
+pull_in_dir() (
+    cd "$DIR" && composec pull
+)
+
 # pull_images shows one row per image, flipping to a tick the moment that image
 # lands. The pull itself runs in the background, so this is compose's own
 # parallel pull with a readable face on it rather than a serial one.
 pull_images() {
     _refs=$(cd "$DIR" && composec config --images 2>/dev/null | sort -u)
     if [ -z "$_refs" ]; then
-        spin "Pulling images" sh -c "cd '$DIR' && $COMPOSE pull" || pull_failed
+        spin "Pulling images" pull_in_dir || pull_failed
         return 0
     fi
     _total=$(printf '%s\n' "$_refs" | wc -l | tr -d ' ')
@@ -2761,9 +2766,8 @@ finale() {
     if [ "$MAIL_MODE" = "log" ]; then
         say ""
         out "  ${AMBER}!${R} ${B}Platform mail goes to the log${R}"
-        note "Password resets, login codes and invitations are printed, not sent."
-        note "From $DIR:"
-        note "  docker compose -p warmbly logs backend | grep -i code"
+        note "No sign-in waits on an emailed code."
+        note "Reset and invitation links are withheld."
         note "Set MAIL_TRANSPORT=smtp in .env before anyone else uses this instance."
     fi
 

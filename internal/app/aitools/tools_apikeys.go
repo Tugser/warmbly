@@ -31,6 +31,7 @@ func (d Deps) registerAPIKeyTools(r *Registry) {
 
 	r.Register(Tool{
 		Name:        "create_api_key",
+		FreshAuth:   true,
 		Description: "Create a new API key with a scope preset. The secret is returned once and cannot be retrieved again. Requires user approval.",
 		InputSchema: objectSchema(map[string]any{
 			"name":        strProp("A label for the key (required)."),
@@ -46,6 +47,7 @@ func (d Deps) registerAPIKeyTools(r *Registry) {
 
 	r.Register(Tool{
 		Name:        "update_api_key",
+		FreshAuth:   true,
 		Description: "Update an API key's name or description.",
 		InputSchema: objectSchema(map[string]any{
 			"key_id":      strProp("The key's UUID."),

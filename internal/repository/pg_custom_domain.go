@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -11,6 +12,8 @@ import (
 // verified? Read-only by construction; nothing here mints or changes a domain.
 type CustomDomainRepository interface {
 	IsVerified(ctx context.Context, host string) (bool, error)
+	// Owners are the organizations holding host verified as a tracking, forms or instance-served redirect domain.
+	Owners(ctx context.Context, host string) ([]uuid.UUID, error)
 }
 
 type customDomainRepository struct {
@@ -56,4 +59,37 @@ func (r *customDomainRepository) IsVerified(ctx context.Context, host string) (b
 		return false, err
 	}
 	return ok, nil
+}
+
+// Owners lists the organizations that hold host verified under any custom-domain kind.
+func (r *customDomainRepository) Owners(ctx context.Context, host string) ([]uuid.UUID, error) {
+	if host == "" {
+		return nil, nil
+	}
+	rows, err := r.db.Query(ctx, `
+		SELECT organization_id FROM email_accounts
+		WHERE tracking_domain = $1 AND tracking_domain_verified AND organization_id IS NOT NULL
+		UNION
+		SELECT organization_id FROM campaigns
+		WHERE tracking_domain = $1 AND tracking_domain_verified AND organization_id IS NOT NULL
+		UNION
+		SELECT id FROM organizations
+		WHERE forms_domain = $1 AND forms_domain_verified
+		UNION
+		SELECT organization_id FROM domain_redirects
+		WHERE verified AND served_by = 'instance' AND (domain = $1 OR (include_www AND 'www.' || domain = $1))
+	`, host)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }

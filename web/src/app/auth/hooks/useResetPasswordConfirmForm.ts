@@ -7,20 +7,46 @@ import { usePasswordStrength } from "@/hooks/usePasswordStrength";
 import toast from "react-hot-toast/headless";
 import type { AppError } from "@/lib/api/client/normalizeError";
 import buildError from "@/lib/helper/buildError";
+import resetPasswordSession from "@/lib/api/client/auth/resetPasswordSession";
+import { resetLinkToken } from "@/lib/resetLinkToken";
 
 export function useResetPasswordConfirmForm() {
-    // The emailed link is /auth/reset-password/confirm?session=<jwt>. This
-    // read a path param named "token" against a route with no path
-    // segments, and then validated it as 128 hex characters, which a JWT
-    // can never be, so the page always rendered "Link expired" and never
-    // called the API.
-    const [params] = useSearchParams();
+    // The link token is exchanged for a reset session held in memory, and cleared from the address bar.
+    const [params, setParams] = useSearchParams();
     const navigate = useNavigate();
     const resetConfirm = useResetPasswordConfirm();
     const { evaluate } = usePasswordStrength();
 
-    const session = params.get("session") ?? "";
-    const isValidToken = session.length > 0;
+    const [linkToken] = useState(() => resetLinkToken(window.location.hash, params));
+    const [session, setSession] = useState("");
+    const [linkState, setLinkState] = useState<"checking" | "ready" | "invalid">(linkToken ? "checking" : "invalid");
+    const isValidToken = linkState !== "invalid";
+
+    useEffect(() => {
+        if (!linkToken) return;
+        let cancelled = false;
+        resetPasswordSession(linkToken)
+            .then((r) => {
+                if (cancelled) return;
+                setSession(r.session);
+                setLinkState("ready");
+            })
+            .catch((err: AppError) => {
+                if (cancelled) return;
+                const status = err?.status ?? 0;
+                if (status >= 400 && status < 500 && status !== 404) {
+                    setLinkState("invalid");
+                    return;
+                }
+                // A backend without the exchange still takes the link token itself.
+                setSession(linkToken);
+                setLinkState("ready");
+            });
+        setParams({}, { replace: true });
+        return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [linkToken]);
+
     const [password, setPassword] = useState("");
     const [password2, setPassword2] = useState("");
     const [captcha, setCaptcha] = useState(false);
@@ -42,12 +68,16 @@ export function useResetPasswordConfirmForm() {
                 { loading: "Loading...", success: "Password successfully changed", error: (err: AppError) => buildError(err) }
             );
             navigate({ to: "/auth/login", search: { action: "1" } });
+        } catch (err) {
+            // The link died meanwhile (used, expired, or the password changed): show the request-a-new-one screen.
+            if ((err as AppError)?.code === "reset_link_invalid") setLinkState("invalid");
         } finally { setPending(false); }
     };
 
     const onSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         if (pending) return;
+        if (linkState !== "ready") { toast.error("Still checking your reset link. Try again in a moment."); return; }
         if (password.length < 8) { toast.error("Password must be at least 8 characters long."); return; }
         if (password !== password2) { toast.error("Passwords don't match. Please make sure you type the same password twice."); return; }
         const result = await evaluate(password);

@@ -99,9 +99,21 @@ const HELPERS: Item[] = [
 // links are the per-send link tokens this editor may offer (the recipient's
 // unsubscribe link); only campaign email bodies resolve them at send time, so
 // an AI prompt editor passes none.
-export default function EditorSuggest({ editor, variables = VARIABLES, links = [] }: { editor: Editor; variables?: string[]; links?: string[] }) {
+export default function EditorSuggest({
+    editor,
+    variables = VARIABLES,
+    links = [],
+    forms: offerForms = true,
+}: {
+    editor: Editor;
+    variables?: string[];
+    links?: string[];
+    // Form links only make sense in a body; a subject passes false.
+    forms?: boolean;
+}) {
     const { data: customKeys = [] } = useCustomFieldKeys();
-    const { data: forms = [] } = useForms();
+    const { data: allForms = [] } = useForms();
+    const forms = React.useMemo(() => (offerForms ? allForms : []), [offerForms, allForms]);
     const [trigger, setTrigger] = React.useState<{ from: number; query: string } | null>(null);
     const [active, setActive] = React.useState(0);
 

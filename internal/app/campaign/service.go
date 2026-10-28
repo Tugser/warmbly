@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/warmbly/warmbly/internal/app/customhost"
 	"github.com/warmbly/warmbly/internal/app/dailythrottle"
 	"github.com/warmbly/warmbly/internal/app/feature"
 	"github.com/warmbly/warmbly/internal/errx"
@@ -120,6 +121,7 @@ const (
 )
 
 type campaignService struct {
+	customHosts        *customhost.Checker
 	campaignRepository repository.CampaignRepository
 	taskRepo           repository.TaskRepository
 	emailRepo          repository.EmailRepository
@@ -167,6 +169,14 @@ type SegmentAware interface {
 func (s *campaignService) WireSegments(c SegmentCounter) {
 	s.segments = c
 }
+
+// CustomHostsAware lets main attach the custom-domain ownership checks.
+type CustomHostsAware interface {
+	WireCustomHosts(c *customhost.Checker)
+}
+
+// WireCustomHosts gates a new campaign tracking domain on the workspace's TXT proof.
+func (s *campaignService) WireCustomHosts(c *customhost.Checker) { s.customHosts = c }
 
 // WireAudience attaches the launch-time list gate.
 func (s *campaignService) WireAudience(r repository.CampaignAudienceRepository) {

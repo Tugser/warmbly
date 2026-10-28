@@ -102,9 +102,9 @@ var table = []Entry{
 	},
 	{
 		Key: "WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS", Group: GroupDeployment, RuntimeChangeable: ChangePerRequest,
-		Effect:     "true lets customer webhooks point at http:// and private addresses. Development only.",
+		Effect:     "true lets customer webhooks point at http:// and private addresses. Honoured only on a self-hosted or development instance.",
 		DocsAnchor: docsDeployment,
-		Resolve:    boolOr("WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS", false),
+		Resolve:    func(*Runtime) string { return yesNo(config.UnsafeWebhookURLsAllowed()) },
 	},
 	{
 		Key: "AI_PROVIDER", Group: GroupDeployment, RuntimeChangeable: ChangeBootOnly,
@@ -809,9 +809,15 @@ var table = []Entry{
 	},
 	{
 		Key: "MAIL_TLS_INSECURE", Group: GroupWorkers, RuntimeChangeable: ChangeBootOnly,
-		Effect:     "true disables certificate verification on customer mailbox connections.",
+		Effect:     "true disables certificate verification on customer mailbox connections. Honoured on a self-hosted or development instance; hosted production ignores it, and a mailbox there trusts its server in its own settings, which pins the server's certificate.",
 		DocsAnchor: docsWorkers,
-		Resolve:    boolOr("MAIL_TLS_INSECURE", false),
+		Resolve:    func(*Runtime) string { return yesNo(config.MailTLSInsecureAllowed()) },
+	},
+	{
+		Key: "MAIL_ALLOW_PRIVATE_HOSTS", Group: GroupWorkers, RuntimeChangeable: ChangeBootOnly,
+		Effect:     "false refuses customer mailbox connections to private, loopback and link-local addresses on a self-hosted or development instance. Hosted production always refuses them.",
+		DocsAnchor: docsWorkers,
+		Resolve:    func(*Runtime) string { return yesNo(config.PrivateMailHostsAllowed()) },
 	},
 	{
 		Key: "BOX_GOOGLE_CLIENT_ID", Group: GroupWorkers, RuntimeChangeable: ChangeBootOnly,

@@ -65,7 +65,11 @@ Warmbly sends one invitation per address and reports results as "Invited 2 · 1 
 
 When several trusted dashboards share one backend, invitation emails link back to the dashboard that sent the invitation. Copying an invitation link also keeps that dashboard's hostname. See [multi-dashboard configuration](/development/configuration/#google-sign-in-per-dashboard-deployment).
 
-**Pending invitations** shows the email, role, access, and expiry for each unaccepted invite, with two actions on the right of the row: copy the invite link (to share directly instead of waiting on email) and cancel the invitation. There is no resend button. To give somebody a fresh link, invite the same address again: that replaces the invitation in place with a new token and a reset expiry, and the previously emailed and copied links stop working. Copying the link again also issues a new link, so only the most recently copied link works; the emailed link is unaffected.
+An invitation works for 48 hours. A self-hosted instance can shorten that, but not lengthen it.
+
+**Pending invitations** shows the email, role, access, and expiry for each unaccepted invite, with two actions on the right of the row: copy the invite link (to share directly instead of waiting on email) and cancel the invitation. Copying the link again issues a new link, so only the most recently copied link works; the emailed link is unaffected.
+
+An invitation that ran out stays on the list marked **Expired**, with **Resend** in place of the copy action. Resend invites the same address again with the same roles and access: the invitation gets a new link and a fresh 48 hours, and every earlier link stops working. Inviting the address again from **Invite teammates** does the same thing. The list keeps the 50 most recently expired invitations; cancel one to remove it.
 
 <Callout type="info" title="Roles are not permanent">
 The invite-time role can be changed inline from the roster later, so it is fine to start people narrow and widen access afterward.

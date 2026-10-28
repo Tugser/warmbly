@@ -34,6 +34,24 @@ prepared service allows 120 seconds for Docker shutdown. Preserve the previous
 host for rollback. Static AWS IPs remain stable, but differ from the previous
 provider's addresses, so verify mailbox authentication during the handover.
 
+Once a host's worker is running and heartbeating, hand its updates to the
+fleet so nobody needs to sign in to it again. First make sure the fleet target
+matches what the host runs (`warmblyctl fleet version`), then on the host:
+
+```sh
+curl -fsSL https://<backend>/join.sh | sudo sh -s -- --adopt --env-refresh
+```
+
+`--adopt` keeps the existing `node.env` and worker ID and installs the standard
+unit and the `warmbly-node-update` timer. The host then pulls the version its
+heartbeat names, in the canary waves a release starts, and puts back the
+previous image when an update does not stay up. `--env-refresh` lets it replace
+`node.env` when the control plane's rendering changes, which is how a key
+rotation reaches it; it refuses, naming the keys, when a refresh would drop a
+value only this host holds, so move those into `node.local.env` with
+`--keep-local`. Run `warmblyctl fleet env-status` afterwards: every adopted host
+should report `current`.
+
 Private Valkey access is allowed from the worker security group. Coordinate its
 activation with every control-plane client, and check configured mail ports and
 AWS outbound restrictions before moving work. Do not switch one worker to an

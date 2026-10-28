@@ -35,6 +35,11 @@ type SMTPCredentials struct {
 	IMAPUser     string
 	IMAPPassword string
 	IMAPSecurity string
+	// Owner opt-outs from CA verification and the pinned SPKI SHA-256 for each server.
+	SMTPTLSUnverified bool
+	SMTPTLSPin        string
+	IMAPTLSUnverified bool
+	IMAPTLSPin        string
 }
 
 // OAuthCredentials holds OAuth token credentials
@@ -192,6 +197,8 @@ type EmailRepository interface {
 	DomainsOverview(ctx context.Context, orgID uuid.UUID) ([]models.SendingDomain, *errx.Error)
 	// CountDomainMailboxes is how many of the workspace's mailboxes are on a domain.
 	CountDomainMailboxes(ctx context.Context, orgID uuid.UUID, domain string) (int, *errx.Error)
+	// OwnedDomains are the domains the workspace has a mailbox on and the tracking hosts verified on them.
+	OwnedDomains(ctx context.Context, orgID uuid.UUID) ([]string, *errx.Error)
 	// SetDomainTracking sets one tracking host on every workspace mailbox on a domain.
 	SetDomainTracking(ctx context.Context, orgID uuid.UUID, domain, host string, verified bool, verifiedAt *time.Time) (int, *errx.Error)
 	// SetVendorLink records which vendor account a mailbox came from, for automatic reconnects.
@@ -438,14 +445,18 @@ func (r *emailRepository) ConvertGoogleToAppPassword(ctx context.Context, orgID,
 	return r.convertTx(ctx, query, []any{orgID, accountID, mailHost}, []txStep{
 		{`DELETE FROM email_accounts_oauth WHERE email_account_id = $1`, []any{accountID}},
 		{`INSERT INTO email_accounts_smtp_imap (email_account_id, smtp_host, smtp_port, smtp_user, smtp_password, smtp_security,
-		      imap_host, imap_port, imap_user, imap_password, imap_security)
-		  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		      imap_host, imap_port, imap_user, imap_password, imap_security,
+		      smtp_tls_unverified, smtp_tls_pin, imap_tls_unverified, imap_tls_pin)
+		  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		  ON CONFLICT (email_account_id) DO UPDATE SET smtp_host = EXCLUDED.smtp_host, smtp_port = EXCLUDED.smtp_port,
 		      smtp_user = EXCLUDED.smtp_user, smtp_password = EXCLUDED.smtp_password, smtp_security = EXCLUDED.smtp_security,
 		      imap_host = EXCLUDED.imap_host, imap_port = EXCLUDED.imap_port, imap_user = EXCLUDED.imap_user,
-		      imap_password = EXCLUDED.imap_password, imap_security = EXCLUDED.imap_security`,
+		      imap_password = EXCLUDED.imap_password, imap_security = EXCLUDED.imap_security,
+		      smtp_tls_unverified = EXCLUDED.smtp_tls_unverified, smtp_tls_pin = EXCLUDED.smtp_tls_pin,
+		      imap_tls_unverified = EXCLUDED.imap_tls_unverified, imap_tls_pin = EXCLUDED.imap_tls_pin`,
 			[]any{accountID, sealed[0], creds.SMTP.Port, sealed[1], sealed[2], models.ResolveSMTPSecurity(creds.SMTP.Security, creds.SMTP.Port),
-				sealed[3], creds.IMAP.Port, sealed[4], sealed[5], models.ResolveIMAPSecurity(creds.IMAP.Security, creds.IMAP.Port)}},
+				sealed[3], creds.IMAP.Port, sealed[4], sealed[5], models.ResolveIMAPSecurity(creds.IMAP.Security, creds.IMAP.Port),
+				creds.SMTP.TLSUnverified, creds.SMTP.StoredTLSPin(), creds.IMAP.TLSUnverified, creds.IMAP.StoredTLSPin()}},
 		// The Gmail cursor means nothing to IMAP, and its history is already imported.
 		{`INSERT INTO email_sync_state (email_id, user_id, backfill_status, backfill_completed_at)
 		  SELECT id, user_id, 'complete', now() FROM email_accounts WHERE id = $1
@@ -616,6 +627,34 @@ func (r *emailRepository) CountDomainMailboxes(ctx context.Context, orgID uuid.U
 	return n, nil
 }
 
+func (r *emailRepository) OwnedDomains(ctx context.Context, orgID uuid.UUID) ([]string, *errx.Error) {
+	query := `
+		SELECT lower(split_part(email, '@', 2)) FROM email_accounts
+		WHERE organization_id = $1 AND position('@' in email) > 0
+		UNION
+		SELECT lower(tracking_domain) FROM email_accounts
+		WHERE organization_id = $1 AND tracking_domain <> '' AND tracking_domain_verified`
+	rows, err := r.DB.Query(ctx, query, orgID)
+	if err != nil {
+		db.CaptureError(err, query, nil, "query")
+		return nil, errx.InternalError()
+	}
+	defer rows.Close()
+	out := make([]string, 0)
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			db.CaptureError(err, query, nil, "scan")
+			return nil, errx.InternalError()
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errx.InternalError()
+	}
+	return out, nil
+}
+
 func (r *emailRepository) SetDomainTracking(ctx context.Context, orgID uuid.UUID, domain, host string, verified bool, verifiedAt *time.Time) (int, *errx.Error) {
 	if held, xerr := trackingDomainHeldElsewhere(ctx, r.DB, orgID, host); xerr != nil {
 		return 0, xerr
@@ -754,7 +793,7 @@ type MailboxAssignment struct {
 }
 
 func (r *emailRepository) ListActiveWorkerAccounts(ctx context.Context) ([]MailboxAssignment, error) {
-	const query = `SELECT id, worker_id FROM email_accounts WHERE status = 'active'`
+	query := `SELECT id, worker_id FROM email_accounts WHERE status = 'active' AND NOT ` + instanceExecutedSQL("email_accounts.id")
 	rows, err := r.DB.Query(ctx, query)
 	if err != nil {
 		return nil, err
@@ -858,6 +897,20 @@ func ensureMailboxAbsentTx(ctx context.Context, tx pgx.Tx, orgID *uuid.UUID, ema
 	return nil
 }
 
+// setNewMailboxVolumeTx starts a free Gmail or Outlook.com mailbox at the consumer volume; any other keeps the column defaults.
+func setNewMailboxVolumeTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, mailHost, provider, address string) *errx.Error {
+	if !models.ConsumerMailboxHost(mailHost, provider, address) {
+		return nil
+	}
+	limit, gap, warmupMax := models.NewMailboxVolume(mailHost, provider, address)
+	query := `UPDATE email_accounts SET campaign_limit = $2, min_wait_time = $3, warmup_max = $4 WHERE id = $1`
+	if _, err := tx.Exec(ctx, query, id, limit, gap, warmupMax); err != nil {
+		db.CaptureError(err, query, nil, "exec")
+		return errx.InternalError()
+	}
+	return nil
+}
+
 func (r *emailRepository) NewOauthAccount(ctx context.Context, userID string, data models.NewOauthAccount) (*models.Email, *errx.Error) {
 	if data.Provider == models.InboxProviderSMTPIMAP {
 		errs.CaptureException(errors.New("invalid inbox provider"))
@@ -930,6 +983,9 @@ func (r *emailRepository) NewOauthAccount(ctx context.Context, userID string, da
 		db.CaptureError(err, query, nil, "queryrow")
 		return nil, errx.InternalError()
 	}
+	if xerr := setNewMailboxVolumeTx(ctx, tx, id, data.MailHost, string(data.Provider), data.Email); xerr != nil {
+		return nil, xerr
+	}
 
 	query = `
 		INSERT INTO email_accounts_oauth (email_account_id, access_token, refresh_token, expires_at)
@@ -959,6 +1015,7 @@ func (r *emailRepository) NewOauthAccount(ctx context.Context, userID string, da
 		return nil, errx.InternalError()
 	}
 
+	limit, gap, warmupMax := models.NewMailboxVolume(data.MailHost, string(data.Provider), data.Email)
 	return &models.Email{
 		ID:             id,
 		UserID:         userID,
@@ -979,11 +1036,11 @@ func (r *emailRepository) NewOauthAccount(ctx context.Context, userID string, da
 
 		LastSyncedAt: t,
 
-		CampaignLimit: config.CampaignLimitDefault,
-		MinWaitTime:   config.MinWaitTimeDefault,
+		CampaignLimit: limit,
+		MinWaitTime:   gap,
 
 		WarmupBase:      config.WarmupBaseDefault,
-		WarmupMax:       config.WarmupMaxDefault,
+		WarmupMax:       warmupMax,
 		WarmupIncrease:  config.WarmupIncreaseDefault,
 		WarmupStartTime: "08:00",
 		WarmupEndTime:   "20:00",
@@ -1021,6 +1078,9 @@ func (r *emailRepository) NewManagedAccount(ctx context.Context, userID string, 
 	if _, err := tx.Exec(ctx, query, id, userID, data.OrganizationID, data.Email, data.Name, data.Provider, sigplain, sightml, "", t, "", data.MailHost, models.MailAuthOAuth); err != nil {
 		db.CaptureError(err, query, nil, "exec")
 		return nil, errx.InternalError()
+	}
+	if xerr := setNewMailboxVolumeTx(ctx, tx, id, data.MailHost, string(data.Provider), data.Email); xerr != nil {
+		return nil, xerr
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, errx.InternalError()
@@ -1085,15 +1145,20 @@ func (r *emailRepository) NewSMTPIMAPAccount(ctx context.Context, userID string,
 		db.CaptureError(err, query, nil, "exec")
 		return nil, errx.InternalError()
 	}
+	if xerr := setNewMailboxVolumeTx(ctx, tx, id, data.MailHost, string(models.InboxProviderSMTPIMAP), data.Email); xerr != nil {
+		return nil, xerr
+	}
 
 	query = `
 		INSERT INTO email_accounts_smtp_imap (
 		  email_account_id,
 		  smtp_host, smtp_port, smtp_user, smtp_password, smtp_security,
-		  imap_host, imap_port, imap_user, imap_password, imap_security
+		  imap_host, imap_port, imap_user, imap_password, imap_security,
+		  smtp_tls_unverified, smtp_tls_pin, imap_tls_unverified, imap_tls_pin
 		) VALUES (
 		 $1, $2, $3, $4, $5, $6,
-		 $7, $8, $9, $10, $11)
+		 $7, $8, $9, $10, $11,
+		 $12, $13, $14, $15)
 	`
 
 	params = []any{
@@ -1101,6 +1166,7 @@ func (r *emailRepository) NewSMTPIMAPAccount(ctx context.Context, userID string,
 		models.ResolveSMTPSecurity(data.SMTP.Security, data.SMTP.Port),
 		imaphost, data.IMAP.Port, imapuser, imappass,
 		models.ResolveIMAPSecurity(data.IMAP.Security, data.IMAP.Port),
+		data.SMTP.TLSUnverified, data.SMTP.StoredTLSPin(), data.IMAP.TLSUnverified, data.IMAP.StoredTLSPin(),
 	}
 
 	_, err = tx.Exec(
@@ -1118,6 +1184,7 @@ func (r *emailRepository) NewSMTPIMAPAccount(ctx context.Context, userID string,
 		return nil, errx.InternalError()
 	}
 
+	limit, gap, warmupMax := models.NewMailboxVolume(data.MailHost, string(models.InboxProviderSMTPIMAP), data.Email)
 	return &models.Email{
 		ID:             id,
 		UserID:         userID,
@@ -1138,11 +1205,11 @@ func (r *emailRepository) NewSMTPIMAPAccount(ctx context.Context, userID string,
 
 		LastSyncedAt: t,
 
-		CampaignLimit: config.CampaignLimitDefault,
-		MinWaitTime:   config.MinWaitTimeDefault,
+		CampaignLimit: limit,
+		MinWaitTime:   gap,
 
 		WarmupBase:      config.WarmupBaseDefault,
-		WarmupMax:       config.WarmupMaxDefault,
+		WarmupMax:       warmupMax,
 		WarmupIncrease:  config.WarmupIncreaseDefault,
 		WarmupStartTime: "08:00",
 		WarmupEndTime:   "20:00",
@@ -1861,7 +1928,7 @@ func (r *emailRepository) UpdateTrackingDomain(ctx context.Context, orgID, email
 // anybody pressing anything.
 func (r *emailRepository) ListTrackingDomainCheckDue(ctx context.Context, staleBefore time.Time, limit int) ([]models.TrackingDomainTarget, *errx.Error) {
 	query := `
-		SELECT id, tracking_domain, tracking_domain_verified
+		SELECT id, COALESCE(organization_id, '00000000-0000-0000-0000-000000000000'::uuid), tracking_domain, tracking_domain_verified
 		FROM email_accounts
 		WHERE status = 'active'
 		  AND COALESCE(tracking_domain, '') <> ''
@@ -1881,7 +1948,7 @@ func (r *emailRepository) ListTrackingDomainCheckDue(ctx context.Context, staleB
 	out := []models.TrackingDomainTarget{}
 	for rows.Next() {
 		var t models.TrackingDomainTarget
-		if err := rows.Scan(&t.ID, &t.Domain, &t.Verified); err != nil {
+		if err := rows.Scan(&t.ID, &t.OrganizationID, &t.Domain, &t.Verified); err != nil {
 			db.CaptureError(err, query, params, "scan")
 			return nil, errx.InternalError()
 		}
@@ -2594,7 +2661,8 @@ func (r *emailRepository) GetSMTPCredentials(ctx context.Context, emailAccountID
 	}
 	query := `
 		SELECT ea.organization_id, s.smtp_host, s.smtp_port, s.smtp_user, s.smtp_password, s.smtp_security,
-		       s.imap_host, s.imap_port, s.imap_user, s.imap_password, s.imap_security
+		       s.imap_host, s.imap_port, s.imap_user, s.imap_password, s.imap_security,
+		       s.smtp_tls_unverified, COALESCE(s.smtp_tls_pin, ''), s.imap_tls_unverified, COALESCE(s.imap_tls_pin, '')
 		FROM email_accounts_smtp_imap s
 		JOIN email_accounts ea ON ea.id = s.email_account_id
 		WHERE s.email_account_id = $1
@@ -2605,6 +2673,7 @@ func (r *emailRepository) GetSMTPCredentials(ctx context.Context, emailAccountID
 	err := r.transportQueryRow(ctx, query, emailAccountID).Scan(
 		&orgID, &creds.SMTPHost, &creds.SMTPPort, &creds.SMTPUser, &creds.SMTPPassword, &creds.SMTPSecurity,
 		&creds.IMAPHost, &creds.IMAPPort, &creds.IMAPUser, &creds.IMAPPassword, &creds.IMAPSecurity,
+		&creds.SMTPTLSUnverified, &creds.SMTPTLSPin, &creds.IMAPTLSUnverified, &creds.IMAPTLSPin,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -2736,7 +2805,7 @@ func (r *emailRepository) SetStatus(ctx context.Context, emailAccountID uuid.UUI
 
 // SetWorkerID assigns a worker to an email account
 func (r *emailRepository) SetWorkerID(ctx context.Context, emailAccountID, workerID uuid.UUID) *errx.Error {
-	query := `UPDATE email_accounts SET worker_id = $1, updated_at = NOW() WHERE id = $2`
+	query := `UPDATE email_accounts SET worker_id = $1, updated_at = NOW() WHERE id = $2 AND NOT ` + instanceExecutedSQL("email_accounts.id")
 
 	cmd, err := r.DB.Exec(ctx, query, workerID, emailAccountID)
 	if err != nil {

@@ -16,7 +16,9 @@ defmodule RealtimeWeb.BulkChannel do
 
   require Logger
 
+  alias Realtime.Auth
   alias RealtimeWeb.ChannelGuard
+  alias RealtimeWeb.OrgChannel
 
   @impl true
   def join("bulk:" <> operation_id, _params, socket) do
@@ -51,12 +53,29 @@ defmodule RealtimeWeb.BulkChannel do
 
   @doc false
   # An event with no owner belongs to nobody and is never delivered here.
-  def own_event?(%{"user_id" => user_id}, socket)
+  def own_event?(%{"user_id" => user_id} = event, socket)
       when is_binary(user_id) and user_id != "" do
-    user_id == socket.assigns.user_id
+    user_id == socket.assigns.user_id and credential_reaches?(event, socket)
   end
 
   def own_event?(_event, _socket), do: false
+
+  # An API key or OAuth token sees only its own workspace's operations, within its scopes.
+  defp credential_reaches?(event, socket) do
+    case socket.assigns[:credential] do
+      nil ->
+        true
+
+      %{organization_id: credential_org, permissions: mask} ->
+        org_id = event["org_id"] || event["organization_id"]
+
+        is_binary(org_id) and org_id != "" and
+          Auth.matches_org?(%{organization_id: credential_org}, org_id) and
+          socket
+          |> ChannelGuard.remember_authorization(%{permissions: mask})
+          |> OrgChannel.can_see_event?(event)
+    end
+  end
 
   defp valid_uuid?(id) do
     case UUID.info(id) do

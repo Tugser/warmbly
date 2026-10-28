@@ -948,7 +948,7 @@ func (r *adminRepository) GetWorkerStats(ctx context.Context, workerID uuid.UUID
 func (r *adminRepository) ReassignEmails(ctx context.Context, emailIDs []uuid.UUID, newWorkerID uuid.UUID) error {
 	_, err := r.db.Exec(ctx, `
 		UPDATE email_accounts SET worker_id = $1, updated_at = NOW()
-		WHERE id = ANY($2)
+		WHERE id = ANY($2) AND NOT `+instanceExecutedSQL("email_accounts.id")+`
 	`, newWorkerID, emailIDs)
 	return err
 }

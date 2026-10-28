@@ -93,11 +93,8 @@ func (h *Handler) AppAttestIPRateLimitMiddleware() gin.HandlerFunc {
 		"Too many app verification requests from this address. Try again later.", false)
 }
 
-// AuthIPRateLimitMiddleware throttles the public /auth group per source IP.
-//
-// This is the only limiter those routes have: RateLimitMiddleware keys on the
-// authenticated user id. It bounds password guessing and the 64 MiB Argon2
-// hash each attempt costs on the small VPS most self-hosters run.
+// AuthIPRateLimitMiddleware throttles the public /auth group per source IP,
+// bounding password guessing and the 64 MiB Argon2 hash each attempt costs.
 //
 // Fails open on a cache error, deliberately: a Redis blip must not lock every
 // user out of their own instance.

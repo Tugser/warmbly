@@ -45,7 +45,8 @@ func (s *JobsService) drainDueEngagements(ctx context.Context) error {
 			continue
 		}
 		account, xerr := s.EmailRepository.GetByID(cctx, action.EmailID)
-		if xerr != nil || account == nil || account.WorkerID == nil {
+		workerID, routable := s.warmupActionWorker(cctx, account)
+		if xerr != nil || !routable {
 			// Mailbox now unassigned — drop (best-effort low-stakes engagement).
 			continue
 		}
@@ -58,7 +59,7 @@ func (s *JobsService) drainDueEngagements(ctx context.Context) error {
 		}
 
 		action.DelaySeconds = 0 // dwell already elapsed; run immediately
-		s.Publisher.PublishWarmupAction(cctx, *account.WorkerID, &action)
+		s.Publisher.PublishWarmupAction(cctx, workerID, &action)
 	}
 	return nil
 }

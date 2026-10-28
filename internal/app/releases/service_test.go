@@ -23,6 +23,11 @@ func (m *memSettings) SetRelease(_ context.Context, s *models.FleetReleaseState)
 	return nil
 }
 
+func (m *memSettings) CompareAndSetRelease(_ context.Context, _, next *models.FleetReleaseState) (bool, error) {
+	m.release = next
+	return true, nil
+}
+
 func (m *memSettings) GetJoinToken(context.Context) (string, *time.Time, error) { return "", nil, nil }
 func (m *memSettings) SetJoinToken(context.Context, string, time.Time) error    { return nil }
 

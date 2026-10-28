@@ -60,10 +60,12 @@ import {
     allowsNoEncryption,
     defaultImapSecurity,
     defaultSmtpSecurity,
+    offersCertificateTrust,
     validPort,
     type MailSecurity,
 } from "@/lib/api/models/app/emails/Service";
 import SecuritySelect from "@/components/app/emails/SecuritySelect";
+import CertificateTrustOption from "@/components/app/emails/CertificateTrustOption";
 import useAuthConfig from "@/lib/api/hooks/auth/useAuthConfig";
 import CloudMailboxPicker from "@/components/app/emails/CloudMailboxPicker";
 import { CLOUD_MAILBOX_PICKER_EVENT } from "@/lib/cloudMailboxConnect";
@@ -982,6 +984,9 @@ function SmtpImapPanel({ onDone, onError }: { onDone: () => void; onError: (e: u
     // SMTP creds for legacy setups.
     const [sameCreds, setSameCreds] = React.useState(true);
     const [submitting, setSubmitting] = React.useState(false);
+    // Offered only after a test failed on the server's certificate.
+    const [certFailed, setCertFailed] = React.useState(false);
+    const [trustCert, setTrustCert] = React.useState(false);
 
     // Auto-fill the username fields from the email address so the user
     // doesn't have to re-type it. Cleared if they touched the user field.
@@ -1013,6 +1018,8 @@ function SmtpImapPanel({ onDone, onError }: { onDone: () => void; onError: (e: u
         if (submitting || !valid()) return;
         setSubmitting(true);
         const eff = effectiveSmtp();
+        // The backend keeps the opt-out only on a server whose certificate needs it.
+        const tls = trustCert ? { tls_unverified: true } : {};
         try {
             await toast.promise(
                 addEmail({
@@ -1024,6 +1031,7 @@ function SmtpImapPanel({ onDone, onError }: { onDone: () => void; onError: (e: u
                         host: imapHost.trim(),
                         port: Number(imapPort),
                         security: imapSecurity,
+                        ...tls,
                     },
                     smtp: {
                         username: eff.user.trim(),
@@ -1031,6 +1039,7 @@ function SmtpImapPanel({ onDone, onError }: { onDone: () => void; onError: (e: u
                         host: eff.host.trim(),
                         port: eff.port,
                         security: smtpSecurity,
+                        ...tls,
                     },
                 }),
                 {
@@ -1042,6 +1051,7 @@ function SmtpImapPanel({ onDone, onError }: { onDone: () => void; onError: (e: u
             onDone();
         } catch (e) {
             // Surfaced by the toast, except a full allowance, which gets its dialog.
+            if (offersCertificateTrust(e)) setCertFailed(true);
             onError(e);
         } finally {
             setSubmitting(false);
@@ -1156,6 +1166,8 @@ function SmtpImapPanel({ onDone, onError }: { onDone: () => void; onError: (e: u
                     )}
                 </AnimatePresence>
             </Section>
+
+            <CertificateTrustOption show={certFailed || trustCert} checked={trustCert} onChange={setTrustCert} />
 
             <div className="px-4 py-2.5 border-t border-slate-200 bg-slate-50/60 flex items-center gap-2 min-w-0 sticky bottom-0">
                 <div className="flex items-center gap-1.5 text-[11px] text-slate-500 min-w-0 flex-1">

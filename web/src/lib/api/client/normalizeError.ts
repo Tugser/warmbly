@@ -9,6 +9,8 @@ export interface AppError {
     /** Stable machine-readable code from the API, for branching on a specific
      *  condition rather than matching on human-readable text. */
     code?: string;
+    /** Optional finer key within one code, where the API offers a different next step. */
+    reason?: string;
     /** Correlation id the API already returns, so a user can quote it and an
      *  operator can find the matching server-side log line. */
     request_id?: string;
@@ -48,6 +50,7 @@ export function normalizeError(error: unknown): AppError {
                 status,
                 redirect: true,
                 code: data.code,
+                reason: data.reason,
                 request_id: data.request_id,
             };
         }
@@ -57,6 +60,7 @@ export function normalizeError(error: unknown): AppError {
             message: data.message || "Unexpected error occured.",
             status,
             code: data.code,
+            reason: data.reason,
             request_id: data.request_id,
         }
     }

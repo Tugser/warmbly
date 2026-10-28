@@ -49,6 +49,9 @@ type Service struct {
 	// a version names an image and some builds of an image are not
 	// interchangeable. See imageVariant.
 	variant string
+
+	// now is the clock rollouts are judged by; nil means time.Now.
+	now func() time.Time
 }
 
 func New(
@@ -151,6 +154,40 @@ func (s *Service) VerifyJoinToken(ctx context.Context, token string) error {
 	return nil
 }
 
+// ErrNoNodeCredential is a node that holds no credential of its own yet; joining again issues one.
+var ErrNoNodeCredential = errors.New("this node holds no node credential; join it again to receive one")
+
+// ErrBadNodeCredential is a credential that was not issued to the node it names.
+var ErrBadNodeCredential = errors.New("node credential does not match the node")
+
+// IssueNodeCredential mints the node's own credential and stores only its hash, replacing any earlier one.
+func (s *Service) IssueNodeCredential(ctx context.Context, id uuid.UUID) (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	secret := base64.RawURLEncoding.EncodeToString(raw)
+	if err := s.nodes.SetCredentialHash(ctx, id, crypt.SHA256(secret)); err != nil {
+		return "", err
+	}
+	return secret, nil
+}
+
+// VerifyNodeCredential checks, in constant time, that secret is the credential issued to node id.
+func (s *Service) VerifyNodeCredential(ctx context.Context, id uuid.UUID, secret string) error {
+	want, err := s.nodes.CredentialHash(ctx, id)
+	if err != nil {
+		return err
+	}
+	if want == "" {
+		return ErrNoNodeCredential
+	}
+	if subtle.ConstantTimeCompare([]byte(crypt.SHA256(strings.TrimSpace(secret))), []byte(want)) != 1 {
+		return ErrBadNodeCredential
+	}
+	return nil
+}
+
 // Heartbeat records a beat and answers with what the node should be running.
 //
 // Registration is the first heartbeat: there is no separate create step, so a
@@ -193,7 +230,7 @@ func (s *Service) Heartbeat(ctx context.Context, beat models.NodeHeartbeat) (*mo
 	reply := &models.NodeHeartbeatReply{
 		LivenessSeconds: int(models.NodeLivenessWindow.Seconds()),
 	}
-	reply.DesiredVersion = s.desiredVersion(ctx, beat.NodeID)
+	reply.DesiredVersion, reply.DesiredDigest = s.desired(ctx, beat.NodeID)
 	return reply, nil
 }
 
@@ -219,20 +256,59 @@ func (s *Service) UpdateOnly(ctx context.Context, beat models.NodeHeartbeat) (*m
 }
 
 // desiredVersion resolves what this node should run: its own pin if it has
-// one, otherwise the fleet-wide resolved release.
+// one, otherwise the fleet-wide resolved release, or a staged rollout's target
+// once the node has been admitted to it.
 //
 // Any failure answers "" — no opinion. A node that cannot be told what to run
 // must keep running what it has, because the alternative is a control-plane
 // hiccup rolling the whole fleet.
 func (s *Service) desiredVersion(ctx context.Context, nodeID uuid.UUID) string {
-	if node, err := s.nodes.Get(ctx, nodeID); err == nil && node != nil && node.PinnedVersion != "" {
-		return s.withVariant(node.PinnedVersion)
+	v, _ := s.desired(ctx, nodeID)
+	return v
+}
+
+func (s *Service) desired(ctx context.Context, nodeID uuid.UUID) (version, digest string) {
+	node, err := s.nodes.Get(ctx, nodeID)
+	if err == nil && node != nil && node.PinnedVersion != "" {
+		return s.withVariant(node.PinnedVersion), ""
 	}
 	state, err := s.settings.GetRelease(ctx)
 	if err != nil {
+		return "", ""
+	}
+	role := models.NodeRole("")
+	if node != nil {
+		role = node.Role
+	}
+	return s.resolve(state, nodeID, role)
+}
+
+// resolve answers what an unpinned node runs under state. A halted rollout
+// answers Tag, which is From, so admitted nodes roll themselves back.
+func (s *Service) resolve(state *models.FleetReleaseState, nodeID uuid.UUID, role models.NodeRole) (version, digest string) {
+	if state == nil {
+		return "", ""
+	}
+	if r := state.Rollout; r.Running() && r.IsAdmitted(nodeID) {
+		version = s.withVariant(r.Target)
+		if version != "" && role != "" {
+			digest = validDigest(r.Digests[string(role)+s.variant])
+		}
+		return version, digest
+	}
+	return s.withVariant(state.DesiredVersion()), ""
+}
+
+func validDigest(d string) string {
+	if len(d) != len("sha256:")+64 || !strings.HasPrefix(d, "sha256:") {
 		return ""
 	}
-	return s.withVariant(state.DesiredVersion())
+	for _, c := range d[len("sha256:"):] {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return ""
+		}
+	}
+	return d
 }
 
 // JoinVersion falls back to the backend's exact release, never a floating tag.
@@ -254,13 +330,12 @@ func (s *Service) List(ctx context.Context, role models.NodeRole) ([]models.Flee
 	if err != nil {
 		return nil, err
 	}
-	fleetTarget := s.withVariant(state.DesiredVersion())
 	for i := range nodes {
 		if nodes[i].PinnedVersion != "" {
 			nodes[i].DesiredVersion = s.withVariant(nodes[i].PinnedVersion)
 			continue
 		}
-		nodes[i].DesiredVersion = fleetTarget
+		nodes[i].DesiredVersion, _ = s.resolve(state, nodes[i].ID, nodes[i].Role)
 	}
 	return nodes, nil
 }
@@ -279,6 +354,6 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (*models.FleetNode, err
 	if err != nil {
 		return nil, err
 	}
-	node.DesiredVersion = s.withVariant(state.DesiredVersion())
+	node.DesiredVersion, _ = s.resolve(state, node.ID, node.Role)
 	return node, nil
 }

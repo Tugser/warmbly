@@ -13,6 +13,7 @@ import (
 
 	"github.com/warmbly/warmbly/internal/app/cipher"
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/observability/legacysecret"
 	"github.com/warmbly/warmbly/internal/pkg/encrypt"
 )
 
@@ -91,12 +92,19 @@ func TestOpenOrLegacy(t *testing.T) {
 	org := uuid.New()
 	s := testSealer(t, ModeOrganization)
 
+	before := legacysecret.Count(legacysecret.MailboxCredential)
 	if got, legacy, err := s.OpenOrLegacy(ctx, &org, "ya29.plain"); err != nil || !legacy || got != "ya29.plain" {
 		t.Fatalf("legacy plaintext read as %q legacy=%v, %v", got, legacy, err)
+	}
+	if legacysecret.Count(legacysecret.MailboxCredential) != before+1 {
+		t.Fatal("a plaintext read was not counted")
 	}
 	sealed, _ := s.Seal(ctx, &org, "tok")
 	if got, legacy, err := s.OpenOrLegacy(ctx, &org, sealed); err != nil || legacy || got != "tok" {
 		t.Fatalf("sealed token read as %q legacy=%v, %v", got, legacy, err)
+	}
+	if legacysecret.Count(legacysecret.MailboxCredential) != before+1 {
+		t.Fatal("a sealed read was counted as plaintext")
 	}
 	if _, legacy, err := s.OpenOrLegacy(ctx, &org, strings.Repeat("ab", 64)); !errors.Is(err, encrypt.ErrUnreadable) || legacy {
 		t.Fatal("a sealed-format value no key opens must be unreadable, never legacy plaintext")
@@ -168,5 +176,16 @@ func TestOpenAddEmailRefusesAnotherKey(t *testing.T) {
 	}
 	if err := OpenAddEmail(ctx, b, e); err == nil {
 		t.Fatal("a payload sealed for one organization must not open under another's key")
+	}
+}
+
+// The background reseal runs under either sealing as long as a key exists to seal under.
+func TestResealsUnderEitherSealing(t *testing.T) {
+	if !testSealer(t, ModeInstance).Reseals() || !testSealer(t, ModeOrganization).Reseals() {
+		t.Fatal("a configured sealer must reseal")
+	}
+	var none *Sealer
+	if none.Reseals() || (&Sealer{Mode: ModeInstance}).Reseals() {
+		t.Fatal("no key means nothing to reseal under")
 	}
 }

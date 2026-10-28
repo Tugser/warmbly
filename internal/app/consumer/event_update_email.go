@@ -7,6 +7,8 @@ import (
 	"slices"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
+
 	"github.com/warmbly/warmbly/internal/config"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/repository"
@@ -97,6 +99,11 @@ func (s *JobsService) HandleFolderUpdate(ctx context.Context, e *models.JobEvent
 	}
 	if e.Relayed {
 		return s.applyRelayedFolder(ctx, e)
+	}
+	if s.CloudExec != nil {
+		if err := s.CloudExec.ObserveFolder(ctx, e.EmailID, e.ID, e.Folder); err != nil {
+			log.Warn().Err(err).Str("email_id", e.EmailID.String()).Msg("cloud warmup folder change not queued for Cloud")
+		}
 	}
 	email, err := s.emailForSyncUpdate(ctx, e.UserID, e.EmailID, e.ID, func(message *models.EmailMessageStoreData) {
 		// A pending row is not visible yet, so nothing has filed it locally.

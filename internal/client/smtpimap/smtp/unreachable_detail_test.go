@@ -87,7 +87,7 @@ func TestUnreachableSaysWhenTheServerOffersNoSTARTTLS(t *testing.T) {
 	if string(err.Code) != "SERVER_UNREACHABLE" {
 		t.Fatalf("code = %q, want SERVER_UNREACHABLE", err.Code)
 	}
-	if !strings.Contains(err.Message, "starttls") || !strings.Contains(err.Message, "does not offer STARTTLS") {
+	if !strings.Contains(err.Message, "starttls") || !strings.Contains(err.Message, "offers no STARTTLS on this port") {
 		t.Errorf("message %q does not explain the missing STARTTLS", err.Message)
 	}
 }
@@ -132,5 +132,25 @@ func TestDialCausePassesThroughAnythingElse(t *testing.T) {
 	plain := errors.New("no such host")
 	if got := dialCause(plain); got != plain {
 		t.Fatalf("dialCause rewrote a non-OpError: %v", got)
+	}
+}
+
+// A private address is named as such, with what to use instead.
+func TestUnreachableSaysWhenTheHostIsPrivate(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "cloud")
+	t.Setenv("APP_ENV", "prod")
+	srv := newFakeServer(t, "LOGIN")
+	host, port := srv.addr()
+	c := newTestClient(host, port)
+
+	mailErr := c.sendRaw(t.Context(), "sender@warmbly.test", []string{"to@example.test"}, []byte("Subject: hi\r\n\r\nbody\r\n"))
+	if mailErr == nil {
+		t.Fatal("send succeeded against a loopback server on a hosted instance")
+	}
+	if string(mailErr.Code) != "SERVER_UNREACHABLE" || !strings.Contains(mailErr.Message, "private network address") {
+		t.Fatalf("got %s %q", mailErr.Code, mailErr.Message)
+	}
+	if info := mailErr.GetUserErrorInfo(); info.Title != "Server address is not public" {
+		t.Fatalf("title = %q", info.Title)
 	}
 }

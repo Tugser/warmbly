@@ -20,7 +20,7 @@ test("add sample data to a dedicated Test workspace once", async ({ page, proof 
   const email = `sample-proof-${Date.now()}@example.test`;
   const created = await page.request.post(`${env.apiURL}/admin/testers`, {
     headers,
-    data: { email, org_name: "Sample review proof", reason: "Local sample-data proof", password_days: 30 },
+    data: { email, org_name: "Sample review proof", reason: "Local sample-data proof", password_hours: 48 },
   });
   expect(created.status()).toBe(201);
   const { organization_id: orgID, user_id: userID } = await created.json() as { organization_id: string; user_id: string };

@@ -33,6 +33,10 @@ type AdminSendsRepository interface {
 	// OrgWebhooks lists one workspace's endpoints with their recent delivery
 	// and drop counts.
 	OrgWebhooks(ctx context.Context, orgID uuid.UUID) ([]models.AdminWebhookEndpointRow, error)
+	// SendHolds lists mailboxes held from sending, switched-on ones first, capped at limit.
+	SendHolds(ctx context.Context, limit int) (*models.AdminSendHoldsResult, error)
+	// GetSendHold is one mailbox's hold, or nil when it is not held.
+	GetSendHold(ctx context.Context, mailboxID uuid.UUID) (*models.AdminSendHold, error)
 }
 
 type adminSendsRepository struct {
@@ -323,4 +327,127 @@ func (r *adminSendsRepository) OrgWebhooks(ctx context.Context, orgID uuid.UUID)
 		return nil, err
 	}
 	return scanWebhookEndpoints(rows)
+}
+
+// sendHoldPredicate leaves out the unknown hold every send takes while it runs, matching GetSendRecoveryHolds.
+const sendHoldPredicate = `ea.send_recovery_hold AND (ea.send_recovery_reason IS DISTINCT FROM 'unknown' OR t.id IS NULL
+	OR t.send_result_applied_at IS NOT NULL OR t.send_result_evidence IS NOT NULL
+	OR COALESCE(t.send_reserved_at,t.completed_at,t.updated_at)<NOW()-INTERVAL '10 minutes')`
+
+const sendHoldColumns = `
+		SELECT ea.id, ea.email, ea.status::text, ea.provider::text, ea.organization_id, COALESCE(o.name, ''),
+		       COALESCE(ea.send_recovery_reason, 'unknown'), t.id, COALESCE(t.task_type::text, ''), COALESCE(t.status::text, ''),
+		       COALESCE(t.send_recipients, '{}'), COALESCE(t.message_id, ''), t.send_reserved_at,
+		       COALESCE(t.send_executor_started_at, w.dispatch_started_at),
+		       COALESCE(t.send_reserved_at, t.completed_at, t.updated_at),
+		       COALESCE(t.send_result_state, ''), t.send_result_applied_at IS NOT NULL,
+		       (SELECT COUNT(*) FROM tasks u WHERE u.email_account_id = ea.id AND u.send_result_state = 'unknown'
+		          AND u.send_result_applied_at IS NULL AND u.warmup_send_retired_at IS NULL AND u.id IS DISTINCT FROM t.id),
+		       EXISTS(SELECT 1 FROM send_recovery_resolutions r WHERE r.recovery_task_id = t.id
+		          AND r.previous_reason = 'unknown' AND r.recorded_locally_at IS NOT NULL),
+		       COALESCE(COALESCE(t.send_executor_started_at, w.dispatch_started_at, t.send_reserved_at, t.completed_at, t.created_at) < NOW() - INTERVAL '2 minutes', false),
+		       ea.send_cooldown_provider IS NULL OR ea.send_cooldown_provider = ea.provider::text
+		FROM email_accounts ea
+		LEFT JOIN organizations o ON o.id = ea.organization_id
+		LEFT JOIN tasks t ON t.id = ea.send_recovery_task_id AND t.email_account_id = ea.id
+		LEFT JOIN warmup_tasks w ON w.task_id = t.id`
+
+func scanSendHold(row pgx.Row) (*models.AdminSendHold, error) {
+	var h models.AdminSendHold
+	var applied, pending, settledLongEnough, sameProvider bool
+	if err := row.Scan(
+		&h.EmailAccountID, &h.MailboxEmail, &h.MailboxStatus, &h.Provider, &h.OrganizationID, &h.OrganizationName,
+		&h.Reason, &h.HeldTaskID, &h.TaskType, &h.TaskStatus,
+		&h.Recipients, &h.MessageID, &h.ReservedAt, &h.StartedAt, &h.HeldSince,
+		&h.ResultState, &applied, &h.OtherUnknownSends, &pending, &settledLongEnough, &sameProvider,
+	); err != nil {
+		return nil, err
+	}
+	h.Blocker = sendHoldBlocker(&h, applied, pending, settledLongEnough, sameProvider)
+	h.Resolvable = h.Blocker == ""
+	return &h, nil
+}
+
+// sendHoldBlocker mirrors the checks the resolution path applies, so the page only offers what will be accepted.
+func sendHoldBlocker(h *models.AdminSendHold, applied, pending, settledLongEnough, sameProvider bool) string {
+	switch {
+	case h.MailboxStatus != "active":
+		return models.SendHoldBlockerMailboxInactive
+	case h.HeldTaskID == nil:
+		return models.SendHoldBlockerTaskMissing
+	case h.Reason == "unknown" && pending:
+		return models.SendHoldBlockerResolutionPending
+	case h.Reason == "unknown" && (h.ResultState != "unknown" || applied):
+		return models.SendHoldBlockerResultSettling
+	case h.Reason == "unknown" && h.TaskStatus != "completed" && h.TaskStatus != "failed":
+		return models.SendHoldBlockerTaskNotSettled
+	case h.Reason == "unknown" && !settledLongEnough:
+		return models.SendHoldBlockerTooRecent
+	case h.Reason != "unknown" && (!applied || (h.ResultState != "sent" && h.ResultState != "failed")):
+		return models.SendHoldBlockerResultSettling
+	case h.Reason != "unknown" && h.OtherUnknownSends > 0:
+		return models.SendHoldBlockerOtherUnknownSends
+	case h.Reason != "unknown" && !sameProvider:
+		return models.SendHoldBlockerProviderChanged
+	}
+	return ""
+}
+
+func (r *adminSendsRepository) SendHolds(ctx context.Context, limit int) (*models.AdminSendHoldsResult, error) {
+	limit = min(max(limit, 1), 500)
+	out := &models.AdminSendHoldsResult{Summary: models.AdminSendHoldsSummary{ByReason: map[string]int{}}, Data: []models.AdminSendHold{}}
+	// The summary counts every hold, not just the page.
+	counts, err := r.db.Query(ctx, `
+		SELECT COALESCE(ea.send_recovery_reason, 'unknown'), ea.status = 'active', COUNT(*)
+		FROM email_accounts ea
+		LEFT JOIN tasks t ON t.id = ea.send_recovery_task_id AND t.email_account_id = ea.id
+		WHERE `+sendHoldPredicate+`
+		GROUP BY 1, 2`)
+	if err != nil {
+		return nil, err
+	}
+	for counts.Next() {
+		var reason string
+		var active bool
+		var n int
+		if err := counts.Scan(&reason, &active, &n); err != nil {
+			counts.Close()
+			return nil, err
+		}
+		out.Summary.Total += n
+		if active {
+			out.Summary.Active += n
+			out.Summary.ByReason[reason] += n
+		} else {
+			out.Summary.Inactive += n
+		}
+	}
+	counts.Close()
+	if err := counts.Err(); err != nil {
+		return nil, err
+	}
+	rows, err := r.db.Query(ctx, sendHoldColumns+`
+		WHERE `+sendHoldPredicate+`
+		ORDER BY ea.status = 'active' DESC, COALESCE(t.send_reserved_at, t.completed_at, t.updated_at) ASC NULLS LAST, ea.id
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		h, err := scanSendHold(rows)
+		if err != nil {
+			return nil, err
+		}
+		out.Data = append(out.Data, *h)
+	}
+	return out, rows.Err()
+}
+
+func (r *adminSendsRepository) GetSendHold(ctx context.Context, mailboxID uuid.UUID) (*models.AdminSendHold, error) {
+	h, err := scanSendHold(r.db.QueryRow(ctx, sendHoldColumns+` WHERE ea.id = $1 AND ea.send_recovery_hold`, mailboxID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return h, err
 }

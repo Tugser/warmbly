@@ -99,6 +99,15 @@ type Session struct {
 	AccessNonce     string    `json:"access_nonce"`
 }
 
+// Live reports whether the session can still authenticate at now: not revoked
+// and not past its absolute expiry, which no refresh moves.
+func (s *Session) Live(now time.Time) bool {
+	if s == nil || s.RevokedAt != nil {
+		return false
+	}
+	return s.ExpiresAt == nil || now.Before(*s.ExpiresAt)
+}
+
 // AuthSession is what LoginStart and RegistrationStart return.
 //
 // Session plus CodeRequired=true is the original two-step flow: a code was

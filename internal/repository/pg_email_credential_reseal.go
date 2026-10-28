@@ -12,7 +12,7 @@ import (
 	"github.com/warmbly/warmbly/internal/infrastructure/db"
 )
 
-// MailboxCredentialResealer moves stored mailbox credentials onto their organization's key.
+// MailboxCredentialResealer reseals stored mailbox credentials under the configured sealing.
 type MailboxCredentialResealer interface {
 	// ResealMailboxCredentials reseals up to limit mailboxes after the cursor and returns the next cursor, uuid.Nil when done.
 	ResealMailboxCredentials(ctx context.Context, after uuid.UUID, limit int) (next uuid.UUID, resealed, failed int, err error)
@@ -30,16 +30,39 @@ const resealCandidatesQuery = `
 	ORDER BY ea.id
 	LIMIT $2`
 
+// legacyOAuthCandidatesQuery finds OAuth rows still holding a provider token outside both sealed formats.
+const legacyOAuthCandidatesQuery = `
+	SELECT o.email_account_id, ea.organization_id
+	FROM email_accounts_oauth o
+	JOIN email_accounts ea ON ea.id = o.email_account_id
+	WHERE o.email_account_id > $1
+	  AND ((o.access_token <> '' AND o.access_token NOT LIKE 'dek1:%' AND o.access_token !~ '^[0-9a-f]+$')
+	    OR (o.refresh_token <> '' AND o.refresh_token NOT LIKE 'dek1:%' AND o.refresh_token !~ '^[0-9a-f]+$'))
+	ORDER BY o.email_account_id
+	LIMIT $2`
+
+// ResealMailboxCredentials moves credentials onto organization keys, or under instance sealing reseals plaintext OAuth tokens under the instance key.
 func (r *emailRepository) ResealMailboxCredentials(ctx context.Context, after uuid.UUID, limit int) (uuid.UUID, int, int, error) {
-	if !r.Creds.SealsForOrganizations() {
+	if r.Creds == nil {
 		return uuid.Nil, 0, 0, nil
 	}
-	rows, err := r.DB.Query(ctx, resealCandidatesQuery, after, limit)
+	query, reseal := legacyOAuthCandidatesQuery, r.resealLegacyOAuth
+	if r.Creds.SealsForOrganizations() {
+		query, reseal = resealCandidatesQuery, func(ctx context.Context, id uuid.UUID, org *uuid.UUID) error {
+			return r.resealMailbox(ctx, id, *org)
+		}
+	} else if r.Creds.Instance == nil {
+		return uuid.Nil, 0, 0, nil
+	}
+	rows, err := r.DB.Query(ctx, query, after, limit)
 	if err != nil {
-		db.CaptureError(err, resealCandidatesQuery, nil, "query")
+		db.CaptureError(err, query, nil, "query")
 		return uuid.Nil, 0, 0, err
 	}
-	type candidate struct{ id, org uuid.UUID }
+	type candidate struct {
+		id  uuid.UUID
+		org *uuid.UUID
+	}
 	var batch []candidate
 	for rows.Next() {
 		var c candidate
@@ -56,12 +79,12 @@ func (r *emailRepository) ResealMailboxCredentials(ctx context.Context, after uu
 
 	resealed, failed := 0, 0
 	for _, c := range batch {
-		if err := r.resealMailbox(ctx, c.id, c.org); err != nil {
+		if err := reseal(ctx, c.id, c.org); err != nil {
 			if ctx.Err() != nil {
 				return uuid.Nil, resealed, failed, ctx.Err()
 			}
-			log.Warn().Err(err).Str("email_account_id", c.id.String()).Str("organization_id", c.org.String()).
-				Msg("mailbox credentials: could not move a mailbox onto its organization key; retrying next pass")
+			log.Warn().Err(err).Str("email_account_id", c.id.String()).
+				Msg("mailbox credentials: could not reseal a mailbox's stored credentials; retrying next pass")
 			failed++
 			continue
 		}
@@ -158,4 +181,48 @@ func (r *emailRepository) resealValues(ctx context.Context, orgID uuid.UUID, c *
 		changed = true
 	}
 	return out, changed, nil
+}
+
+// resealLegacyOAuth seals a mailbox's plaintext OAuth tokens under the instance key, holding the row so a concurrent refresh waits.
+func (r *emailRepository) resealLegacyOAuth(ctx context.Context, id uuid.UUID, orgID *uuid.UUID) error {
+	tx, err := r.DB.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var stored [2]string
+	err = tx.QueryRow(ctx, `SELECT access_token, refresh_token FROM email_accounts_oauth WHERE email_account_id = $1 FOR UPDATE`, id).
+		Scan(&stored[0], &stored[1])
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	out, changed := stored, false
+	for i, v := range stored {
+		if v == "" || mailcred.IsOrgSealed(v) {
+			continue
+		}
+		plain, legacy, err := r.Creds.OpenOrLegacy(ctx, orgID, v)
+		if err != nil {
+			return err
+		}
+		if !legacy {
+			continue
+		}
+		if out[i], err = r.Creds.Seal(ctx, orgID, plain); err != nil {
+			return err
+		}
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `UPDATE email_accounts_oauth SET access_token = $2, refresh_token = $3 WHERE email_account_id = $1`,
+		id, out[0], out[1]); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

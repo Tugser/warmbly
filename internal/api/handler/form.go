@@ -2,8 +2,8 @@ package handler
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
-	"image"
 	"io"
 	"net/http"
 	"strconv"
@@ -15,6 +15,7 @@ import (
 	"github.com/warmbly/warmbly/internal/config"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/pkg/imagetype"
 )
 
 // formScope pulls the org and the :id path param once per handler.
@@ -268,20 +269,21 @@ const (
 )
 
 // readFormImageUpload mirrors readAvatarUpload with per-kind caps and copy;
-// the MIME allowlist (PNG/JPG only) is shared for the same CVE reasons.
+// the format allowlist (PNG/JPG only) is shared for the same CVE reasons.
 func readFormImageUpload(c *gin.Context, kind string) (body []byte, mime, ext string, xerr *errx.Error) {
 	maxBytes, maxDim := formLogoMaxBytes, formLogoMaxDim
 	// Covers and page backgrounds are both full-bleed art, so they share caps.
 	if kind == "cover" || kind == "background" {
 		maxBytes, maxDim = formCoverMaxBytes, formCoverMaxDim
 	}
+	lim := imageLimits{label: kind, formats: "PNG or JPG", maxBytes: maxBytes, maxDim: maxDim}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes+1024)
 	fh, err := c.FormFile("file")
 	if err != nil {
 		return nil, "", "", errx.New(errx.BadRequest, "file is required")
 	}
 	if fh.Size > maxBytes {
-		return nil, "", "", errx.New(errx.BadRequest, fmt.Sprintf("the %s must be smaller than %d MB", kind, maxBytes>>20))
+		return nil, "", "", lim.tooLarge()
 	}
 	src, err := fh.Open()
 	if err != nil {
@@ -293,17 +295,16 @@ func readFormImageUpload(c *gin.Context, kind string) (body []byte, mime, ext st
 		return nil, "", "", errx.InternalError()
 	}
 	body = buf.Bytes()
-	mime = http.DetectContentType(body)
-	var ok bool
-	if ext, ok = allowedAvatarMIME[mime]; !ok {
-		return nil, "", "", errx.New(errx.BadRequest, fmt.Sprintf("the %s must be a PNG or JPG", kind))
+	format, cfg, err := imagetype.Detect(body, avatarFormats...)
+	if errors.Is(err, imagetype.ErrUnreadable) {
+		return nil, "", "", lim.unreadable()
 	}
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(body))
 	if err != nil {
-		return nil, "", "", errx.New(errx.BadRequest, "image could not be parsed")
+		return nil, "", "", lim.wrongFormat()
 	}
+	mime, ext = format.MIME, format.Ext
 	if cfg.Width > maxDim || cfg.Height > maxDim {
-		return nil, "", "", errx.New(errx.BadRequest, fmt.Sprintf("the %s must be %dpx or smaller", kind, maxDim))
+		return nil, "", "", lim.tooWide()
 	}
 	return body, mime, ext, nil
 }

@@ -17,7 +17,7 @@ import {
     SparklesIcon,
 } from "lucide-react";
 import toast from "react-hot-toast/headless";
-import RichTextEditor, { VariableMenu } from "./RichTextEditor";
+import RichTextEditor from "./RichTextEditor";
 import EmailBody from "@/components/app/unibox/EmailBody";
 import { useTemplatePreview } from "@/lib/api/hooks/app/campaigns/useTemplatePreview";
 import type { TemplatePreview } from "@/lib/api/client/app/campaigns/previewTemplate";
@@ -45,6 +45,17 @@ import { EMAIL_VARIABLES, LINK_VARIABLES, UNSUBSCRIBE_TOKEN } from "@/lib/templa
 import useCampaign from "@/lib/api/hooks/app/campaigns/useCampaign";
 import { isDocumentBody } from "@/lib/email/pastedEmail";
 import type { ArmSubject } from "./threading";
+import { SubjectAI, WriteEmailWithAI } from "./EmailAIWriter";
+import { useEmailAIWriter } from "./useEmailAIWriter";
+import AIDraftBar from "@/components/app/ai/AIDraftBar";
+import SubjectEditor from "./SubjectEditor";
+import { usePermission } from "@/hooks/usePermission";
+import { shortcutLabel } from "@/components/ui/shortcut-tooltip";
+import type { EarlierEmail } from "./emailAIPrompt";
+import SendAdditions from "./SendAdditions";
+import useEmails from "@/lib/api/hooks/app/emails/useEmails";
+
+const NO_EARLIER_EMAILS: EarlierEmail[] = [];
 
 export default function EmailContentEditor({
     subject,
@@ -60,6 +71,8 @@ export default function EmailContentEditor({
     stepId,
     canSendTest = false,
     dirty = false,
+    earlierEmails = NO_EARLIER_EMAILS,
+    replyInThread = false,
 }: {
     subject: string;
     onSubjectChange: (value: string) => void;
@@ -89,6 +102,12 @@ export default function EmailContentEditor({
     canSendTest?: boolean;
     // Unsaved edits: the test send mails the saved step, so it waits for a save.
     dirty?: boolean;
+    // The email steps before this one, oldest first, so AI writes a follow-up
+    // that knows what the prospect was already sent.
+    earlierEmails?: EarlierEmail[];
+    // The step replies in the thread without showing a locked subject (the
+    // wizard's blank follow-up subject), so AI writes the body only.
+    replyInThread?: boolean;
 }) {
     const [tab, setTab] = React.useState<"edit" | "preview">("edit");
 
@@ -112,6 +131,9 @@ export default function EmailContentEditor({
 
     // Preview context: null contact = the built-in sample; the mailbox defaults
     // to the campaign's first enabled sender once the pool has loaded.
+    const canAI = usePermission("USE_AI");
+    const [subjectAIOpen, setSubjectAIOpen] = React.useState(false);
+    const subjectSample = renderPreview(subject).trim();
     const [previewContact, setPreviewContact] = React.useState<Contact | null>(null);
     const [previewMailbox, setPreviewMailbox] = React.useState<Inbox | null>(null);
     const [serverPreview, setServerPreview] = React.useState<TemplatePreview | null>(null);
@@ -130,6 +152,13 @@ export default function EmailContentEditor({
         setPreviewMailbox(senders.inboxes[0] ?? null);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [campaignId, senders.inboxes.map((i) => i.id).join(",")]);
+
+    // Whose signature the email shows under the body: the campaign's senders,
+    // or, in the wizard before senders are picked, the workspace's mailboxes.
+    const workspaceInboxes = useEmails({ query: "", tag: "", enabled: !campaignId });
+    const signers = campaignId ? senders.inboxes : workspaceInboxes.emails;
+    const [signerPick, setSignerPick] = React.useState<Inbox | null>(null);
+    const signer = campaignId ? previewMailbox : (signers.find((i) => i.id === signerPick?.id) ?? signers[0] ?? null);
 
     // A threading step's subject belongs to the conversation, not to the step,
     // so that is the one the preview, the content score and the template check
@@ -174,6 +203,26 @@ export default function EmailContentEditor({
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [tab, code, shownSubject, bodyHtml, previewContact?.id, campaignId, previewMailbox?.id, stepId]);
+
+    const bodyPlain = htmlToPlain(bodyHtml);
+    const aiContext = React.useMemo(
+        () => ({ earlier: earlierEmails, threaded: !!subjectLocked || replyInThread }),
+        [earlierEmails, subjectLocked, replyInThread],
+    );
+    const applyAI = (nextSubject: string | null, html: string) => {
+        if (nextSubject !== null && !subjectLocked && !replyInThread) onSubjectChange(nextSubject);
+        onBodyChange(html, code ? "" : htmlToPlain(html));
+    };
+    const writer = useEmailAIWriter({
+        ctx: aiContext,
+        subjectLocked: !!subjectLocked || replyInThread,
+        subject,
+        bodyPlain,
+        bodyHtml,
+        onApply: applyAI,
+    });
+    // The sheen covers the wait; once words arrive they are the progress.
+    const writing = writer.phase === "busy" && !writer.streaming;
 
     const tplIssue = templateIssue(shownSubject) || templateIssue(bodyHtml) || templateIssue(htmlToPlain(bodyHtml));
 
@@ -224,6 +273,9 @@ export default function EmailContentEditor({
     return (
         <div className="space-y-4">
             <div className="flex flex-wrap items-center gap-2">
+                {!code && (
+                    <WriteEmailWithAI writer={writer} ctx={aiContext} bodyPlain={bodyPlain} />
+                )}
                 <PopoverMenu>
                     <PopoverMenuTrigger asChild>
                         <SelectButton icon={<SparklesIcon className="w-3.5 h-3.5" />} label="Templates" />
@@ -280,9 +332,6 @@ export default function EmailContentEditor({
             <div>
                 <div className="flex items-center justify-between gap-2 mb-1.5">
                     <Label className="mb-0">Subject</Label>
-                    {!subjectLocked && (
-                        <VariableMenu variables={EMAIL_VARIABLES} onPick={(v) => onSubjectChange(subject + v)} />
-                    )}
                 </div>
                 {subjectLocked ? (
                     <>
@@ -308,7 +357,50 @@ export default function EmailContentEditor({
                         </p>
                     </>
                 ) : (
-                    <TextInput value={subject} onChange={onSubjectChange} placeholder={subjectPlaceholder} className="w-full h-9 px-3 text-[13.5px]" />
+                    <>
+                        <div className="relative">
+                            <SubjectEditor
+                                value={subject}
+                                onChange={onSubjectChange}
+                                placeholder={subjectPlaceholder}
+                                variables={EMAIL_VARIABLES}
+                                onAI={canAI ? () => setSubjectAIOpen(true) : undefined}
+                                aiSlot={
+                                    canAI && (
+                                        <SubjectAI
+                                            ctx={aiContext}
+                                            bodyPlain={bodyPlain}
+                                            subject={subject}
+                                            open={subjectAIOpen}
+                                            onOpenChange={setSubjectAIOpen}
+                                            onPick={onSubjectChange}
+                                        />
+                                    )
+                                }
+                            />
+                            {writing && <div className="ai-sheen pointer-events-none absolute inset-0 rounded-md" aria-hidden />}
+                        </div>
+                        <p className="mt-1 truncate text-[10.5px] text-slate-400">
+                            {subjectSample !== subject.trim() ? (
+                                <>
+                                    <span className="text-slate-500">{SAMPLE_CONTACT_LABEL} sees:</span> {subjectSample || "an empty subject"}
+                                </>
+                            ) : (
+                                <>
+                                    Type {"{{"} for fields, fallbacks and helpers.
+                                    {canAI && (
+                                        <>
+                                            {" "}
+                                            <kbd className="rounded border border-slate-200 bg-slate-50 px-1 font-sans text-[10px] text-slate-500">
+                                                {shortcutLabel("mod+J")}
+                                            </kbd>{" "}
+                                            for AI subject ideas.
+                                        </>
+                                    )}
+                                </>
+                            )}
+                        </p>
+                    </>
                 )}
             </div>
 
@@ -326,20 +418,46 @@ export default function EmailContentEditor({
                 </div>
                 {tab === "edit" ? (
                     <>
-                        <RichTextEditor
-                            html={bodyHtml}
-                            // In HTML mode the plain-text half is left to the
-                            // send path, which renders it from the finished
-                            // message (signature and footer included) with
-                            // list bullets, table rows and link destinations.
-                            // Deriving a weaker one here would only mask it.
-                            onChange={(html) => onBodyChange(html, code ? "" : htmlToPlain(html))}
-                            code={code}
-                            onCodeChange={setCode}
-                            variables={EMAIL_VARIABLES}
-                            links={LINK_VARIABLES}
-                            placeholder={bodyPlaceholder}
-                        />
+                        <div className="relative">
+                            <RichTextEditor
+                                html={bodyHtml}
+                                // In HTML mode the plain-text half is left to the
+                                // send path, which renders it from the finished
+                                // message (signature and footer included) with
+                                // list bullets, table rows and link destinations.
+                                // Deriving a weaker one here would only mask it.
+                                onChange={(html) => onBodyChange(html, code ? "" : htmlToPlain(html))}
+                                code={code}
+                                onCodeChange={setCode}
+                                variables={EMAIL_VARIABLES}
+                                links={LINK_VARIABLES}
+                                placeholder={bodyPlaceholder}
+                                footer={
+                                    <SendAdditions
+                                        inboxes={signers}
+                                        mailbox={signer}
+                                        onMailboxChange={campaignId ? setPreviewMailbox : setSignerPick}
+                                        campaign={previewCampaign ?? null}
+                                    />
+                                }
+                            />
+                            {writing && <div className="ai-sheen pointer-events-none absolute inset-0 rounded-md" aria-hidden />}
+                            {!code && <AIDraftBar ctrl={writer} busyLabels={writer.busyLabels} />}
+                        </div>
+                        {!code && (
+                            <p className="mt-1 text-[10.5px] text-slate-400">
+                                Type {"{{"} for fields, fallbacks and helpers.
+                                {canAI && (
+                                    <>
+                                        {" "}
+                                        <kbd className="rounded border border-slate-200 bg-slate-50 px-1 font-sans text-[10px] text-slate-500">
+                                            {shortcutLabel("mod+J")}
+                                        </kbd>{" "}
+                                        writes with AI at the cursor; select text to edit it with AI.
+                                    </>
+                                )}
+                            </p>
+                        )}
                         {/* What clients will do to this markup. Live while
                             writing HTML, where it is most needed. */}
                         <HtmlFindings findings={serverPreview?.html_findings ?? []} />

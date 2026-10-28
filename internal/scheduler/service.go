@@ -288,8 +288,7 @@ func calculateFirstSlotTomorrow(timezone string) time.Time {
 	now := time.Now().In(loc)
 
 	// Tomorrow at 8am + random jitter (0-60 minutes)
-	tomorrow := now.Add(24 * time.Hour)
-	firstSlot := time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 8, 0, 0, 0, loc)
+	firstSlot := time.Date(now.Year(), now.Month(), now.Day()+1, 8, 0, 0, 0, loc)
 
 	// Add random jitter
 	jitter := randomJitter(0, 60)

@@ -18,21 +18,35 @@ Start at desired count zero. Separate execution roles retrieve each service's
 configuration and write its logs. Application roles receive reviewed existing
 permissions or IAM Policy Autopilot output through `application_policies`.
 
-## Migrate before deployment
+## Deploy releases
 
-Terraform registers the application and migration task definitions. Service
-revision and desired-count changes are deployment operations; Terraform ignores
-those two fields after service creation. The workflow handles backend and consumer
-rollouts. Forms, realtime and tracking cutovers use separate explicit ECS service
-updates after their own checks. Start new services at zero and use explicit
-counts when activating them. Terraform output task definition ARNs describe
-prepared revisions, not necessarily running revisions.
+Terraform owns each task definition's shape: environment, secret references,
+sizes, health checks and the `warmbly-image-variant` tag that says whether a
+service runs the default or the `-kafka` image. Service revision and desired
+count are deployment operations; Terraform ignores those two fields after
+service creation, and its task definition outputs describe prepared revisions,
+not necessarily running ones. Start new services at zero and use explicit counts
+when activating them.
 
-Set `github_repository` to the repository running `.github/workflows/deploy-aws.yml`.
-The root creates an OIDC provider and a deployment role scoped to the migration
-task and backend/consumer services. Import an existing account-wide GitHub OIDC
-provider instead of creating a second one. Restrict the `aws-production` GitHub
-environment to trusted deployment branches. Set its variables:
+`.github/workflows/deploy-aws.yml` owns only the image. A stable release tag on
+`main` reaches it from `release.yml` when the repository variable
+`AWS_DEPLOY_ENABLED` is `true`; dispatch it by hand to redeploy, roll back or
+roll out changed secret values. Each run verifies the release's build
+provenance, renders every service from its latest Terraform revision with the
+release's digests, runs the dependency validation and migration tasks, then
+rolls backend, consumer, and forms, tracking and realtime in waves. Each service
+is watched against its CloudWatch alarms for a bake after it is stable, and any
+failure restores every service already moved, in reverse. Workers and consumers
+on hosts follow through a canary rollout started from the `ops` task. The
+procedure, modes and one-time GitHub setup are in
+`docs/content/docs/development/aws-fargate.mdx`.
+
+Set `github_repository` to the repository running the workflows. The root
+creates an OIDC provider and a deployment role that can register task
+definition revisions, run the validation, migration, `ops` and rotator tasks,
+update the five services and read secret metadata, never a secret value. Import
+an existing account-wide GitHub OIDC provider instead of creating a second one.
+Set the `aws-production` environment's variables:
 
 | Variable | Value |
 | --- | --- |
@@ -46,16 +60,34 @@ workflow never retrieves database credentials. Its backend and migration tasks
 must use the same immutable image digest and direct secret reference. Keep the
 default `migration_secret_key=PRIMARY_DB_DIRECT` for workflow deployments.
 
-Dispatch the workflow with explicit Terraform task definition revisions for
-migration, backend and consumer. It runs `/app/migrate` inside the VPC over the
-existing PrivateLink route. An unsuccessful or unresolved migration blocks all
-service updates. A successful migration permits sequential backend and consumer
-rollouts, verifying that the requested revision becomes stable. A rollout failure
-restores the previous service revisions and counts, retaining the current schema.
-Inspect rollback health separately. The workflow never runs down migrations.
-Task definitions use `skip_destroy` so earlier revisions remain active for
-rollback. Retain their referenced images and secret versions throughout the
-rollback window; retire them separately after it closes.
+The migration runs `/app/migrate` inside the VPC over the existing PrivateLink
+route, and an unsuccessful or unresolved migration blocks every service update.
+A rollback skips it, because schemas stay compatible with the previous release.
+The workflow never runs down migrations. Task definitions use `skip_destroy` so
+earlier revisions remain active for rollback. Retain their referenced images and
+secret versions throughout the rollback window; retire them separately after it
+closes.
+
+## Rotate keys
+
+`rotation.tf` registers a rotator task that generates replacement values with
+its own narrow role, writes them as new secret versions and reports only
+version ids. `.github/workflows/rotate-keys.yml` drives it, rolls services onto
+those versions and runs `warmblyctl` in the `ops` task to prove each step before
+the old value is retired. No value passes through GitHub or a log. The runbook
+is in `aws-fargate.mdx`.
+
+## Terraform in CI
+
+Set `terraform_ci = true` to create the `<name>-terraform-plan` and
+`<name>-terraform-apply` roles `.github/workflows/terraform-aws.yml` uses. The
+plan role reads configuration and is denied secret values, decryption, logs and
+data reads; the apply role administers resources named for this deployment and
+is reachable only from `main` through protected environments. The apply role
+cannot change the two CI roles themselves, so a change to their policies or
+trust is applied by an administrator by hand. Var files stay in
+the state bucket under `warmbly/production/vars/`; only resource addresses and
+actions are ever printed.
 
 The runtime sets `DB_MIGRATIONS_ON_START=false` for the backend. New application
 images must support that setting and schema readiness before activation. Keep

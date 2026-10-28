@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/warmbly/warmbly/internal/app/cipher"
+	"github.com/warmbly/warmbly/internal/observability/legacysecret"
 	"github.com/warmbly/warmbly/internal/pkg/encrypt"
 )
 
@@ -114,6 +115,11 @@ func (s *Sealer) SealsForOrganizations() bool {
 	return s != nil && s.Mode == ModeOrganization && s.Orgs != nil
 }
 
+// Reseals reports whether the background reseal has a target: organization keys, or the instance key.
+func (s *Sealer) Reseals() bool {
+	return s.SealsForOrganizations() || (s != nil && s.Instance != nil)
+}
+
 // Cipher resolves an organization's cipher.
 func (s *Sealer) Cipher(ctx context.Context, orgID uuid.UUID) (*cipher.Cipher, error) {
 	if s == nil || s.Orgs == nil {
@@ -199,5 +205,6 @@ func (s *Sealer) OpenOrLegacy(ctx context.Context, orgID *uuid.UUID, stored stri
 	if encrypt.LooksSealed(stored) {
 		return "", false, encrypt.ErrUnreadable
 	}
+	legacysecret.Read(legacysecret.MailboxCredential)
 	return stored, true, nil
 }

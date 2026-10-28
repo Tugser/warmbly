@@ -247,3 +247,26 @@ func TestPartnerHostKeysByWhoRunsTheMail(t *testing.T) {
 		}
 	}
 }
+
+// A free Gmail or Outlook.com sender warms where a major provider junks it, and still avoids a junking small host.
+func TestHostPenalty_ConsumerSenderWarmsWhereJunked(t *testing.T) {
+	msID, smallID := uuid.New(), uuid.New()
+	sig := partnerSignals{
+		hostsByID: map[uuid.UUID]string{msID: "outlook", smallID: "hostinger"},
+		placementByHost: map[string]repository.HostPlacementStat{
+			"outlook":   {Delivered: 40, Spam: 20},
+			"hostinger": {Delivered: 40, Spam: 20},
+		},
+		warmWhereJunked: true,
+	}
+	if got := sig.hostPenalty(msID); got != 1.5 {
+		t.Errorf("junked major provider weight = %v, want 1.5", got)
+	}
+	if got := sig.hostPenalty(smallID); got >= 1.0 {
+		t.Errorf("junking small host weight = %v, want a penalty", got)
+	}
+	sig.warmWhereJunked = false
+	if got := sig.hostPenalty(msID); got >= 1.0 {
+		t.Errorf("company sender weight at a junking provider = %v, want a penalty", got)
+	}
+}

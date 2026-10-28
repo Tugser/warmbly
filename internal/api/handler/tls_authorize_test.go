@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type mockCustomDomains struct {
@@ -24,6 +25,8 @@ func (m *mockCustomDomains) IsVerified(_ context.Context, host string) (bool, er
 	}
 	return m.verified[host], nil
 }
+
+func (m *mockCustomDomains) Owners(context.Context, string) ([]uuid.UUID, error) { return nil, nil }
 
 func newTLSRouter(repo *mockCustomDomains) *gin.Engine {
 	h := &Handler{CustomDomains: repo}

@@ -18,12 +18,14 @@ import {
     allowsNoEncryption,
     defaultImapSecurity,
     defaultSmtpSecurity,
+    offersCertificateTrust,
     validPort,
     type MailSecurity,
 } from "@/lib/api/models/app/emails/Service";
 import SecuritySelect from "@/components/app/emails/SecuritySelect";
 import useAuthConfig from "@/lib/api/hooks/auth/useAuthConfig";
 import { Checkbox } from "@/components/ui/checkbox";
+import CertificateTrustOption from "@/components/app/emails/CertificateTrustOption";
 
 export default function UpdateCredentialsDialog({
     mailboxId,
@@ -52,6 +54,9 @@ export default function UpdateCredentialsDialog({
     const [smtpSecurity, setSmtpSecurity] = React.useState<MailSecurity>("starttls");
     const [sameCreds, setSameCreds] = React.useState(true);
     const [submitting, setSubmitting] = React.useState(false);
+    // Offered only after a test failed on the server's certificate.
+    const [certFailed, setCertFailed] = React.useState(false);
+    const [trustCert, setTrustCert] = React.useState(false);
 
     // The port implies the mode until the user picks one by hand, matching the
     // connect form.
@@ -96,6 +101,8 @@ export default function UpdateCredentialsDialog({
             setSmtpSecurity("starttls");
             setSameCreds(true);
             setSubmitting(false);
+            setCertFailed(false);
+            setTrustCert(false);
         }
     }, [open, mailboxEmail]);
 
@@ -120,9 +127,11 @@ export default function UpdateCredentialsDialog({
     async function submit() {
         if (submitting || !valid()) return;
         setSubmitting(true);
+        // The backend keeps the opt-out only on a server whose certificate needs it.
+        const tls = trustCert ? { tls_unverified: true } : {};
         const smtp = sameCreds
-            ? { username: imapUser.trim(), password: imapPass, host: smtpHost.trim(), port: Number(smtpPort), security: smtpSecurity }
-            : { username: smtpUser.trim(), password: smtpPass, host: smtpHost.trim(), port: Number(smtpPort), security: smtpSecurity };
+            ? { username: imapUser.trim(), password: imapPass, host: smtpHost.trim(), port: Number(smtpPort), security: smtpSecurity, ...tls }
+            : { username: smtpUser.trim(), password: smtpPass, host: smtpHost.trim(), port: Number(smtpPort), security: smtpSecurity, ...tls };
         try {
             await toast.promise(
                 updateEmailCredentials(mailboxId, smtp, {
@@ -131,6 +140,7 @@ export default function UpdateCredentialsDialog({
                     host: imapHost.trim(),
                     port: Number(imapPort),
                     security: imapSecurity,
+                    ...tls,
                 }),
                 {
                     loading: "Verifying credentials…",
@@ -140,9 +150,11 @@ export default function UpdateCredentialsDialog({
             );
             qc.invalidateQueries({ queryKey: ["emails", "list"] });
             qc.invalidateQueries({ queryKey: ["analytics", "accounts"] });
+            qc.invalidateQueries({ queryKey: ["emails", "certificates", mailboxId] });
             onClose();
-        } catch {
-            /* surfaced by toast */
+        } catch (e) {
+            // Surfaced by the toast; a certificate failure also offers the opt-out.
+            if (offersCertificateTrust(e)) setCertFailed(true);
         } finally {
             setSubmitting(false);
         }
@@ -251,6 +263,7 @@ export default function UpdateCredentialsDialog({
                                     )}
                                 </AnimatePresence>
                             </Section>
+                            <CertificateTrustOption show={certFailed || trustCert} checked={trustCert} onChange={setTrustCert} />
                         </div>
 
                         <div className="px-4 py-2.5 border-t border-slate-200 bg-slate-50/60 flex items-center gap-2 min-w-0 shrink-0">

@@ -22,6 +22,8 @@ const (
 	AuthEmailTTL     = 30 * time.Minute
 	AuthEmailLimit   = 5
 	PasswordResetTTL = 1 * time.Hour
+	// PasswordResetSessionTTL bounds the reset session a link opens, never past the link itself.
+	PasswordResetSessionTTL = 15 * time.Minute
 
 	PasswordResetLimit    = 2
 	PasswordResetLimitTTL = 4 * time.Hour

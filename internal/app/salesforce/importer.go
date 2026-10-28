@@ -265,7 +265,7 @@ func (s *Service) CreateSource(ctx context.Context, orgID, connID, userID uuid.U
 	}
 	if err := s.Repo.CreateSource(ctx, row); err != nil {
 		if errors.Is(err, repository.ErrSalesforceSourceRefs) {
-			return nil, errx.New(errx.BadRequest, "The campaign to enroll into was not found")
+			return nil, errx.New(errx.BadRequest, "The campaign to enroll into or a category was not found in this workspace")
 		}
 		return nil, err
 	}
@@ -303,7 +303,7 @@ func (s *Service) UpdateSource(ctx context.Context, orgID, id uuid.UUID, in Sour
 	}
 	if err := s.Repo.UpdateSource(ctx, src); err != nil {
 		if errors.Is(err, repository.ErrSalesforceSourceRefs) {
-			return nil, errx.New(errx.BadRequest, "The campaign to enroll into was not found")
+			return nil, errx.New(errx.BadRequest, "The campaign to enroll into or a category was not found in this workspace")
 		}
 		return nil, err
 	}

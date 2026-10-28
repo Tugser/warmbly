@@ -264,6 +264,8 @@ func (s *service) ApproveCode(ctx context.Context, userCode string, orgID, userI
 
 	ok, err := s.repo.ApproveCode(ctx, userCode, orgID, userID, created.ID, created.Secret, scopes)
 	if err != nil {
+		// The code was not recorded as approved, so no CLI can collect this key.
+		_ = s.keys.Revoke(ctx, orgID, created.ID, "cli authorization could not be recorded")
 		return nil, errx.InternalError()
 	}
 	if !ok {

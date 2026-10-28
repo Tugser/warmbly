@@ -144,22 +144,32 @@ func compileTemplate(tmpl string) *template.Template {
 
 // naiveRenderTemplate is a literal {{.key}} substitution (a leading dot is
 // optional here), used as a safe fallback when a template can't compile/execute
-// so a single malformed block never blanks the whole value.
+// so a single malformed block never blanks the whole value. One left-to-right
+// pass: a substituted value is never rescanned, and values share MaxOutput.
 func naiveRenderTemplate(tmpl string, data map[string]any) string {
-	out := tmpl
+	var b strings.Builder
+	budget := tmplfuncs.MaxOutput
+	rest := tmpl
 	for {
-		start := strings.Index(out, "{{")
+		start := strings.Index(rest, "{{")
 		if start < 0 {
 			break
 		}
-		end := strings.Index(out[start:], "}}")
+		end := strings.Index(rest[start:], "}}")
 		if end < 0 {
 			break
 		}
 		end += start
-		key := strings.TrimSpace(out[start+2 : end])
-		key = strings.TrimPrefix(key, ".")
-		out = out[:start] + stringFromMap(data, key) + out[end+2:]
+		key := strings.TrimPrefix(strings.TrimSpace(rest[start+2:end]), ".")
+		value := stringFromMap(data, key)
+		if len(value) > budget {
+			value = ""
+		}
+		budget -= len(value)
+		b.WriteString(rest[:start])
+		b.WriteString(value)
+		rest = rest[end+2:]
 	}
-	return strings.TrimSpace(out)
+	b.WriteString(rest)
+	return strings.TrimSpace(b.String())
 }

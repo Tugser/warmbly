@@ -10,8 +10,11 @@ export default interface TrackingDomain {
     // The CNAME value for this install (its TRACKING_DOMAIN). Empty means the
     // install has no tracking host, so nothing can verify.
     cname_target: string;
-    // verified | unset | no_target | not_found | wrong_target | lookup_error |
-    // pending (stored state that has not been re-resolved).
+    // The ownership TXT record a new verification needs beside the CNAME.
+    txt_name?: string;
+    txt_value?: string;
+    // verified | unset | no_target | not_found | wrong_target | proof_missing |
+    // lookup_error | pending (stored state that has not been re-resolved).
     status: string;
     // One sentence, safe to render as-is.
     message: string;

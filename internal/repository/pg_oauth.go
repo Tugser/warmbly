@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/observability/legacysecret"
 	"github.com/warmbly/warmbly/internal/pkg/encrypt"
 )
 
@@ -60,6 +61,8 @@ type OAuthRepository interface {
 	ListWorkspaceAuthorizations(ctx context.Context, orgID uuid.UUID) ([]models.OAuthMemberAuthorization, error)
 	RevokeAuthorization(ctx context.Context, orgID, userID, appID uuid.UUID) error
 	RevokeMemberGrants(ctx context.Context, orgID, userID uuid.UUID) ([]uuid.UUID, error)
+	// RevokeUserGrants ends every live grant and unused authorization code userID holds in any workspace.
+	RevokeUserGrants(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
 
 	// DeveloperBlock returns the operator's block on this workspace or person,
 	// or nil when they may register and publish apps.
@@ -111,8 +114,14 @@ func (r *oauthRepository) openWebhookSecret(ctx context.Context, a *models.OAuth
 		a.WebhookSecret = ""
 		return
 	}
-	if sealed, err := r.enc.Encrypt(stored); err == nil {
-		_, _ = r.db.Exec(ctx, `UPDATE oauth_applications SET webhook_secret = $2 WHERE id = $1 AND webhook_secret = $3`, a.ID, sealed, stored)
+	legacysecret.Read(legacysecret.OAuthAppWebhookSecret)
+	sealed, err := r.enc.Encrypt(stored)
+	if err != nil {
+		legacysecret.ResealFailed(legacysecret.OAuthAppWebhookSecret, "seal")
+		return
+	}
+	if _, err := r.db.Exec(ctx, `UPDATE oauth_applications SET webhook_secret = $2 WHERE id = $1 AND webhook_secret = $3`, a.ID, sealed, stored); err != nil {
+		legacysecret.ResealFailed(legacysecret.OAuthAppWebhookSecret, "write")
 	}
 }
 
@@ -551,6 +560,32 @@ func (r *oauthRepository) RevokeMemberGrants(ctx context.Context, orgID, userID 
 			RETURNING application_id
 		)
 		SELECT DISTINCT application_id FROM revoked`, orgID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var apps []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		apps = append(apps, id)
+	}
+	return apps, rows.Err()
+}
+
+func (r *oauthRepository) RevokeUserGrants(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := r.db.Query(ctx, `
+		WITH codes AS (
+			UPDATE oauth_authorization_codes SET used_at=now()
+			WHERE user_id=$1 AND used_at IS NULL
+		), revoked AS (
+			UPDATE oauth_access_grants SET revoked_at=now()
+			WHERE user_id=$1 AND revoked_at IS NULL
+			RETURNING application_id
+		)
+		SELECT DISTINCT application_id FROM revoked`, userID)
 	if err != nil {
 		return nil, err
 	}

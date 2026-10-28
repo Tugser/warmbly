@@ -40,7 +40,7 @@ type SMTPConfig struct {
 	// score that as suspicious.
 	EHLOName string
 	// InsecureSkipVerify disables certificate verification. Only for a relay
-	// with a private CA; never for a public provider.
+	// with a private CA; never for a public provider, and never on hosted production.
 	InsecureSkipVerify bool
 }
 
@@ -91,7 +91,7 @@ func (c *Config) LoadSMTPConfig(ctx context.Context) *SMTPConfig {
 		Security:           security,
 		Auth:               auth,
 		EHLOName:           os.Getenv("SMTP_EHLO_NAME"),
-		InsecureSkipVerify: isTrue(os.Getenv("SMTP_TLS_INSECURE_SKIP_VERIFY")),
+		InsecureSkipVerify: SMTPTLSInsecureAllowed(),
 	}
 }
 

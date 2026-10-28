@@ -135,6 +135,9 @@ var commands = []command{
 	{"fleet channel", "Follow stable or dev releases, or hold the fleet where it is", composeExec + "fleet channel stable"},
 	{"fleet pin", "Hold one node at a version, to canary or to hold it back", composeExec + "fleet pin <node-id> v1.4.1"},
 	{"fleet remove", "Forget a node. Its mailboxes re-place themselves", composeExec + "fleet remove <node-id>"},
+	{"fleet rollout start", "Move the fleet to a tag in stages: one canary, then waves", composeExec + "fleet rollout start v1.4.2 --bake 30m"},
+	{"fleet rollout status", "Show a staged rollout's stage, admitted nodes and halt reason", composeExec + "fleet rollout status"},
+	{"fleet env-status", "Whether every live node has applied the current rendered env", composeExec + "fleet env-status"},
 }
 
 func usage(w *os.File) {
@@ -212,7 +215,8 @@ Exit status:
   and nothing at all when none fire. status --json always exits 0, because it
   doubles as a liveness probe; read .summary.error there instead.
   keys status and keys reseal exit non-zero when a stored value opens under no
-  configured key, which is the signal not to retire one.
+  configured key, which is the signal not to retire one. keys status
+  --require-primary also fails while a value still needs a read key.
 
 Run `+"`warmblyctl <command> --help`"+` for one command's flags.
 `)

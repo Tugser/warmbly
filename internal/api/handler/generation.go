@@ -3,7 +3,8 @@
 //  2. atomically consume one credit (DB-enforced: no negative balance, no
 //     double-charge on Idempotency-Key replay)
 //  3. call the configured provider (Anthropic, falling back to OpenAI)
-//  4. return {text, credits_remaining, model}
+//  4. return {text, credits_remaining, model}, or stream the text as it is
+//     written when the caller accepts text/event-stream (deliverWriting)
 //
 // On insufficient credits the consume step short-circuits with 402 BEFORE any
 // provider call, so a depleted org never burns a paid completion. Because the
@@ -13,6 +14,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -136,43 +138,17 @@ func (h *Handler) GenerateWriting(c *gin.Context) {
 		}
 	}
 
-	// Generate. On provider failure, refund the credit so the customer is not
-	// charged for a completion they never received (nothing to refund on the
-	// free/local path). The refund is best-effort; a failed refund is logged via
-	// the audit trail rather than surfaced.
 	voice := h.orgVoice(c.Request.Context(), *orgID, req.Tone)
-	result, gerr := h.WritingGenerator.GenerateWriting(c.Request.Context(), model, req.Prompt, voice)
-	if gerr != nil {
-		if !local {
-			if bal, rerr := h.CreditService.Grant(reqCtx, *orgID, creditsPerWrite, "writing_assistant_refund"); rerr == nil {
-				remaining = bal
+	h.deliverWriting(c, writingCall{
+		orgID: *orgID, reqCtx: reqCtx, local: local, remaining: remaining,
+		cost: creditsPerWrite, ledger: "writing_assistant", idemKey: idemKey,
+		model: model, voice: voice,
+		generate: func(ctx context.Context, onDelta func(string)) (*generation.WritingResult, error) {
+			if s, ok := h.WritingGenerator.(generation.StreamCompleter); ok && onDelta != nil {
+				return s.CompleteStream(ctx, generation.WritingRequest(model, req.Prompt, voice), onDelta)
 			}
-		}
-		if errors.Is(gerr, generation.ErrNotConfigured) {
-			errx.JSON(c, errx.New(errx.ServiceUnavailable, "AI writing assistant is not configured."))
-			return
-		}
-		errx.JSON(c, errx.New(errx.ServiceUnavailable, "The writing assistant is temporarily unavailable. Your credit was not charged."))
-		return
-	}
-
-	// Usage-based settle: price the actual tokens and charge any overage
-	// beyond the flat minimum (best-effort; never fails the delivered text).
-	charged := 0
-	if !local {
-		charged = creditsPerWrite
-		if extra, serr := h.CreditService.SettleUsage(reqCtx, *orgID, creditsPerWrite, result.Model, result.TokensUsed, "writing_assistant", settleKey(idemKey)); serr == nil && extra > 0 {
-			remaining -= extra
-			charged += extra
-		}
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"text":              result.Text,
-		"credits_remaining": remaining,
-		"credits_charged":   charged,
-		"tokens_used":       result.TokensUsed,
-		"model":             result.Model,
+			return h.WritingGenerator.GenerateWriting(ctx, model, req.Prompt, voice)
+		},
 	})
 }
 

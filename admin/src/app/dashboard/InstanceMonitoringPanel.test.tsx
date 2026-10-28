@@ -183,14 +183,16 @@ describe("operational monitoring evidence", () => {
         for (const secret of ["provider-password-private", "secret@example.com", "evil.invalid", "secret-title", "secret-source"]) expect(text).not.toContain(secret);
     });
 
-    it.each(["committed_lag", "pending", "ack_pending", "redelivered"])("keeps positive broker %s prominent while preserving unknown/info", (id) => {
-        state.query.data = snapshot([source({ metrics: Array.from({ length: 8 }, (_, i) => metric({ id: `failure-${i}` })) }), source({ id: "backend_event_broker", metrics: [metric({ id, title: `Broker ${id}`, condition: "unknown", severity: "info", count: 45 })] })]);
-        const document = render(true);
-        expect(document.body.textContent).toContain("1 positive broker queue measurements");
-        expect(document.body.textContent).toContain("45 reports");
-        expect(document.body.textContent).toContain("Queue measurement, not outage");
-        expect(document.body.textContent).toContain("Unknown");
-        expect(document.body.textContent).not.toContain("Confirmed scoped observation");
+    it.each(["committed_lag", "pending", "ack_pending", "redelivered"])("shows positive broker %s as a measurement, not an attention signal", (id) => {
+        state.query.data = snapshot([source({ id: "backend_event_broker", metrics: [metric({ id, title: `Broker ${id}`, condition: "unknown", severity: "info", count: 45 })] })]);
+        const overview = render(true).body.textContent;
+        expect(overview).toContain("0 recorded attention signals");
+        expect(overview).not.toContain(`Broker ${id}`);
+        const details = render().body.textContent;
+        expect(details).toContain("45 reports");
+        expect(details).toContain("Measured");
+        expect(details).toContain("Queue measurement, not outage");
+        expect(details).not.toContain("Confirmed scoped observation");
     });
 
     it("does not classify waits or a fresh zero queue as a failure", () => {

@@ -5,13 +5,19 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
+	"github.com/warmbly/warmbly/internal/app/customhost"
 )
 
 // InternalGetTrackedLink resolves a click ticket for the tracking service.
 // Auth via middleware.InternalAuthMiddleware (INTERNAL_API_TOKEN, both sides).
 //
-//	GET /api/v1/internal/tracked-links/:id
+//	GET /api/v1/internal/tracked-links/:id[?host=<request host>]
 //	  -> 200 {"destination":"https://...","task_id":"<uuid>","identify":bool} | 404
+//
+// On a workspace's custom host only that workspace's tickets resolve; any other
+// answers 404 like an unknown one. A caller that sends no host gets the ticket
+// on any host, which is how tracking releases that predate the parameter behave.
 //
 // identify is true when the workspace runs website tracking and registered
 // the destination's host, so the redirect may append the ticket for the
@@ -33,6 +39,15 @@ func (h *Handler) InternalGetTrackedLink(c *gin.Context) {
 		return
 	}
 	if link == nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	owners, restricted, gerr := h.CustomHosts.Guard(c.Request.Context(), c.Query("host"))
+	if gerr != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "lookup failed"})
+		return
+	}
+	if restricted && !customhost.Allowed(owners, link.OrganizationID) {
 		c.Status(http.StatusNotFound)
 		return
 	}

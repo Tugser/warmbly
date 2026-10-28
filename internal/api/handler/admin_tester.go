@@ -40,14 +40,32 @@ type adminCreateTesterRequest struct {
 	// nobody chose.
 	OrgID  *uuid.UUID `json:"organization_id"`
 	RoleID *uuid.UUID `json:"role_id"`
-	// PasswordDays is how long the handed-out password works; 0 means the default.
+	// PasswordHours is how long the handed-out password works; 0 means the default.
+	PasswordHours int `json:"password_hours"`
+	// PasswordDays is the older whole-day form, read when PasswordHours is unset.
 	PasswordDays int `json:"password_days"`
 }
 
+// An initial credential works for at most 48 hours.
 const (
-	testerPasswordDefaultDays = 30
-	testerPasswordMaxDays     = 90
+	testerPasswordDefaultHours = 48
+	testerPasswordMaxHours     = 48
 )
+
+// testerPasswordLifetime resolves the requested lifetime, refusing one over the cap.
+func testerPasswordLifetime(req adminCreateTesterRequest) (time.Duration, *errx.Error) {
+	hours := req.PasswordHours
+	if hours == 0 && req.PasswordDays != 0 {
+		hours = req.PasswordDays * 24
+	}
+	if hours == 0 {
+		hours = testerPasswordDefaultHours
+	}
+	if hours < 1 || hours > testerPasswordMaxHours {
+		return 0, errx.New(errx.BadRequest, "The initial password can be valid for 1 to 48 hours. Set password_hours to a whole number from 1 to 48.")
+	}
+	return time.Duration(hours) * time.Hour, nil
+}
 
 type adminCreateTesterResponse struct {
 	UserID uuid.UUID `json:"user_id"`
@@ -115,15 +133,12 @@ func (h *Handler) AdminCreateTester(c *gin.Context) {
 		return
 	}
 
-	days := req.PasswordDays
-	if days == 0 {
-		days = testerPasswordDefaultDays
-	}
-	if days < 1 || days > testerPasswordMaxDays {
-		errx.JSON(c, errx.New(errx.BadRequest, "the password can be valid for 1 to 90 days"))
+	lifetime, lerr := testerPasswordLifetime(req)
+	if lerr != nil {
+		errx.JSON(c, lerr)
 		return
 	}
-	passwordExpiresAt := time.Now().Add(time.Duration(days) * 24 * time.Hour)
+	passwordExpiresAt := time.Now().Add(lifetime)
 
 	if req.OrgID != nil && req.RoleID == nil {
 		errx.JSON(c, errx.New(errx.BadRequest, "joining an existing workspace needs a role, so the access granted is one somebody chose"))

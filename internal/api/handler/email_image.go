@@ -13,10 +13,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"image"
-	_ "image/gif"
-	_ "image/jpeg"
-	_ "image/png"
 	"io"
 	"net/http"
 	"path"
@@ -30,6 +26,7 @@ import (
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/infrastructure/storage"
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/pkg/imagetype"
 	"github.com/warmbly/warmbly/internal/utils/paging"
 )
 
@@ -45,18 +42,9 @@ const (
 	emailImageListMax   = 100
 )
 
-// Formats every mail client renders. SVG is excluded on purpose: it is a
-// script-capable document served from our own public origin, and no mail client
-// renders it anyway.
-//
-// Keyed by what http.DetectContentType returns, never by what the client
-// declared, so a name is the only thing the upload gets to choose.
-var allowedEmailImageMIME = map[string]string{
-	"image/png":  ".png",
-	"image/jpeg": ".jpg",
-	"image/gif":  ".gif",
-	"image/webp": ".webp",
-}
+// Formats every mail client renders, decided from the bytes alone. SVG is not
+// one: it is a script-capable document and no mail client renders it.
+var allowedEmailImageFormats = imagetype.Raster
 
 // UploadEmailImage — POST /email-images (multipart "file")
 func (h *Handler) UploadEmailImage(c *gin.Context) {
@@ -83,8 +71,12 @@ func (h *Handler) UploadEmailImage(c *gin.Context) {
 		errx.JSON(c, errx.New(errx.BadRequest, "file is required"))
 		return
 	}
-	if fh.Size <= 0 || fh.Size > emailImageMaxBytes {
-		errx.JSON(c, errx.New(errx.BadRequest, fmt.Sprintf("the image must be between 1 byte and %d MB", mb(emailImageMaxBytes))))
+	if fh.Size <= 0 {
+		errx.JSON(c, emailImageLimits.unreadable())
+		return
+	}
+	if fh.Size > emailImageMaxBytes {
+		errx.JSON(c, emailImageLimits.tooLarge())
 		return
 	}
 
@@ -101,26 +93,20 @@ func (h *Handler) UploadEmailImage(c *gin.Context) {
 	}
 	body := buf.Bytes()
 
-	// The sniff decides, not the client-declared type: this object is served
+	// The bytes decide, never the client-declared type: this object is served
 	// back from our own public origin.
-	mimeType := http.DetectContentType(body)
-	ext, ok := allowedEmailImageMIME[mimeType]
-	if !ok {
-		errx.JSON(c, errx.New(errx.BadRequest, "the image must be a PNG, JPG, GIF or WebP"))
+	format, cfg, err := imagetype.Detect(body, allowedEmailImageFormats...)
+	if errors.Is(err, imagetype.ErrUnreadable) {
+		errx.JSON(c, emailImageLimits.unreadable())
 		return
 	}
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(body))
 	if err != nil {
-		// WebP has no decoder registered, so its dimensions stay unknown
-		// rather than refusing a format every mail client renders.
-		if mimeType != "image/webp" {
-			errx.JSON(c, errx.New(errx.BadRequest, "the image could not be parsed"))
-			return
-		}
-		cfg = image.Config{}
+		errx.JSON(c, emailImageLimits.wrongFormat())
+		return
 	}
+	mimeType, ext := format.MIME, format.Ext
 	if cfg.Width > emailImageMaxDimension || cfg.Height > emailImageMaxDimension {
-		errx.JSON(c, errx.New(errx.BadRequest, fmt.Sprintf("the image must be %dpx or smaller on each side", emailImageMaxDimension)))
+		errx.JSON(c, emailImageLimits.tooWide())
 		return
 	}
 

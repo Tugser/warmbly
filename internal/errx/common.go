@@ -25,6 +25,9 @@ var (
 	// Authorization
 	ErrToken = New(Unauthorized, "Invalid or expired token.")
 	ErrAuth  = New(Unauthorized, "Missing or invalid Authorization header.")
+	// ErrSessionEnded answers a token whose session was signed out or reached
+	// its absolute lifetime; only a new sign-in continues.
+	ErrSessionEnded = NewWithIdentifier(Unauthorized, "session_ended", "Your session has ended. Sign in again to continue.")
 
 	ErrUser     = New(BadRequest, "User doesn't exists.")
 	ErrPassword = New(BadRequest, "Password must be at least 8 characters long.")
@@ -170,28 +173,33 @@ var (
 	// The "none" refusals are two different problems with two different ways
 	// out, so they do not share a message: one is a host that has to change,
 	// the other is a mode this deployment cannot offer at all.
-	ErrEmailSMTPSecurityNotLocal = New(BadRequest, "SMTP security \"none\" is only allowed for a mail server on this machine (localhost, 127.0.0.1 or ::1).")
-	ErrEmailIMAPSecurityNotLocal = New(BadRequest, "IMAP security \"none\" is only allowed for a mail server on this machine (localhost, 127.0.0.1 or ::1).")
-	ErrEmailSMTPSecurityHosted   = New(BadRequest, "SMTP security \"none\" needs a self-hosted instance, where the worker runs on the same machine as the mail server. Use tls or starttls.")
-	ErrEmailIMAPSecurityHosted   = New(BadRequest, "IMAP security \"none\" needs a self-hosted instance, where the worker runs on the same machine as the mail server. Use tls or starttls.")
-	ErrEmailIMAPHost             = New(BadRequest, "IMAP host is required.")
-	ErrEmailIMAPPort             = New(BadRequest, "IMAP port must be between 1 and 65535.")
-	ErrEmailCredentialsRequired  = New(BadRequest, "SMTP and IMAP credentials are required.")
-	ErrEmailTrackingDomain       = New(BadRequest, "Invalid tracking domain.")
-	ErrEmailTrackingDomainLength = New(BadRequest, "Tracking domain is too long (max 253 characters).")
-	ErrEmailName                 = New(BadRequest, "Invalid name. Must be 2–100 characters and contain only letters, numbers, spaces, '-', '.', or '’'.")
-	ErrEmailSignaturePlain       = New(BadRequest, "Plain email signature is too long.")
-	ErrEmailSignatureHTML        = New(BadRequest, "HTML email signature is too long.")
-	ErrEmailMinWaitTime          = New(BadRequest, "Minimum time gap between emails must be between 0 and 86400 seconds.")
-	ErrEmailCampaignLimit        = New(BadRequest, fmt.Sprintf("Campaign limit must be between %d and %d.", config.LimitMin, config.LimitMax))
-	ErrEmailTimezone             = New(BadRequest, "Invalid timezone. Use an IANA name such as Europe/London or America/Denver, or leave it empty to follow the campaign.")
-	ErrEmailWarmupBase           = New(BadRequest, "Warmup base must be between 0 and 100.")
-	ErrEmailWarmupMax            = New(BadRequest, "Warmup max amount must be between 0 and 100.")
-	ErrEmailWarmupIncrease       = New(BadRequest, "Warmup increase amount must be between 0 and 100.")
-	ErrEmailReplyRate            = New(BadRequest, "Warmup reply rate must be between 0 and 100.")
-	ErrEmailWarmupPlacement      = New(BadRequest, "Warmup filing must be one of: folder, inbox, archive.")
-	ErrEmailWarmupFolder         = New(BadRequest, fmt.Sprintf("Warmup folder must be at most %d characters and contain no folder separators or control characters.", config.WarmupFolderMaxLen))
-	ErrEmailWarmupRetention      = New(BadRequest, fmt.Sprintf("Warmup retention must be between %d and %d days, or 0 to follow the instance setting.", config.WarmupMailRetentionDaysMin, config.RetentionDaysMax))
+	ErrEmailSMTPSecurityNotLocal   = New(BadRequest, "SMTP security \"none\" is only allowed for a mail server on this machine (localhost, 127.0.0.1 or ::1).")
+	ErrEmailIMAPSecurityNotLocal   = New(BadRequest, "IMAP security \"none\" is only allowed for a mail server on this machine (localhost, 127.0.0.1 or ::1).")
+	ErrEmailSMTPSecurityHosted     = New(BadRequest, "SMTP security \"none\" needs a self-hosted instance, where the worker runs on the same machine as the mail server. Use tls or starttls.")
+	ErrEmailIMAPSecurityHosted     = New(BadRequest, "IMAP security \"none\" needs a self-hosted instance, where the worker runs on the same machine as the mail server. Use tls or starttls.")
+	ErrEmailSMTPTLSPin             = NewWithIdentifier(BadRequest, "invalid_tls_pin", "SMTP tls_pin must be a SHA-256 fingerprint: 64 hexadecimal characters.")
+	ErrEmailIMAPTLSPin             = NewWithIdentifier(BadRequest, "invalid_tls_pin", "IMAP tls_pin must be a SHA-256 fingerprint: 64 hexadecimal characters.")
+	ErrEmailCertificateNotPinned   = NewWithIdentifier(BadRequest, "mailbox_certificate_not_pinned", "Both servers on this mailbox are verified by a certificate authority, so there is no certificate to confirm.")
+	ErrEmailCertificatePin         = NewWithIdentifier(BadRequest, "invalid_tls_pin", "Send the SHA-256 fingerprint of each server trusted on its own certificate (smtp_pin, imap_pin) as 64 hexadecimal characters. Run the certificate check first and confirm the fingerprints it reports.")
+	ErrEmailCertificatePinMismatch = NewWithIdentifier(BadRequest, "mailbox_tls_failed", "The server did not present the certificate with the fingerprint you confirmed, so nothing was changed. Run the certificate check again (Re-confirm in the dashboard) and confirm the fingerprint it reports.")
+	ErrEmailIMAPHost               = New(BadRequest, "IMAP host is required.")
+	ErrEmailIMAPPort               = New(BadRequest, "IMAP port must be between 1 and 65535.")
+	ErrEmailCredentialsRequired    = New(BadRequest, "SMTP and IMAP credentials are required.")
+	ErrEmailTrackingDomain         = New(BadRequest, "Invalid tracking domain.")
+	ErrEmailTrackingDomainLength   = New(BadRequest, "Tracking domain is too long (max 253 characters).")
+	ErrEmailName                   = New(BadRequest, "Invalid name. Must be 2–100 characters and contain only letters, numbers, spaces, '-', '.', or '’'.")
+	ErrEmailSignaturePlain         = New(BadRequest, "Plain email signature is too long.")
+	ErrEmailSignatureHTML          = New(BadRequest, "HTML email signature is too long.")
+	ErrEmailMinWaitTime            = New(BadRequest, "Minimum time gap between emails must be between 0 and 86400 seconds.")
+	ErrEmailCampaignLimit          = New(BadRequest, fmt.Sprintf("Campaign limit must be between %d and %d.", config.LimitMin, config.LimitMax))
+	ErrEmailTimezone               = New(BadRequest, "Invalid timezone. Use an IANA name such as Europe/London or America/Denver, or leave it empty to follow the campaign.")
+	ErrEmailWarmupBase             = New(BadRequest, "Warmup base must be between 0 and 100.")
+	ErrEmailWarmupMax              = New(BadRequest, "Warmup max amount must be between 0 and 100.")
+	ErrEmailWarmupIncrease         = New(BadRequest, "Warmup increase amount must be between 0 and 100.")
+	ErrEmailReplyRate              = New(BadRequest, "Warmup reply rate must be between 0 and 100.")
+	ErrEmailWarmupPlacement        = New(BadRequest, "Warmup filing must be one of: folder, inbox, archive.")
+	ErrEmailWarmupFolder           = New(BadRequest, fmt.Sprintf("Warmup folder must be at most %d characters and contain no folder separators or control characters.", config.WarmupFolderMaxLen))
+	ErrEmailWarmupRetention        = New(BadRequest, fmt.Sprintf("Warmup retention must be between %d and %d days, or 0 to follow the instance setting.", config.WarmupMailRetentionDaysMin, config.RetentionDaysMax))
 
 	// Disconnecting a mailbox has to reach the machine syncing it before the
 	// row goes: afterwards there is no assignment left to read and nothing that
@@ -265,8 +273,30 @@ var (
 	ErrAdvisorFixForbidden = New(Forbidden, "You can see this recommendation but don't have permission to apply the change it makes.")
 	ErrAdvisorNoAgentFix   = New(BadRequest, "This recommendation needs a person: there's no change an agent can safely make for it.")
 
+	// ErrAttemptCheckUnavailable is answered when the per-account attempt
+	// budget cannot be read or charged. The attempt is not evaluated, so the
+	// caller can retry it safely once the cache answers again.
+	ErrAttemptCheckUnavailable = &Error{Code: ServiceUnavailable, Identifier: "attempt_check_unavailable", RetryAfter: 5,
+		Message: "We couldn't check this attempt right now, so it was not counted. Wait a few seconds and try again."}
+	// ErrCodeLookupUnavailable is the same condition for a pairing-code lookup.
+	ErrCodeLookupUnavailable = &Error{Code: ServiceUnavailable, Identifier: "attempt_check_unavailable", RetryAfter: 5,
+		Message: "We couldn't look up this code right now. Wait a few seconds and try again."}
+
+	// Account and workspace standing. Each names what the person can do next.
+	ErrAccountSuspended = NewWithIdentifier(Forbidden, "account_suspended",
+		"This account is suspended and cannot sign in. If you think this is a mistake, contact support or the administrator of this server.")
+	ErrAccountSendingSuspended = NewWithIdentifier(Forbidden, "account_sending_suspended",
+		"This account is not allowed to send email. If you think this is a mistake, contact support or the administrator of this server.")
+	ErrAccountWorkspaceCreateSuspended = NewWithIdentifier(Forbidden, "account_workspace_create_suspended",
+		"This account is not allowed to create new workspaces. You can still join a workspace you are invited to. If you think this is a mistake, contact support or the administrator of this server.")
+	ErrWorkspaceSendingSuspended = NewWithIdentifier(Forbidden, "workspace_sending_suspended",
+		"Sending is paused for this workspace while it is under review. Contact support to resolve the review; nothing else in the workspace is affected.")
+
 	// Tracking domains
 	ErrTrackingDomainTaken = NewWithIdentifier(Conflict, "tracking_domain_taken", "Another workspace on this instance already uses this tracking domain. Choose a host on a domain your workspace sends from.")
+
+	// Forms domains
+	ErrFormsDomainTaken = NewWithIdentifier(Conflict, "forms_domain_taken", "Another workspace on this instance already uses this domain. Choose a host on a domain your workspace owns.")
 )
 
 // MailboxAllowanceReached is the refusal every connect path returns when the

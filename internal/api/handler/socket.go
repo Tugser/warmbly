@@ -27,7 +27,13 @@ func (h *Handler) GenerateWebsocket(c *gin.Context) {
 		return
 	}
 
-	token, xerr := h.SocketService.GenerateWebsocketToken(c.Request.Context(), uid)
+	session := middleware.GetSession(c)
+	if session == nil {
+		errx.Handle(c, errx.ErrUnauthorized)
+		return
+	}
+
+	token, xerr := h.SocketService.GenerateWebsocketToken(c.Request.Context(), uid, session.ID)
 	if xerr != nil {
 		errx.Handle(c, xerr)
 		return

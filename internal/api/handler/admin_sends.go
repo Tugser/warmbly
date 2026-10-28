@@ -7,6 +7,7 @@ package handler
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -17,7 +18,10 @@ import (
 	"github.com/warmbly/warmbly/internal/models"
 )
 
-const deadLetterEntity models.AuditEntityType = "task_dead_letter"
+const (
+	deadLetterEntity models.AuditEntityType = "task_dead_letter"
+	sendHoldEntity   models.AuditEntityType = "send_recovery_hold"
+)
 
 // webhookDeliveryLease mirrors the default LeaseTimeout in
 // webhook.NewDeliveryWorker (cmd/backend wires the worker without overriding it).
@@ -120,6 +124,89 @@ func (h *Handler) AdminReplayDeadLetter(c *gin.Context) {
 		"task_type":       row.TaskType,
 	})
 	c.JSON(http.StatusOK, gin.H{"replayed": true})
+}
+
+// AdminSendHolds lists mailboxes held from sending and what holds each one.
+func (h *Handler) AdminSendHolds(c *gin.Context) {
+	if !h.adminSendsReady(c) {
+		return
+	}
+	result, err := h.AdminSendsRepo.SendHolds(c.Request.Context(), parseBoundedLimit(c.Query("limit"), 100, 500))
+	if err != nil {
+		errx.JSON(c, errx.InternalError())
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// AdminResolveSendHold records an operator's provider-checked verdict on a held send through the mailbox's own resolution path.
+func (h *Handler) AdminResolveSendHold(c *gin.Context) {
+	if !h.adminSendsReady(c) {
+		return
+	}
+	if h.EmailService == nil {
+		errx.JSON(c, errx.New(errx.NotImplemented, "send hold resolution is not available on this instance"))
+		return
+	}
+	mailboxID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.New(errx.BadRequest, "invalid mailbox ID"))
+		return
+	}
+	var body models.AdminResolveSendHold
+	if err := c.ShouldBindJSON(&body); err != nil {
+		errx.JSON(c, errx.New(errx.BadRequest, "invalid request body"))
+		return
+	}
+	body.ConfirmationReference = strings.TrimSpace(body.ConfirmationReference)
+	body.MessageID = strings.TrimSpace(body.MessageID)
+	if body.ConfirmationReference == "" || strings.ContainsAny(body.ConfirmationReference, "\r\n") {
+		errx.JSON(c, errx.New(errx.BadRequest, "confirmation_reference must be one non-empty line"))
+		return
+	}
+	if body.Outcome == "sent" && body.MessageID == "" {
+		errx.JSON(c, errx.New(errx.BadRequest, "message_id is required when confirming a send went out"))
+		return
+	}
+	resolution, ok := body.Resolution()
+	if !ok {
+		errx.JSON(c, errx.New(errx.BadRequest, "outcome does not apply to this hold reason"))
+		return
+	}
+	held, err := h.AdminSendsRepo.GetSendHold(c.Request.Context(), mailboxID)
+	if err != nil {
+		errx.JSON(c, errx.InternalError())
+		return
+	}
+	if held == nil {
+		errx.JSON(c, errx.NewWithIdentifier(errx.NotFound, "send_hold_not_found", "This mailbox is not held from sending."))
+		return
+	}
+	if held.OrganizationID == nil || held.HeldTaskID == nil || *held.HeldTaskID != body.HeldTaskID || held.Reason != body.HeldReason {
+		errx.JSON(c, errx.NewWithIdentifier(errx.Conflict, "send_hold_changed", "This hold has changed since it was loaded. Refresh and check it again."))
+		return
+	}
+	if !held.Resolvable {
+		errx.JSON(c, errx.NewWithIdentifier(errx.Conflict, "send_hold_not_resolvable", "This hold cannot be resolved right now (blocker: "+held.Blocker+"). The Holds list says what it is waiting for."))
+		return
+	}
+	update := &models.UpdateEmail{SendRecoveryResolution: resolution}
+	if _, xerr := h.EmailService.Update(c.Request.Context(), held.OrganizationID.String(), "", mailboxID.String(), update); xerr != nil {
+		if xerr == errx.ErrInvalid {
+			errx.JSON(c, errx.NewWithIdentifier(errx.Conflict, "send_hold_not_resolvable", "The hold or its send changed and the evidence no longer applies. Refresh and check it again."))
+			return
+		}
+		errx.JSON(c, xerr)
+		return
+	}
+	h.audit(c, models.AuditActionUpdate, sendHoldEntity, &mailboxID, map[string]string{
+		"organization_id": held.OrganizationID.String(),
+		"held_task_id":    body.HeldTaskID.String(),
+		"held_reason":     body.HeldReason,
+		"outcome":         body.Outcome,
+	})
+	// An unknown verdict is applied by the result consumer, so the hold lifts shortly after, not now.
+	c.JSON(http.StatusOK, gin.H{"accepted": true, "applied_by_consumer": body.HeldReason == "unknown"})
 }
 
 // AdminRecentTaskFailures lists the newest task failures with their mailbox.

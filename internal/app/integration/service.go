@@ -1458,8 +1458,7 @@ func validateOutboundConfigURLs(config map[string]any) error {
 		// Only the action-level "url" is templatable (rendered + re-validated at
 		// dispatch by renderOutboundURL), so defer its strict check when it holds
 		// a {{ template. The connection's sealed "webhook_url" is NEVER templated,
-		// so it must pass full validation here — never skip it (else a {{-laced
-		// host could bypass the SSRF guard).
+		// so it always passes full validation here, whatever it contains.
 		if k == "url" && strings.Contains(s, "{{") {
 			continue
 		}

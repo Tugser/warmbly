@@ -258,3 +258,40 @@ async fn benchmark_concurrent_ticket_resolution() {
     }
     println!("synthetic cold-cache tickets={TICKETS}, callers_per_ticket={CALLERS}, backend_calls={}, elapsed_ms={}", fixture.calls(), started.elapsed().as_millis());
 }
+
+// Stands in for the backend: link.acme.test belongs to another workspace.
+async fn host_lookup(axum::extract::RawQuery(query): axum::extract::RawQuery) -> impl IntoResponse {
+    if query.as_deref() == Some("host=link.acme.test") {
+        (StatusCode::NOT_FOUND, String::new())
+    } else {
+        (StatusCode::OK, LINK.to_string())
+    }
+}
+
+#[tokio::test]
+async fn tickets_resolve_per_request_host() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let app = Router::new().route("/api/v1/internal/tracked-links/:id", get(host_lookup));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let resolver = LinkResolver::new(
+        format!("http://{}", listener.local_addr().unwrap()),
+        "fixture-token".into(),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    assert_link(
+        resolver
+            .resolve_on("ticket", "s", "track.warmbly.test")
+            .await,
+        true,
+    );
+    assert!(
+        matches!(
+            resolver.resolve_on("ticket", "s", "link.acme.test").await,
+            Resolution::NotFound
+        ),
+        "a positive answer on one host must not serve the ticket on another"
+    );
+    assert_link(resolver.resolve_on("ticket", "s", "").await, true);
+    server.abort();
+}

@@ -3,6 +3,7 @@ package errx
 import (
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
@@ -28,6 +29,11 @@ type Error struct {
 	// it. Neither is ever written to a response by Handle.
 	Cause  string `json:"-"`
 	Detail string `json:"-"`
+	// Reason is an optional finer key written to the response, for a client
+	// that offers a different next step within one Identifier.
+	Reason string `json:"-"`
+	// RetryAfter, in seconds, is sent as the Retry-After header when set.
+	RetryAfter int `json:"-"`
 }
 
 // Error implements error interface.
@@ -95,6 +101,7 @@ type response struct {
 	Error     string `json:"error"`
 	Message   string `json:"message"`
 	Code      string `json:"code"`
+	Reason    string `json:"reason,omitempty"`
 	RequestID string `json:"request_id,omitempty"`
 }
 
@@ -116,10 +123,14 @@ func Handle(c *gin.Context, err error) {
 // JSON sends a business error as JSON response.
 func JSON(c *gin.Context, err *Error) {
 	httpCode, httpError := err.resolve()
+	if err.RetryAfter > 0 {
+		c.Header("Retry-After", strconv.Itoa(err.RetryAfter))
+	}
 	c.JSON(httpCode, response{
 		Error:     httpError,
 		Message:   clientMessage(c, err),
 		Code:      err.identifier(),
+		Reason:    err.Reason,
 		RequestID: c.GetString("request_id"),
 	})
 }
@@ -132,8 +143,7 @@ const genericServerMessage = "Something went wrong."
 // An Internal message describes something that went wrong inside the service,
 // and handlers routinely built one from the underlying error: driver text with
 // SQLSTATE codes and column names, provider responses, file paths. None of that
-// helps the caller and all of it helps somebody mapping the system, which is
-// what CASA 6.2.1 is about.
+// helps the caller and all of it helps somebody mapping the system.
 //
 // So an Internal error answers with one fixed sentence and the request id. The
 // real message is logged against that id, which is where an operator should be

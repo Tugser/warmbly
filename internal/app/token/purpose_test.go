@@ -7,6 +7,28 @@ import (
 	"github.com/google/uuid"
 )
 
+// A socket ticket names the session it was minted from, so the realtime service can require that session to be live.
+func TestWebsocketTicketNamesItsSession(t *testing.T) {
+	s := &tokenService{AuthSecret: "test-secret-at-least-32-characters-long"}
+	userID, ticketID, sessionID := uuid.New(), uuid.New(), uuid.New()
+	now := time.Now()
+
+	tok, err := s.GenerateWebsocketTicket(userID, ticketID, sessionID, "nonce", now, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, xerr := s.VerifyTokenFor(PurposeWebSocket, tok)
+	if xerr != nil {
+		t.Fatalf("ticket should verify as a socket ticket: %v", xerr)
+	}
+	if claims.UserID != userID || claims.SessionID != ticketID || claims.TicketSession != sessionID.String() || claims.Nonce != "nonce" {
+		t.Fatalf("ticket claims: %+v", claims)
+	}
+	if _, xerr := s.VerifyTokenFor(PurposeAccess, tok); xerr == nil {
+		t.Fatal("a socket ticket must not verify as an access token")
+	}
+}
+
 // A token minted for one flow must not be spendable on another. This is the
 // regression for the realtime socket accepting a password-reset link token,
 // and for anything else that shares the signing key.

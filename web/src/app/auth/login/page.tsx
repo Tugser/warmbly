@@ -20,7 +20,7 @@ import { useTwoFactorVerify } from "@/lib/api/hooks/auth/useTwoFactor";
 import useLinkSSO from "@/lib/api/hooks/auth/useLinkSSO";
 import useRegister from "@/lib/api/hooks/auth/useRegister";
 import useRegisterConfirm from "@/lib/api/hooks/auth/useRegisterConfirm";
-import { saveTokens } from "@/lib/auth";
+import { saveTokens, takeSessionEndedNotice, SESSION_ENDED_MESSAGE } from "@/lib/auth";
 import getUser from "@/lib/api/client/auth/getUser";
 import { TURNSTILE_KEY, API_URL } from "@/lib/information";
 import useBrand from "@/hooks/useBrand";
@@ -192,6 +192,10 @@ export default function LoginPage() {
         const reason = new URLSearchParams(location.searchStr).get("sso_error");
         if (reason) toast.error(reason);
     }, [location.searchStr]);
+    // Landing here because the server ended the session gets one plain line.
+    useEffect(() => {
+        if (takeSessionEndedNotice()) toast(SESSION_ENDED_MESSAGE, { id: "session-ended" });
+    }, []);
     const captchaRequired = authConfig.captcha;
     const turnstileBypassToken = import.meta.env.DEV
         ? (import.meta.env.VITE_TURNSTILE_BYPASS_TOKEN?.trim() || "")

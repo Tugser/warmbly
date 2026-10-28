@@ -144,3 +144,40 @@ func TestValidationError_NamesTheFallbackPort(t *testing.T) {
 		t.Fatalf("got %q", xerr.Message)
 	}
 }
+
+// TestValidationError_PrivateHost: the operator setting is named only where an operator can change it.
+func TestValidationError_PrivateHost(t *testing.T) {
+	leg := models.EmailValidationLeg{Reason: models.MailProbeUnreachable, Detail: models.MailProbeDetailPrivateHost}
+	verdict := models.EmailValidationVerdict{SMTP: leg, IMAP: leg}
+	creds := &models.SmtpImap{SMTP: &models.Service{Host: "mail.corp.example", Port: 587}, IMAP: &models.Service{Host: "mail.corp.example", Port: 993}}
+
+	t.Setenv("DEPLOYMENT_MODE", "cloud")
+	xerr := validationError(verdict, creds)
+	if xerr.Identifier != ErrIDMailboxUnreachable || !strings.Contains(xerr.Message, "outside your network") || strings.Contains(xerr.Message, "MAIL_ALLOW_PRIVATE_HOSTS") {
+		t.Fatalf("hosted: %q", xerr.Message)
+	}
+	if strings.Count(xerr.Message, "outside your network") != 1 {
+		t.Fatalf("hint repeated per leg: %q", xerr.Message)
+	}
+
+	t.Setenv("DEPLOYMENT_MODE", "self_hosted")
+	if xerr := validationError(verdict, creds); !strings.Contains(xerr.Message, "MAIL_ALLOW_PRIVATE_HOSTS=true") {
+		t.Fatalf("self-hosted: %q", xerr.Message)
+	}
+}
+
+// TestValidationError_UntrustedCertificate: a certificate no authority vouches for offers the trust option, a missing STARTTLS does not.
+func TestValidationError_UntrustedCertificate(t *testing.T) {
+	ok := models.EmailValidationLeg{OK: true}
+	cert := &models.MailCertificate{Fingerprint: strings.Repeat("ab", 32), Subject: "mail.corp.example", SelfSigned: true}
+	untrusted := validationError(models.EmailValidationVerdict{SMTP: ok, IMAP: models.EmailValidationLeg{
+		Reason: models.MailProbeTLS, Detail: "the server's certificate is not one a recognised certificate authority vouches for", Certificate: cert}}, gmailCreds())
+	if untrusted.Identifier != ErrIDMailboxTLSFailed || untrusted.Reason != ReasonCertificateUntrusted || !strings.Contains(untrusted.Message, TrustCertificateHint) {
+		t.Fatalf("untrusted: %q", untrusted.Message)
+	}
+	noTLS := validationError(models.EmailValidationVerdict{IMAP: ok, SMTP: models.EmailValidationLeg{
+		Reason: models.MailProbeTLS, Detail: "the server offers no STARTTLS on this port"}}, gmailCreds())
+	if strings.Contains(noTLS.Message, TrustCertificateHint) || noTLS.Reason != "" {
+		t.Fatalf("no STARTTLS offered the trust option: %q", noTLS.Message)
+	}
+}

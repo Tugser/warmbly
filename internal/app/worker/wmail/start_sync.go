@@ -24,9 +24,16 @@ const syncBackoffMax = 5 * time.Minute
 // throttled, waits longer, and every wait carries jitter so a worker with
 // hundreds of mailboxes does not fire them all in the same second.
 func (w *WMail) StartSyncWorker(ctx context.Context) {
-	// Run an initial sync immediately so the inbox is fresh on startup and a
-	// just-connected mailbox starts importing right away.
-	err := w.syncOnce(ctx)
+	// A failed startup connection enters the same backoff as a failed sync.
+	err := w.syncStartupError
+	if err == nil {
+		err = w.syncOnce(ctx)
+	} else {
+		if isTransportError(err) {
+			w.transportFailures++
+		}
+		w.captureSyncError(err)
+	}
 
 	for {
 		delay := w.nextSyncDelay(ImapCheckInterval, err)
@@ -50,7 +57,8 @@ func (w *WMail) nextSyncDelay(base time.Duration, last *errx.MailError) time.Dur
 		// Service-unavailable responses can supply the same retry window as 429.
 		d = max(last.RetryAfter, base)
 		minimum = d
-	case last != nil && last.Code == errx.MailErrorCodeSendingTooFast:
+	case last != nil && (last.Code == errx.MailErrorCodeSendingTooFast ||
+		last.Code == errx.MailErrorCodeTLSCertificateChanged || last.Code == errx.MailErrorCodeTLSCertificateUnconfirmed):
 		d = syncBackoffMax
 	case last != nil && isTransportError(last):
 		// The server is unreachable. Retry soon after the first failure (a

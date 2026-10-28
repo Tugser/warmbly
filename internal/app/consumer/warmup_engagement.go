@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/warmbly/warmbly/internal/app/warmupramp"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/pkg/warmpersona"
 )
@@ -46,21 +47,34 @@ func (s *JobsService) getGenerationSettings(ctx context.Context) models.WarmupGe
 	return *set
 }
 
-// Floors for mail from a sender in watch or throttled: the pool replies to and rescues more of it so placement recovers.
+// Floors for mail from a sender in watch or throttled, on a consumer host, or backing a live campaign: the pool replies to and rescues more of it.
 const (
-	recoveryReplyRate     = 60
+	recoveryReplyRate     = warmupramp.BoostedReplyRate
 	recoveryImportantRate = 60
 	// Below 100 so the persona bias still varies it: no mailbox rescues every message.
 	recoveryRescueRate = 95
 )
 
-// senderRecovering reports whether the sender's warmup standing is watch or throttled.
-func (s *JobsService) senderRecovering(ctx context.Context, senderID uuid.UUID) bool {
-	if s.WarmupRepo == nil {
+// senderGetsRecoveryEngagement reports whether the sender's mail gets recovery engagement:
+// its standing is watch or throttled, it is a consumer Gmail or Outlook.com mailbox,
+// or it backs a live campaign, whose cold mail draws few replies.
+func (s *JobsService) senderGetsRecoveryEngagement(ctx context.Context, senderID uuid.UUID) bool {
+	if s.WarmupRepo != nil {
+		state, _, err := s.WarmupRepo.GetHealthState(ctx, senderID)
+		if err == nil && (state == models.WarmupHealthWatch || state == models.WarmupHealthThrottled) {
+			return true
+		}
+	}
+	if s.EmailRepository != nil {
+		if sender, xerr := s.EmailRepository.GetByID(ctx, senderID); xerr == nil && sender.ConsumerMailbox() {
+			return true
+		}
+	}
+	if s.CampaignRepo == nil {
 		return false
 	}
-	state, _, err := s.WarmupRepo.GetHealthState(ctx, senderID)
-	return err == nil && (state == models.WarmupHealthWatch || state == models.WarmupHealthThrottled)
+	n, err := s.CampaignRepo.CountActiveCampaignsForAccount(ctx, senderID)
+	return err == nil && n > 0
 }
 
 // recoveryEngagement raises the positive signals for a recovering sender's mail and never lowers them.

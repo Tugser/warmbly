@@ -3,9 +3,11 @@ package config
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/warmbly/warmbly/internal/pkg/secretset"
@@ -123,6 +125,15 @@ func (c *Config) LoadAuthConfig(ctx context.Context) (*AuthConfig, error) {
 	// 2FA sealing key. Optional: falls back to AUTH_SECRET so existing
 	// deployments keep working; rotating it invalidates enrolled TOTP secrets.
 	twoFASecret := c.GetSecretOptional(ctx, "TWOFA_SECRET", "twofa_secret", authSecret)
+	// The fallback is AUTH_SECRET, already floored, so a short value was set explicitly.
+	twoFAShort := len(twoFASecret) < MinAuthSecretLength
+	twoFASecretShort.Store(twoFAShort)
+	if twoFAShort {
+		if HostedProduction() {
+			return nil, fmt.Errorf("TWOFA_SECRET must be at least %d characters on hosted production; generate one with: make gen-key", MinAuthSecretLength)
+		}
+		log.Printf("Warning: TWOFA_SECRET is shorter than %d characters. Generate a replacement with `warmblyctl keys generate TWOFA_SECRET`, keep the current value in TWOFA_READ_SECRETS, then run `warmblyctl keys reseal --apply`.", MinAuthSecretLength)
+	}
 	twoFAReadSecrets, err := secretset.Parse(c.GetSecretOptional(ctx, "TWOFA_READ_SECRETS", "twofa_read_secrets", ""))
 	if err != nil {
 		return nil, fmt.Errorf("TWOFA_READ_SECRETS: %w", err)
@@ -224,3 +235,9 @@ func hostFromOrigin(origin string) string {
 	}
 	return u.Hostname()
 }
+
+// twoFASecretShort records that the resolved TWOFA_SECRET is below MinAuthSecretLength.
+var twoFASecretShort atomic.Bool
+
+// TwoFASecretShort reports whether the last loaded TWOFA_SECRET is below MinAuthSecretLength.
+func TwoFASecretShort() bool { return twoFASecretShort.Load() }

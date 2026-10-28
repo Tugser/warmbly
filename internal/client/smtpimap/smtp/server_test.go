@@ -199,14 +199,15 @@ func TestNegotiateAuthPrefersWhatTheServerAdvertises(t *testing.T) {
 		// Both offered: LOGIN, because a server that speaks only one of the
 		// two speaks LOGIN, and preferring it costs nothing here.
 		{"PLAIN LOGIN", "AUTH LOGIN"},
-		{"CRAM-MD5 PLAIN LOGIN", "AUTH CRAM-MD5"},
+		{"CRAM-MD5 PLAIN LOGIN", "AUTH LOGIN"},
+		{"CRAM-MD5", "AUTH CRAM-MD5"},
 	} {
 		srv := newFakeServer(t, tc.advertised)
 		host, port := srv.addr()
 		c := newTestClient(host, port)
 
 		err := c.sendRaw(t.Context(), "sender@warmbly.test", []string{"to@example.test"}, []byte("Subject: hi\r\n\r\nbody\r\n"))
-		if tc.advertised == "CRAM-MD5 PLAIN LOGIN" {
+		if tc.advertised == "CRAM-MD5" {
 			// The fake does not implement the CRAM-MD5 exchange; what matters
 			// is that the client asked for it.
 			if !srv.sawPrefix(tc.wantCmd) {

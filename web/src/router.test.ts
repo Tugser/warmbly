@@ -33,3 +33,18 @@ describe("acquisition route redirects", () => {
         }
     });
 });
+
+describe("code-confirmation paths", () => {
+    it("forward to the current flow without carrying the query", () => {
+        for (const [path, to] of [["/auth/login/confirm", "/auth/login"], ["/auth/register/confirm", "/auth/register"]] as const) {
+            const beforeLoad = router.routesByPath[path].options.beforeLoad as Guard;
+            let redirected: { options: { href: string } } | undefined;
+            try {
+                beforeLoad({ location: { href: `${path}?session=jwt&to=a%40b.c`, searchStr: "?session=jwt&to=a%40b.c" } });
+            } catch (error) {
+                redirected = error as { options: { href: string } };
+            }
+            expect(redirected?.options.href).toBe(to);
+        }
+    });
+});

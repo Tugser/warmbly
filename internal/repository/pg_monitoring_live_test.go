@@ -157,6 +157,43 @@ func TestLiveMonitoringProviderEvidenceHoldsAndDispatch(t *testing.T) {
 			t.Fatal(reason, source)
 		}
 	}
+	f.exec(`UPDATE email_accounts SET status='inactive' WHERE id=$1`, f.account)
+	if source := collectMonitoring(t, r, "send_safety", now); count(source, "holds_authentication") != count(baseSafety, "holds_authentication") || count(source, "holds_inactive") != count(baseSafety, "holds_inactive")+1 {
+		t.Fatal("a switched-off mailbox's hold was counted as blocking a switched-on one", source)
+	}
+	f.exec(`UPDATE email_accounts SET status='active',send_recovery_hold=false,send_recovery_reason=NULL WHERE id=$1`, f.account)
+	// After the legacy-confirmed warmup send above, so only the sends below can clear it.
+	failedAt := now.Add(-5 * time.Minute)
+	f.exec(`INSERT INTO tasks(id,task_type,email_account_id,status,message_id,send_result_state,send_result_evidence,send_result_applied_at) VALUES($1,'campaign',$2,'failed','','failed','{"scope":"recipient","disposition":"permanent"}',$3)`, uuid.New(), f.account, failedAt)
+	if source := collectMonitoring(t, r, "sends", now); count(source, "failed_results_24h") != count(baseSends, "failed_results_24h") {
+		t.Fatal("a recipient rejection was counted as a mailbox failure", source)
+	}
+	f.exec(`INSERT INTO tasks(id,task_type,email_account_id,status,message_id,send_result_state,send_result_evidence,send_result_applied_at) VALUES($1,'campaign',$2,'failed','','failed','{"scope":"mailbox","disposition":"retry"}',$3)`, uuid.New(), f.account, failedAt)
+	if source := collectMonitoring(t, r, "sends", now); count(source, "failed_results_24h") != count(baseSends, "failed_results_24h")+1 {
+		t.Fatal("a mailbox failure without a later send was hidden", source)
+	}
+	legacy := uuid.New()
+	f.exec(`INSERT INTO tasks(id,task_type,email_account_id,status,message_id,completed_at) VALUES($1,'warmup',$2,'completed','',$3)`, legacy, f.account, now.Add(-2*time.Minute))
+	f.exec(`INSERT INTO warmup_tokens(token,task_id,sender_account_id,recipient_account_id,sent_message_id) VALUES($1,$2,$3,$3,'private-legacy-provider-id')`, uuid.New(), legacy, f.account)
+	if source := collectMonitoring(t, r, "sends", now); count(source, "failed_results_24h") != count(baseSends, "failed_results_24h") {
+		t.Fatal("a later legacy-confirmed warmup send did not count as recovery", source)
+	}
+	f.exec(`DELETE FROM warmup_tokens WHERE task_id=$1`, legacy)
+	f.exec(`DELETE FROM tasks WHERE id=$1`, legacy)
+	f.exec(`INSERT INTO tasks(id,task_type,email_account_id,status,message_id,send_result_state,send_result_applied_at) VALUES($1,'campaign',$2,'completed','','sent',$3)`, uuid.New(), f.account, now.Add(-time.Minute))
+	if source := collectMonitoring(t, r, "sends", now); count(source, "failed_results_24h") != count(baseSends, "failed_results_24h") {
+		t.Fatal("a mailbox that sent again still reads as recovery unverified", source)
+	}
+	fresh := uuid.New()
+	f.exec(`INSERT INTO tasks(id,task_type,email_account_id,status,message_id,send_reserved_at,send_result_state) VALUES($1,'campaign',$2,'completed','',$3,'unknown')`, fresh, f.account, now.Add(-time.Minute))
+	if source := collectMonitoring(t, r, "sends", now); count(source, "unknown_results") != count(baseSends, "unknown_results") {
+		t.Fatal("a send in progress was counted as an unverified result", source)
+	}
+	f.exec(`UPDATE tasks SET send_reserved_at=$2 WHERE id=$1`, fresh, now.Add(-20*time.Minute))
+	if source := collectMonitoring(t, r, "sends", now); count(source, "unknown_results") != count(baseSends, "unknown_results")+1 {
+		t.Fatal("a send unknown past ten minutes was hidden", source)
+	}
+	f.exec(`DELETE FROM tasks WHERE id=$1`, fresh)
 	f.exec(`UPDATE email_accounts SET send_cooldown_until=$2 WHERE id=$1`, f.account, now)
 	if source := collectMonitoring(t, r, "send_safety", now); count(source, "send_cooldowns") != count(baseSafety, "send_cooldowns") {
 		t.Fatal("expired cooldown counted")

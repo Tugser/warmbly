@@ -38,23 +38,7 @@ import {
     PopoverMenuTrigger,
 } from "@/components/ui/popover-menu";
 import { Checkbox } from "@/components/ui/checkbox";
-
-// htmlToPlain renders the HTML signature down to a plain-text equivalent,
-// turning block elements and <br> into line breaks. Used to keep the plain
-// version in lockstep with the HTML one while "sync" is on.
-function htmlToPlain(html: string): string {
-    const withBreaks = html
-        .replace(/<\s*br\s*\/?>/gi, "\n")
-        .replace(/<\/\s*(p|div|h[1-6]|li|tr)\s*>/gi, "\n");
-    if (typeof DOMParser === "undefined") return withBreaks.replace(/<[^>]+>/g, "");
-    // DOMParser builds an inert document: nothing is fetched and no handler
-    // runs. Assigning innerHTML on a detached div does fire <img onerror>.
-    const doc = new DOMParser().parseFromString(withBreaks, "text/html");
-    // Without this a signature carrying a <style> block put its whole
-    // stylesheet into the plain-text alternative.
-    doc.querySelectorAll("style, script, title, noscript, template").forEach((el) => el.remove());
-    return (doc.body.textContent || "").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
-}
+import { signatureToPlain } from "@/lib/email/signaturePlain";
 
 // Markup the visual surface cannot host. It edits by assigning innerHTML, so
 // an event handler would run and a <style> block would restyle the dashboard;
@@ -119,7 +103,7 @@ export default function EmailEditor({
     code,
     setCode,
     kind = "signature",
-    toPlain = htmlToPlain,
+    toPlain = signatureToPlain,
 }: EmailEditorProps) {
     const editorRef = useRef<HTMLDivElement>(null);
     const [activeTab, setActiveTab] = useState<"html" | "preview" | "plain">("html");

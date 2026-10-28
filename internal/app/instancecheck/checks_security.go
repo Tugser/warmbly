@@ -34,6 +34,7 @@ func securityChecks() []check {
 		{id: "dev_mode_public", run: checkDevModePublic},
 		{id: "unsafe_webhook_urls", run: checkUnsafeWebhookURLs},
 		{id: "tls_verification_off", run: checkTLSVerificationOff},
+		{id: "twofa_secret_short", run: checkTwoFASecretShort},
 	}
 }
 
@@ -157,32 +158,62 @@ func checkDevModePublic(ctx context.Context, d Deps, in Input) *Finding {
 }
 
 func checkUnsafeWebhookURLs(ctx context.Context, d Deps, in Input) *Finding {
-	if !truthy("WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS") {
+	if !config.UnsafeWebhookURLsAllowed() {
 		return nil
 	}
 	return result(CategorySecurity, SeverityWarning, "Unsafe webhook URLs are allowed",
-		"Customer webhooks may point at http:// and private addresses. This is intended for development only, "+
-			"because it lets any workspace member make the backend reach into your internal network.",
+		"WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS=true is in effect, so customer webhooks and notification channels may point at http:// "+
+			"and private addresses. That lets any workspace member make the backend reach into your internal network. "+
+			"Unless you need a target on your own network, remove the variable from the backend's environment and restart it.",
 		docsWebhooks)
 }
 
 func checkTLSVerificationOff(ctx context.Context, d Deps, in Input) *Finding {
-	platform := truthy("SMTP_TLS_INSECURE_SKIP_VERIFY")
-	mailbox := truthy("MAIL_TLS_INSECURE")
+	// Hosted production ignores both knobs; each mailbox records its own pinned opt-out.
+	platform := config.SMTPTLSInsecureAllowed()
+	mailbox := config.MailTLSInsecureAllowed()
 	if !platform && !mailbox {
+		switch smtpSet, mailSet := truthy("SMTP_TLS_INSECURE_SKIP_VERIFY"), truthy("MAIL_TLS_INSECURE"); {
+		case mailSet:
+			body := "MAIL_TLS_INSECURE=true is set but hosted production ignores it, so mailbox certificates are verified. " +
+				"A mailbox on a server with a self-signed or private certificate can trust that server in its own settings, " +
+				"which pins the server's certificate. Remove the variable from the backend and worker environments to avoid confusion."
+			if smtpSet {
+				body += " SMTP_TLS_INSECURE_SKIP_VERIFY=true is ignored too, so the platform mail relay's certificate is verified."
+			}
+			return result(CategorySecurity, SeverityInfo, "MAIL_TLS_INSECURE is ignored", body, docsWorkers)
+		case smtpSet:
+			return result(CategorySecurity, SeverityInfo, "SMTP_TLS_INSECURE_SKIP_VERIFY is ignored",
+				"SMTP_TLS_INSECURE_SKIP_VERIFY=true is set but hosted production ignores it, so the platform mail relay's certificate is verified. "+
+					"Remove the variable from the backend and consumer environments to avoid confusion.",
+				docsMail)
+		}
 		return nil
 	}
 
-	subject := "mailbox connections"
+	subject, vars := "mailbox connections", "MAIL_TLS_INSECURE=true"
 	switch {
 	case platform && mailbox:
-		subject = "platform mail and mailbox connections"
+		subject, vars = "platform mail and mailbox connections", "SMTP_TLS_INSECURE_SKIP_VERIFY=true and MAIL_TLS_INSECURE=true"
 	case platform:
-		subject = "platform mail"
+		subject, vars = "platform mail", "SMTP_TLS_INSECURE_SKIP_VERIFY=true"
 	}
 
 	return result(CategorySecurity, SeverityWarning, "TLS verification is disabled",
-		fmt.Sprintf("TLS certificate verification is disabled for %s. "+
-			"Only do this for a relay using a private certificate authority.", subject),
+		fmt.Sprintf("With %s, TLS certificate verification is disabled for %s. "+
+			"That is only right for a relay using a private certificate authority or the local sandbox. "+
+			"Unset the setting and restart to verify certificates again; a mailbox on a server with its own certificate "+
+			"can trust that server in its own settings instead, which pins the certificate.", vars, subject),
 		docsMail)
+}
+
+func checkTwoFASecretShort(ctx context.Context, d Deps, in Input) *Finding {
+	if !config.TwoFASecretShort() {
+		return nil
+	}
+	return result(CategorySecurity, SeverityWarning, "TWOFA_SECRET is short",
+		fmt.Sprintf("TWOFA_SECRET is shorter than %d characters, and it seals every enrolled TOTP secret. "+
+			"Generate a replacement with `warmblyctl keys generate TWOFA_SECRET`, move the current value into TWOFA_READ_SECRETS, "+
+			"restart, then run `warmblyctl keys reseal --apply` so existing enrollments keep working.", config.MinAuthSecretLength),
+		docsSecrets)
 }

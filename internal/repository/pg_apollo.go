@@ -15,8 +15,8 @@ import (
 )
 
 // ErrApolloSourceRefs means an Apollo import source, its connection or its
-// target campaign is not in the organization.
-var ErrApolloSourceRefs = errors.New("import source, connection or campaign not found")
+// target campaign or categories are not in the organization.
+var ErrApolloSourceRefs = errors.New("import source, connection, campaign or category not found")
 
 // ApolloContactRef is the slice of a Warmbly contact enrichment reads.
 type ApolloContactRef struct {
@@ -102,6 +102,7 @@ func (r *apolloRepository) CreateSource(ctx context.Context, s *models.ApolloImp
 		SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
 		WHERE EXISTS (SELECT 1 FROM integration_connections WHERE id = $2 AND organization_id = $1 AND provider = 'apollo')
 		  AND ($7::uuid IS NULL OR EXISTS (SELECT 1 FROM campaigns WHERE id = $7 AND organization_id = $1))
+		  AND NOT EXISTS (SELECT 1 FROM unnest($8::uuid[]) c(id) WHERE NOT EXISTS (SELECT 1 FROM categories cat WHERE cat.id = c.id AND cat.organization_id = $1))
 		RETURNING `+apolloSourceColumns,
 		s.OrganizationID, s.ConnectionID, s.CreatedByUserID, s.Name, s.ListID, s.ListName,
 		s.CampaignID, s.CategoryIDs, s.VerifiedOnly, s.Recurring, s.Enabled)
@@ -150,7 +151,8 @@ func (r *apolloRepository) UpdateSource(ctx context.Context, s *models.ApolloImp
 			name = $3, campaign_id = $4, category_ids = $5, verified_only = $6, recurring = $7, enabled = $8,
 			updated_at = NOW()
 		WHERE organization_id = $1 AND id = $2
-		  AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM campaigns WHERE id = $4 AND organization_id = $1))`,
+		  AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM campaigns WHERE id = $4 AND organization_id = $1))
+		  AND NOT EXISTS (SELECT 1 FROM unnest($5::uuid[]) c(id) WHERE c.id <> ALL(category_ids) AND NOT EXISTS (SELECT 1 FROM categories cat WHERE cat.id = c.id AND cat.organization_id = $1))`,
 		s.OrganizationID, s.ID, s.Name, s.CampaignID, s.CategoryIDs, s.VerifiedOnly, s.Recurring, s.Enabled)
 	if err != nil {
 		return err

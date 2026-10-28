@@ -142,7 +142,9 @@ func (s *authService) RegistrationConfirm(ctx context.Context, data *ConfirmData
 	}
 
 	sessKey := getRegistrationSessionKey(claims.SessionID)
-	if !s.reserveCodeAttempt(ctx, sessKey, time.Until(claims.ExpiresAt.Time)) {
+	if ok, xerr := s.reserveCodeAttempt(ctx, sessKey, time.Until(claims.ExpiresAt.Time)); xerr != nil {
+		return nil, xerr
+	} else if !ok {
 		return nil, errx.ErrCodeLimit
 	}
 

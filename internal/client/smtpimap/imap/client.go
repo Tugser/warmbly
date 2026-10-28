@@ -18,6 +18,7 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-sasl"
 	"github.com/rs/zerolog/log"
+	"github.com/warmbly/warmbly/internal/client/mailtls"
 	"github.com/warmbly/warmbly/internal/client/netbind"
 	"github.com/warmbly/warmbly/internal/config"
 	"github.com/warmbly/warmbly/internal/errx"
@@ -87,6 +88,7 @@ type Client struct {
 	transport    net.Conn
 	lifetimeStop func() bool
 	closed       atomic.Bool
+	loginRetryAt atomic.Int64
 
 	// IdleTimeout bounds how long a command waits for the server to say
 	// anything before the session is declared dead. Zero means
@@ -195,6 +197,9 @@ func (c *Client) connectLocked() *errx.MailError {
 	if c.closed.Load() || c.Context != nil && c.Context.Err() != nil {
 		return errx.ErrMailServerUnreachable
 	}
+	if err := c.loginCooldown(time.Now()); err != nil {
+		return err
+	}
 	c.setupMu.Lock()
 	if c.lifetimeStop != nil {
 		c.lifetimeStop()
@@ -206,9 +211,11 @@ func (c *Client) connectLocked() *errx.MailError {
 	c.setupMu.Unlock()
 	var addr, host, security string
 	var port int
+	var policy mailtls.Policy
 	switch c.AuthType {
 	case models.AuthPlain:
 		host, port, security = c.Credentials.Host, c.Credentials.Port, c.Credentials.Security
+		policy = mailtls.PolicyFor(c.Credentials)
 	case models.AuthOAuth2:
 		host, port = c.Oauth2.Host, c.Oauth2.Port
 	}
@@ -218,11 +225,8 @@ func (c *Client) connectLocked() *errx.MailError {
 	host = models.NormalizeMailHost(host)
 	addr = models.MailDialAddress(host, port)
 
-	tlsConf := &tls.Config{
-		ServerName:         host,
-		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: netbind.InsecureTLS(), //nolint:gosec // MAIL_TLS_INSECURE, local dev only
-	}
+	capture := &mailtls.Capture{}
+	tlsConf := mailtls.Config(host, policy, capture)
 
 	// Dial through netbind so both paths honour WORKER_BIND_IP, and wrap the
 	// socket before TLS so the idle clock sits under the encryption.
@@ -289,6 +293,9 @@ func (c *Client) connectLocked() *errx.MailError {
 		// itself when the upgrade fails.
 		client, err = imapclient.NewStartTLS(conn, &imapclient.Options{TLSConfig: tlsConf})
 		if err != nil {
+			if perr := mailtls.AsPinError(err, capture); perr != nil {
+				return mailtls.MailError(perr, "IMAP")
+			}
 			return errx.ErrMailServerUnreachableAt(errx.MailConnectionStageIMAPSTARTTLS, errors.New(connectionFailureReason(err)))
 		}
 	default:
@@ -296,6 +303,9 @@ func (c *Client) connectLocked() *errx.MailError {
 		err = tconn.HandshakeContext(setupCtx)
 		if err != nil {
 			_ = tconn.Close()
+			if perr := mailtls.AsPinError(err, capture); perr != nil {
+				return mailtls.MailError(perr, "IMAP")
+			}
 			return errx.ErrMailServerUnreachableAt(errx.MailConnectionStageIMAPTLS, errors.New(connectionFailureReason(err)))
 		}
 		client = imapclient.New(tconn, nil)
@@ -357,6 +367,8 @@ func (c *Client) Close() error {
 	return err
 }
 
+// plainAuth signs in with LOGIN, which only ever runs on a TLS session or the
+// loopback-proved unencrypted mode.
 func (c *Client) plainAuth() *errx.MailError {
 	if err := c.client.Login(c.Credentials.Username, c.Credentials.Password).Wait(); err != nil {
 		return c.handleError(err)

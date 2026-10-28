@@ -4,9 +4,8 @@ import "time"
 
 const (
 	SessionTTL = 12 * time.Hour
-	// revokedTombstoneTTL bounds how long a revoked marker written in place of
-	// a failed cache eviction lives before reads fall back to the row.
-	revokedTombstoneTTL  = 5 * time.Minute
+	// revokedTombstoneTTL outlives any cached copy, so no fill can resurrect a revoked session.
+	revokedTombstoneTTL  = SessionTTL
 	RefreshTokenTTL      = 12 * time.Hour
 	AccessTokenLifeTime  = 12 * time.Hour
 	RefreshTokenLifeTime = 180 * 24 * time.Hour

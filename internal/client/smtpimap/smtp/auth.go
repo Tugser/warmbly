@@ -18,18 +18,18 @@ var ErrSMTPCleartextAuth = errors.New("smtp: refusing to send credentials over a
 // mechanisms we implement.
 var ErrSMTPNoSupportedAuth = errors.New("smtp: the server advertises no supported authentication mechanism")
 
-// NegotiateAuth picks a mechanism from what the server actually advertised.
+// NegotiateAuth picks a mechanism from what the server actually advertised,
+// over the link the session is on.
 //
-// Sending AUTH PLAIN blind, which is what net/smtp does when handed a
-// PlainAuth, fails outright on a server that advertises only LOGIN, and
-// Exchange Online relays and most appliance relays are in that group. The
-// failure arrives as a rejected AUTH, which reads exactly like a wrong
-// password, so the mailbox was deactivated and its owner told to check
-// credentials that were correct.
+// A password mechanism is only chosen over an established TLS session
+// (implicit TLS or a completed STARTTLS), or to a loopback host, which is the
+// only place the unencrypted mailbox mode reaches. Anywhere else the answer
+// is ErrSMTPCleartextAuth, whatever the server offers.
 //
-// LOGIN is preferred over PLAIN because a server that speaks only one of the
-// two speaks LOGIN. CRAM-MD5 is preferred over both where offered: it does not
-// put the password on the wire at all.
+// Over that link LOGIN and PLAIN come first: TLS already protects the
+// password, and a server that speaks only one of the two speaks LOGIN
+// (Exchange Online, most appliance relays), which is why it is negotiated
+// rather than sent blind. CRAM-MD5 is used only when neither is offered.
 //
 // A server that advertises no AUTH at all gets a nil Auth and no error: it
 // wants no authentication, which is the local development sink.
@@ -38,16 +38,29 @@ func NegotiateAuth(client *smtp.Client, username, password, host string) (smtp.A
 	if !ok {
 		return nil, nil
 	}
-	mechs := strings.ToUpper(ext)
-	switch {
-	case strings.Contains(mechs, "CRAM-MD5"):
-		return smtp.CRAMMD5Auth(username, password), nil
-	case strings.Contains(mechs, "LOGIN"):
-		return NewLoginAuth(username, password, host), nil
-	case strings.Contains(mechs, "PLAIN"):
-		return smtp.PlainAuth("", username, password, host), nil
+	_, encrypted := client.TLSConnectionState()
+	return chooseAuth(ext, encrypted, username, password, host)
+}
+
+// chooseAuth is NegotiateAuth's decision, given the advertised mechanisms and
+// whether the session is encrypted.
+func chooseAuth(advertised string, encrypted bool, username, password, host string) (smtp.Auth, error) {
+	if !encrypted && !IsLoopbackHost(host) {
+		return nil, ErrSMTPCleartextAuth
 	}
-	return nil, fmt.Errorf("%w: %q", ErrSMTPNoSupportedAuth, ext)
+	offered := map[string]bool{}
+	for _, mech := range strings.Fields(strings.ToUpper(advertised)) {
+		offered[mech] = true
+	}
+	switch {
+	case offered["LOGIN"]:
+		return NewLoginAuth(username, password, host), nil
+	case offered["PLAIN"]:
+		return smtp.PlainAuth("", username, password, host), nil
+	case offered["CRAM-MD5"]:
+		return smtp.CRAMMD5Auth(username, password), nil
+	}
+	return nil, fmt.Errorf("%w: %q", ErrSMTPNoSupportedAuth, advertised)
 }
 
 // LoginAuth implements the non-standard but widely required AUTH LOGIN

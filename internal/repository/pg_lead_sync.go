@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,6 +26,8 @@ type LeadSyncRepository interface {
 	// SetResult records the outcome of a "Sync now" run. resultJSON is the
 	// marshalled *models.ContactImportResult (nil-safe).
 	SetResult(ctx context.Context, id uuid.UUID, status models.LeadSyncStatus, lastSyncedAt *time.Time, resultJSON []byte, lastErr string) error
+	// TargetsInOrganization reports whether the campaign (when set) and every category id belong to the organization.
+	TargetsInOrganization(ctx context.Context, orgID uuid.UUID, campaignID *uuid.UUID, categoryIDs []string) (bool, error)
 }
 
 type leadSyncRepository struct {
@@ -213,4 +216,25 @@ func scanLeadSyncInto(row scanner, s *models.LeadSyncSource) error {
 		}
 	}
 	return nil
+}
+
+func (r *leadSyncRepository) TargetsInOrganization(ctx context.Context, orgID uuid.UUID, campaignID *uuid.UUID, categoryIDs []string) (bool, error) {
+	cats := make([]uuid.UUID, 0, len(categoryIDs))
+	seen := make(map[uuid.UUID]bool, len(categoryIDs))
+	for _, raw := range categoryIDs {
+		id, err := uuid.Parse(strings.TrimSpace(raw))
+		if err != nil {
+			return false, nil
+		}
+		if !seen[id] {
+			seen[id] = true
+			cats = append(cats, id)
+		}
+	}
+	var ok bool
+	err := r.db.QueryRow(ctx, `
+		SELECT ($2::uuid IS NULL OR EXISTS (SELECT 1 FROM campaigns WHERE id = $2 AND organization_id = $1))
+		   AND (SELECT count(*) FROM categories WHERE id = ANY($3) AND organization_id = $1) = cardinality($3::uuid[])
+	`, orgID, campaignID, cats).Scan(&ok)
+	return ok, err
 }

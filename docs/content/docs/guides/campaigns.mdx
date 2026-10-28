@@ -45,7 +45,7 @@ On **Review**, check the finish date, then choose **Launch** or **Save as draft*
 
 ## Good to know
 
-- Each mailbox sends at most `50` cold emails a day by default, with at least `600` seconds between two sends.
+- Each mailbox sends at most `50` cold emails a day by default, with at least `600` seconds between two sends. A newly connected free Gmail or Outlook.com account starts at `20` a day, `900` seconds apart.
 - A campaign sends only inside its weekly sending windows, in the campaign's timezone.
 - A lead's follow-ups normally go out from the mailbox that sent their first email, and move to another one only when that mailbox is held, cooling or gone.
 - Launch checks your list first and refuses one that is known to be largely undeliverable.
@@ -94,7 +94,7 @@ Campaign names take priority over descriptions in the list. Descriptions use the
 1. **Leads**: name the campaign at the top (left blank, it is named after its first list, or "Campaign" and the date; rename it any time), then pick one or more lead lists. Lists are your [segments](/guides/segments/), shown with how many leads each holds; someone on several lists is emailed once, and the total below counts each lead once. **Import new leads** takes you to Contacts to bring in a CSV and keeps the draft for when you return. Picking no list is fine: **Continue without leads** creates the campaign so you can add leads afterwards.
 2. **Emails**: the same editor as the Steps tab, with templates, **Write with AI**, variables, a preview rendered through the send engine and the content score. Selecting a template applies both its saved subject and its body. A template without a subject keeps the email's existing subject. Add follow-ups here, each sent a number of days after the previous email (and stopping for anyone who replies, when **Stop on reply** is on). **Add the usual two follow-ups** adds two at 3 and 7 days. A follow-up with no subject replies in the same thread. The emails can also be left for the Steps tab, where you can branch them and add A/B variants.
 3. **Schedule**: start at launch or on a date, the timezone, sending days and hours, the mailbox tags to send from, and the daily limit per mailbox. Every mailbox in the pool is listed with what it can send: **Ramping up** while it is still graduating from warmup, **Reduced volume** in a watch or throttled health band, **On hold**, **DNS failing** or **Resting** when it will not send. Tracking, UTM parameters, the unsubscribe header and stop on reply are under **Tracking and replies**.
-4. **Review**: the finish date and a day-by-day chart of first emails and follow-ups against what the pool can send, what is setting the pace, and a summary with a link back to each step.
+4. **Review**: the finish date with the arithmetic behind it and what sets the pace, a chart of first emails, follow-ups and warmup against what the pool can send for the campaign, what would finish it sooner, what each mailbox sends with and without the campaign, and a summary with a link back to each step.
 
 While you work, a **Launch plan** beside the Leads and Schedule steps keeps the estimate current. See [How the estimate works](#how-the-estimate-works).
 
@@ -109,7 +109,7 @@ A draft's Overview tab shows what it still needs (leads, an email, senders), eac
 The estimate simulates the campaign day by day against the mailboxes that would send it. It uses the same rules as the scheduler:
 
 - each mailbox's own cap and the campaign's daily limit
-- conservative cold pacing, requiring recent real-recipient replies for bounded increases rather than synthetic age
+- reply-based pacing: a mailbox with warmup history starts at five campaign emails a day, and each lead who replied to it in the last seven days lets it send one more a day, up to the campaign's limit. A bounce pauses that climb and a spam complaint resets it. Warmup replies never count. The estimate assumes nobody replies, so it shows the slowest case
 - the workspace's risk band and each mailbox's health band
 - mailboxes on hold or failing domain authentication, which send nothing
 - mailboxes with an unresolved send outcome or a provider cooldown, which contribute no available sends until the hold is resolved or the cooldown expires
@@ -117,6 +117,10 @@ The estimate simulates the campaign day by day against the mailboxes that would 
 - the sending window, with the spacing between sends
 
 Warmup keeps running on every warming mailbox, reduced to 5 emails a day while it backs a live campaign, and those emails use the same spacing clock as campaign sends. The estimate counts them, so a narrow window with a long gap between sends finishes later than the caps alone suggest. Mailboxes that already send for other campaigns keep that share of their cap, judged from their last seven days.
+
+The headline shows the arithmetic behind the date (the emails, about how many go out a day, and how many sending days that takes) with a label for what sets the pace, such as **Paced by replies**. Under **To finish sooner**, the estimate runs the same simulation again with one change at a time and lists each change that would beat the date, with its own finish: 3% of leads replying, twice the mailboxes, or sending on every day of the week when the schedule skips some. When raising the daily limit would not move the date, it says so.
+
+The chart draws one bar per day for campaigns up to about three months long and one bar per week beyond that; the corner of the chart says which. Hovering a bar shows its first emails, follow-ups and warmup, the total sent and, on a daily chart, about how many that is per mailbox. Below it, a table compares what one mailbox sends on a sending day with no campaign and while this one runs, and explains what happens to its warmup: it drops to five a day, pool partners [reply to more of it](/guides/warmup/#recovery-engagement), and it returns to its own schedule once no campaign uses the mailbox.
 
 Follow-ups that are due go out before new leads start, and the total assumes nobody replies or unsubscribes, so real sequences usually finish sooner. Replies, bounces, new contacts joining a linked segment and changes to a mailbox's health all move the real finish.
 

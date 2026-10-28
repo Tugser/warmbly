@@ -54,16 +54,18 @@ func (c *Client) Put(ctx context.Context, key string, body io.Reader, contentTyp
 }
 
 // PutPublic writes a public-read object with a long immutable cache and
-// returns its public URL. Used for avatars and org logos.
+// returns its public URL. Used for avatars and org logos. The store answers a
+// direct GET with the type and disposition written here, so only a raster
+// image is stored to render inline.
 func (c *Client) PutPublic(ctx context.Context, key string, body io.Reader, contentType string) (string, error) {
+	ct, disposition := PublicHeaders(contentType)
 	in := &s3.PutObjectInput{
-		Bucket:       aws.String(c.Bucket),
-		Key:          aws.String(key),
-		Body:         body,
-		CacheControl: aws.String("public, max-age=31536000, immutable"),
-	}
-	if contentType != "" {
-		in.ContentType = aws.String(contentType)
+		Bucket:             aws.String(c.Bucket),
+		Key:                aws.String(key),
+		Body:               body,
+		CacheControl:       aws.String("public, max-age=31536000, immutable"),
+		ContentType:        aws.String(ct),
+		ContentDisposition: aws.String(disposition),
 	}
 	if _, err := c.PutObject(ctx, in); err != nil {
 		return "", err
@@ -136,8 +138,24 @@ func (c *Client) Has(ctx context.Context, key string) (bool, error) {
 	return c.Exists(ctx, c.Bucket, key)
 }
 
-func (c *Client) PresignedGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	return c.PresignedURL(ctx, PresignOpGet, key, "", ttl)
+func (c *Client) PresignedGetURL(ctx context.Context, key string, ttl time.Duration, dl Download) (string, error) {
+	return c.presignGet(ctx, key, ttl, dl)
+}
+
+// presignGet signs a read whose response is always a download: the store
+// answers with the overriding Content-Disposition and Content-Type rather
+// than whatever the object was written with.
+func (c *Client) presignGet(ctx context.Context, key string, ttl time.Duration, dl Download) (string, error) {
+	out, err := s3.NewPresignClient(c.Client).PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket:                     aws.String(c.Bucket),
+		Key:                        aws.String(key),
+		ResponseContentDisposition: aws.String(DownloadDisposition(dl.Filename)),
+		ResponseContentType:        aws.String(DownloadType(dl.ContentType)),
+	}, s3.WithPresignExpires(ttl))
+	if err != nil {
+		return "", err
+	}
+	return out.URL, nil
 }
 
 // PresignedURL signs one operation on one key. This is what lets a worker hold
@@ -152,14 +170,7 @@ func (c *Client) PresignedURL(ctx context.Context, op PresignOp, key, contentTyp
 
 	switch op {
 	case PresignOpGet:
-		out, err := ps.PresignGetObject(ctx, &s3.GetObjectInput{
-			Bucket: aws.String(c.Bucket),
-			Key:    aws.String(key),
-		}, expires)
-		if err != nil {
-			return "", err
-		}
-		return out.URL, nil
+		return c.presignGet(ctx, key, ttl, Download{})
 
 	case PresignOpPut:
 		in := &s3.PutObjectInput{

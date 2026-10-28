@@ -12,7 +12,7 @@ defmodule RealtimeWeb.AdminChannelTest do
 
   test "each distinct event is delivered once and leaving removes the subscription" do
     Process.flag(:trap_exit, true)
-    {:ok, _, socket} = subscribe_and_join(user_socket(uuid()), AdminChannel, "admin:platform")
+    {:ok, _, socket} = subscribe_and_join(admin_socket(), AdminChannel, "admin:platform")
     :sys.get_state(socket.channel_pid)
 
     assert Enum.count(Registry.lookup(Realtime.PubSub, socket.topic), fn {pid, _} ->
@@ -37,13 +37,29 @@ defmodule RealtimeWeb.AdminChannelTest do
     AuthRepo.respond_with(fn _sql, _params -> {:ok, %{rows: []}} end)
 
     assert {:error, %{reason: "not_an_admin"}} =
-             subscribe_and_join(user_socket(uuid()), AdminChannel, "admin:platform")
+             subscribe_and_join(admin_socket(), AdminChannel, "admin:platform")
 
     assert {:error, %{reason: "jwt_required"}} =
              subscribe_and_join(
-               user_socket(uuid(), %{auth_type: :api_key}),
+               user_socket(uuid(), %{auth_type: :api_key, mfa_verified: true}),
                AdminChannel,
                "admin:platform"
              )
   end
+
+  test "an admin whose session did not verify a second factor cannot join" do
+    assert {:error, %{reason: "admin_mfa_required"}} =
+             subscribe_and_join(user_socket(uuid()), AdminChannel, "admin:platform")
+
+    assert {:error, %{reason: "admin_mfa_required"}} =
+             subscribe_and_join(
+               user_socket(uuid(), %{mfa_verified: false}),
+               AdminChannel,
+               "admin:platform"
+             )
+
+    assert AuthRepo.queries() == []
+  end
+
+  defp admin_socket, do: user_socket(uuid(), %{mfa_verified: true})
 end

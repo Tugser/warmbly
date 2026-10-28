@@ -37,10 +37,10 @@ defmodule Realtime.ApiKey do
   end
 
   @doc """
-  Validate an API key and return the user_id if valid.
+  Validate an API key and return its holder and grant if valid.
 
   Returns:
-  - {:ok, user_id} if valid
+  - {:ok, user_id, %{organization_id, scopes}} if valid
   - {:error, reason} if invalid
 
   Checks:
@@ -57,14 +57,15 @@ defmodule Realtime.ApiKey do
          :ok <- check_expiration(key_data),
          :ok <- check_permission(key_data),
          :ok <- check_ip_restriction(key_data, client_ip),
-         :ok <- check_live(key_data) do
-      {:ok, key_data.user_id}
+         {:ok, grant} <- check_live(key_data) do
+      {:ok, key_data.user_id, grant}
     end
   end
 
-  # Uncached, so a revoked key, a banned holder or one who left the workspace stops at once.
+  # Uncached, so a revoked key, a banned holder or one who left the workspace stops at once,
+  # and the workspace and scopes the socket is confined to are the key's current ones.
   @live_query """
-  SELECT 1 FROM api_keys k JOIN users u ON u.id = k.user_id
+  SELECT k.organization_id::text, k.permissions FROM api_keys k JOIN users u ON u.id = k.user_id
   WHERE k.id = $1 AND k.status = 'active' AND (u.ban_scope & 1) = 0
     AND EXISTS (SELECT 1 FROM organization_members m
                 WHERE m.organization_id = k.organization_id AND m.user_id = k.user_id
@@ -73,8 +74,8 @@ defmodule Realtime.ApiKey do
 
   defp check_live(%{id: id}) do
     with {:ok, bin} <- Ecto.UUID.dump(id),
-         {:ok, %{rows: [_ | _]}} <- Repo.query(@live_query, [bin]) do
-      :ok
+         {:ok, %{rows: [[org_id, scopes] | _]}} <- Repo.query(@live_query, [bin]) do
+      {:ok, %{organization_id: org_id, scopes: scopes}}
     else
       {:ok, %{rows: []}} -> {:error, :key_inactive}
       _ -> {:error, :database_error}

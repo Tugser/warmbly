@@ -386,7 +386,7 @@ The platform's own mail is registration codes, password resets, team invitations
 
 | Transport | What it does |
 |-----------|--------------|
-| `log` | Writes every message to the backend logs and delivers nothing. The compose default, so a fresh install works before you have a relay. A bare binary with neither `MAIL_TRANSPORT` nor `SMTP_HOST` falls back to `ses` instead |
+| `log` | Writes every message to the backend logs and delivers nothing. Outside `APP_ENV=dev` the query strings of links are redacted, so reset and invitation links are not readable there. The compose default, so a fresh install works before you have a relay. A bare binary with neither `MAIL_TRANSPORT` nor `SMTP_HOST` falls back to `ses` instead |
 | `smtp` | A real submission relay |
 | `ses` | AWS SES; needs AWS credentials and a verified sending identity |
 

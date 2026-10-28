@@ -26,6 +26,10 @@ func (r *batchBehaviorRepo) GetBehaviors(_ context.Context, ids []uuid.UUID) (ma
 	return r.stored, r.err
 }
 
+func (r *batchBehaviorRepo) EnsurePlan(_ context.Context, plan models.DailyPlan) (*models.DailyPlan, error) {
+	return &plan, nil
+}
+
 // resolveManyUncached preserves the BASE implementation for differential checks.
 func resolveManyUncached(s *service, ctx context.Context, accounts []models.Email) map[uuid.UUID]Resolved {
 	out := make(map[uuid.UUID]Resolved, len(accounts))
@@ -80,8 +84,12 @@ func TestResolveManyTimezoneReusePreservesProfilesAndPlans(t *testing.T) {
 			t.Fatal("shared timezone was parsed more than once")
 		}
 		for _, a := range accounts {
-			for _, date := range []time.Time{time.Date(2026, 3, 29, 1, 30, 0, 0, time.UTC), time.Date(2026, 10, 25, 1, 30, 0, 0, time.UTC)} {
-				g, w := got[a.ID], want[a.ID]
+			g, w := got[a.ID], want[a.ID]
+			for _, date := range []time.Time{
+				time.Date(2026, 3, 29, 1, 30, 0, 0, time.UTC),
+				time.Date(2026, 10, 25, 1, 30, 0, 0, time.UTC),
+				PlanDateFor(time.Now(), g.Loc),
+			} {
 				if !reflect.DeepEqual(g.PlanOn(date), w.PlanOn(date)) {
 					t.Fatalf("daily plan changed for timezone %q at %s", a.Timezone, date)
 				}

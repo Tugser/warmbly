@@ -20,7 +20,7 @@ describe("monitoring permission and freshness boundaries", () => {
     });
 
     it("accepts known native destinations only with their separate page permission", () => {
-        for (const [path, permission] of [["/sends?tab=dead-letters", AdminPerm.ViewCampaigns], ["/sync?state=backfilling", AdminPerm.ViewUsers], ["/mailboxes", AdminPerm.ViewUsers], ["/fleet", AdminPerm.ViewWorkers], ["/workers/1a64feee-dee2-41df-a7f5-a85816ba8585", AdminPerm.ViewWorkers], ["/organizations/1a64feee-dee2-41df-a7f5-a85816ba8585", AdminPerm.ViewOrganizations], ["/jobs", AdminPerm.ViewAnalytics], ["/configuration?tab=notifications", AdminPerm.ManageSettings]] as const) {
+        for (const [path, permission] of [["/sends?tab=dead-letters", AdminPerm.ViewCampaigns], ["/sends?tab=holds", AdminPerm.ViewCampaigns], ["/sync?state=backfilling", AdminPerm.ViewUsers], ["/mailboxes", AdminPerm.ViewUsers], ["/fleet", AdminPerm.ViewWorkers], ["/workers/1a64feee-dee2-41df-a7f5-a85816ba8585", AdminPerm.ViewWorkers], ["/organizations/1a64feee-dee2-41df-a7f5-a85816ba8585", AdminPerm.ViewOrganizations], ["/jobs", AdminPerm.ViewAnalytics], ["/configuration?tab=notifications", AdminPerm.ManageSettings]] as const) {
             expect(investigationPath(path, permission)).toBe(path);
             expect(investigationPath(path, 0)).toBeNull();
         }

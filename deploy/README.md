@@ -4,7 +4,7 @@ Two distinct planes, deployed differently.
 
 | Plane | Services | How |
 |-------|----------|-----|
-| Control | backend, consumer, tracking, realtime, web | Container hosting in one region (Railway in production). Stable region-pinning so KMS/S3 calls stay local. |
+| Control | backend, consumer, tracking, realtime, web | Container hosting in one region (ECS Fargate in production). Stable region-pinning so KMS/S3 calls stay local. |
 | Execution | worker | One process per machine, anywhere with outbound network. Joins with one command and pulls its work; nothing connects back to it. |
 
 ## Directory layout
@@ -77,7 +77,7 @@ cloud region. Its README lists what is in it.
 
 ## Deploying the control plane
 
-The Dockerfiles in `deploy/docker/` are the deployment unit. Production runs on Railway. Other valid targets: Fly.io, ECS Fargate, single-VPS systemd. Migrations run automatically on backend boot.
+The Dockerfiles in `deploy/docker/` are the deployment unit. The hosted service runs on ECS Fargate (`terraform/aws/`), where a stable release tag deploys itself through `.github/workflows/deploy-aws.yml` once the `AWS_DEPLOY_ENABLED` repository variable is `true`: the migration runs as its own task first and backend startup migrations are off. Other valid targets: Fly.io, Coolify, single-VPS systemd. A self-host runs migrations automatically on backend boot.
 
 Configuration is env-driven — see `deploy/config/env.example` for the full env reference, or [the self-hosting guide](https://docs.warmbly.com/development/deployment-guide/) for a step-by-step.
 
@@ -142,7 +142,7 @@ Two settings do not survive a fleet on their defaults. `BLOB_PROVIDER=filesystem
 
 ## Auto-update
 
-`internal/app/releases` resolves the head of the configured channel and writes the tag to `admin_settings`; it updates nothing itself. The heartbeat reply carries `desired_version`, the node writes it to a file, and a systemd timer pulls and restarts, so the process being replaced is never the process doing the replacing. A per-node `pinned_version` holds a machine back for canarying.
+`internal/app/releases` resolves the head of the configured channel and writes the tag to `admin_settings`; it updates nothing itself. The heartbeat reply carries `desired_version`, the node writes it to a file, and a systemd timer pulls and restarts, so the process being replaced is never the process doing the replacing. A per-node `pinned_version` holds a machine back for canarying. `warmblyctl fleet rollout` moves the fleet in a canary and waves instead of all at once and halts on the first unhealthy node; the updater puts a node back on its previous image when an update does not stay up, and, with `WARMBLY_ENV_REFRESH=true`, replaces `node.env` when the control plane's rendering changes.
 
 The backend is deliberately excluded: it is what tells everyone else their version. See [the self-hosting guide](https://docs.warmbly.com/development/deployment-guide/).
 

@@ -125,10 +125,12 @@ Unsynced passkeys live only on the device that created them. On a device without
 
 Some changes ask you to confirm it is you even though you are already signed in:
 
-- creating an API key
+- creating or editing an API key
+- creating or editing a webhook endpoint
 - adding or removing a passkey
 - turning on two-factor authentication
-- inviting a member or changing a member's role
+- inviting or removing a member, changing a member's role, or creating, editing or deleting a custom role
+- starting a checkout, opening the billing portal, changing or cancelling the plan, buying AI credits or changing AI spend controls
 - exporting or importing a whole workspace
 - approving a self-hosted instance's warmup pool link
 - revealing or rotating a webhook or OAuth app signing secret
@@ -146,7 +148,7 @@ The confirmation lasts five minutes, so a run of related changes only asks once.
 
 An account with none of these (for example one created through a sign-in provider this server no longer offers) is told so instead of being shown a field it cannot fill. Your sign-in is the confirmation in that case: sign in again and repeat the change within five minutes, then add a passkey or turn on 2FA so it does not happen again.
 
-This exists because the things on that list either hand out a credential that outlives the session that made it, reveal a secret, change who can get in, or cannot be undone from your side. Someone who got hold of a signed-in browser should not be able to do any of them without knowing something you know.
+This exists because the things on that list either hand out a credential that outlives the session that made it, reveal a secret, change who can get in, move money, or cannot be undone from your side. Someone who got hold of a signed-in browser should not be able to do any of them without knowing something you know.
 
 </Fold>
 
@@ -158,7 +160,7 @@ Every signed-in device appears under **Sessions** with its device (`Chrome on ma
 
 **Sign out** ends one session; **Sign out other sessions** clears everything except where you are now. Signing out everywhere, changing or resetting your password, and an account ban end every session at once, and close any live connection the dashboard or an API client has open to the realtime service.
 
-A session renews itself in the background, and each renewal replaces the credential that keeps it alive. If an old one is ever presented, a copy of it exists somewhere else, so Warmbly ends that session on the spot and you sign in once more on that device.
+A session renews itself in the background for up to 180 days from the sign-in that started it; after that you sign in again on that device. Each renewal replaces the credential that keeps it alive. If an old one is ever presented, a copy of it exists somewhere else, so Warmbly ends that session on the spot and you sign in once more on that device.
 
 <Callout type="warn" title="If something looks wrong">
 Sign out the session, change your password, and make sure 2FA is on. Signing out other sessions is the fastest way to cut off access.
@@ -200,7 +202,9 @@ Your name and your workspace's name appear in emails Warmbly sends to other peop
 
 ## Password and alerts
 
-Change your password under **Password**: current password, then a new one. **Changing it ends every session, including the one you change it from.** The device you are on is signed straight back in with a new session, so you notice nothing, while anything that held your old session, on any device, is signed out. Accounts that only use Google, Apple, or a passkey have no password to change.
+Change your password under **Password**: current password, then a new one. **Changing it ends every session, including the one you change it from.** The device you are on is signed straight back in with a new session, so you notice nothing, while anything that held your old session, on any device, is signed out. If those sessions cannot be ended, the password is not changed.
+
+Tick **Also sign out connected apps and API keys** to end the rest of your access in the same step: every app you authorized (and its tokens), and every API key you created, in all your workspaces, including keys made by `warmbly auth login`. API keys belong to the workspace, so keys a teammate created are not touched. It is off by default because integrations stop working until they are reconnected or given a new key. A password reset offers the same option through the API (`revoke_api_credentials`). Accounts that only use Google, Apple, or a passkey have no password to change.
 
 **Sign-in alerts** notify you when your account is accessed from a new browser and OS combination, naming the device and location with a reminder to act if it was not you. They appear in your in-app feed by default; enable email under **Settings > Notifications**, Security section, Email channel. Your first sign-in is never alerted, as there is nothing to compare against.
 

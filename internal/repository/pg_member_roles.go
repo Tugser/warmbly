@@ -60,6 +60,29 @@ func (r *organizationRepository) AddMemberWithRoles(ctx context.Context, member 
 	return tx.Commit(ctx)
 }
 
+// AcceptInvitation consumes a live invitation and grants its membership in one
+// transaction, so a membership never outlives a failed consume. It returns
+// ErrInvitationInvalid when the invitation is gone or expired.
+func (r *organizationRepository) AcceptInvitation(ctx context.Context, invitationID uuid.UUID, member *models.OrganizationMember, roleIDs []uuid.UUID) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	tag, err := tx.Exec(ctx, `DELETE FROM organization_invitations WHERE id = $1 AND expires_at > NOW()`, invitationID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrInvitationInvalid
+	}
+	if err := addMemberWithRoles(ctx, tx, member, roleIDs); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func addMemberWithRoles(ctx context.Context, tx pgx.Tx, member *models.OrganizationMember, roleIDs []uuid.UUID) error {
 	if member.Access.Restricted() {
 		member.AccessScope = models.AccessScopeRestricted

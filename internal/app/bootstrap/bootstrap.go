@@ -1,18 +1,7 @@
-// Package bootstrap provisions the first owner of a fresh install.
-//
-// Without it the only documented path was: register through the public form,
-// read the emailed code out of a mail catcher, then run a psql UPDATE from the
-// host. That is three manual steps, it depends on working mail, and the window
-// between "instance is reachable" and "an admin exists" is claimable by anyone
-// who finds the URL first, which is a recurring CVE class in self-hosted
-// software.
-//
-// Two mechanisms, both standard in the field:
-//
-//   - WARMBLY_BOOTSTRAP_EMAIL plus WARMBLY_BOOTSTRAP_PASSWORD_HASH, read only
-//     while the users table is empty (authentik, n8n and NocoDB all do this).
-//   - Otherwise a single-use setup token printed once to the logs, which is
-//     Zulip's realm-creation link, invalidated the moment it is used.
+// Package bootstrap provisions the first owner of a fresh install: from
+// WARMBLY_BOOTSTRAP_EMAIL plus WARMBLY_BOOTSTRAP_PASSWORD_HASH while the users
+// table is empty, or through a single-use claim link that `warmblyctl
+// setup-link` prints (and the backend log too, in development).
 package bootstrap
 
 import (
@@ -191,8 +180,12 @@ func (s *Service) IssueSetupLink(ctx context.Context) (string, error) {
 	return fmt.Sprintf("%s/setup?token=%s", config.AppBaseURL(), token), nil
 }
 
-// printSetupToken mints the claim link at boot and prints it once.
+// printSetupToken mints the claim link at boot and prints it once in development; elsewhere it names the command that prints one.
 func (s *Service) printSetupToken(ctx context.Context) error {
+	if !config.ExplicitDevelopment() {
+		log.Printf("Bootstrap: no accounts exist yet. Print a single-use link that claims this instance with `warmblyctl setup-link`.")
+		return nil
+	}
 	if s.cache == nil {
 		// The worst possible silence: without a cache the instance can neither
 		// be claimed nor registered against, and nothing else says so.

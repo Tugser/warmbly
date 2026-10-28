@@ -1,0 +1,277 @@
+name: Terraform AWS
+
+# Pull requests get a plan summary comment. On main, a stack whose plan only
+# creates or updates applies on its own; one that replaces or destroys waits in
+# the aws-infrastructure-approval environment. Var files live in the private
+# state bucket, and no plan body ever reaches a log, a comment or an artifact.
+on:
+  pull_request:
+    paths:
+      - 'deploy/terraform/aws/**'
+      - '.github/workflows/terraform-aws.yml'
+      - '.github/scripts/terraform-stack.sh'
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/terraform/aws/**'
+      - '.github/workflows/terraform-aws.yml'
+      - '.github/scripts/terraform-stack.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "1"
+  TF_INPUT: "0"
+  TERRAFORM_VERSION: "1.16.5"
+
+jobs:
+  check:
+    name: Format and validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - run: terraform fmt -check -recursive deploy/terraform/aws
+      - name: Validate
+        run: |
+          set -euo pipefail
+          for stack in bootstrap foundation runtime workers; do
+            terraform -chdir="deploy/terraform/aws/$stack" init -backend=false -input=false >/dev/null
+            terraform -chdir="deploy/terraform/aws/$stack" validate -no-color
+          done
+      - run: shellcheck .github/scripts/terraform-stack.sh
+
+  plan:
+    name: Plan summary
+    needs: check
+    # Same-repository pull requests only: a fork never reaches the plan role.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.AWS_TERRAFORM_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: aws-infrastructure-plan
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_PLAN_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Plan
+        env:
+          STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
+          WORK: ${{ runner.temp }}/terraform
+        run: |
+          set -euo pipefail
+          {
+            echo "<!-- terraform-aws-plan -->"
+            echo "### Terraform plan"
+            echo
+            # The foundation reads the cache password while planning, which the plan role may not.
+            echo "**foundation**: planned on merge, before it applies."
+            for stack in runtime workers; do
+              class=$(.github/scripts/terraform-stack.sh plan "$stack")
+              case "$class" in none|safe|gated) ;; *) echo "::error::unexpected plan class for $stack" >&2; exit 1 ;; esac
+              echo
+              case "$class" in
+                none) echo "**$stack**: no changes" ;;
+                safe) echo "**$stack**: applies on merge" ;;
+                gated) echo "**$stack**: replaces or destroys, so it waits for approval in aws-infrastructure-approval" ;;
+              esac
+              if [ "$class" != none ]; then
+                echo '```'
+                cat "$WORK/$stack.summary"
+                echo '```'
+              fi
+            done
+          } > "$RUNNER_TEMP/comment.md"
+          cat "$RUNNER_TEMP/comment.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+            --jq '[.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- terraform-aws-plan -->")))][0].id // empty')
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F "body=@$RUNNER_TEMP/comment.md" >/dev/null
+          else
+            gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F "body=@$RUNNER_TEMP/comment.md" >/dev/null
+          fi
+
+  apply:
+    name: Apply safe changes
+    needs: check
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.AWS_TERRAFORM_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: aws-infrastructure
+    # Shares the deploy queue, so an apply never lands in the middle of a rollout.
+    concurrency:
+      group: aws-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      gated: ${{ steps.apply.outputs.gated }}
+      gated_summary: ${{ steps.apply.outputs.gated_summary }}
+      redeploy: ${{ steps.apply.outputs.redeploy }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_APPLY_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Plan and apply, in order
+        id: apply
+        env:
+          STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
+          WORK: ${{ runner.temp }}/terraform
+        run: |
+          set -euo pipefail
+          redeploy=false
+          for stack in foundation runtime workers; do
+            class=$(.github/scripts/terraform-stack.sh plan "$stack")
+            case "$class" in none|safe|gated) ;; *) echo "::error::unexpected plan class for $stack" >&2; exit 1 ;; esac
+            echo "### $stack: $class" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$class" != none ]; then
+              { echo '```'; cat "$WORK/$stack.summary"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            fi
+            if [ "$class" = gated ]; then
+              # Later stacks read this one's outputs, so they wait with it.
+              echo "gated=$stack" >> "$GITHUB_OUTPUT"
+              echo "gated_summary=$(sha256sum "$WORK/$stack.summary" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+              echo "$stack needs approval in aws-infrastructure-approval" >> "$GITHUB_STEP_SUMMARY"
+              break
+            fi
+            if [ "$class" = safe ]; then
+              .github/scripts/terraform-stack.sh apply "$stack"
+              if [ "$stack" = runtime ] && grep -q 'aws_ecs_task_definition\.service\[' "$WORK/$stack.summary"; then redeploy=true; fi
+            fi
+          done
+          echo "redeploy=$redeploy" >> "$GITHUB_OUTPUT"
+
+  apply-gated:
+    name: Apply after approval
+    needs: apply
+    if: needs.apply.outputs.gated != ''
+    runs-on: ubuntu-latest
+    environment: aws-infrastructure-approval
+    concurrency:
+      group: aws-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      redeploy: ${{ steps.apply.outputs.redeploy }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_APPLY_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Re-plan, confirm, apply
+        id: apply
+        env:
+          STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
+          WORK: ${{ runner.temp }}/terraform
+          GATED: ${{ needs.apply.outputs.gated }}
+          APPROVED: ${{ needs.apply.outputs.gated_summary }}
+        run: |
+          set -euo pipefail
+          redeploy=false
+          started=false
+          for stack in foundation runtime workers; do
+            [ "$stack" = "$GATED" ] && started=true
+            [ "$started" = true ] || continue
+            class=$(.github/scripts/terraform-stack.sh plan "$stack")
+            case "$class" in none|safe|gated) ;; *) echo "::error::unexpected plan class for $stack" >&2; exit 1 ;; esac
+            echo "### $stack: $class" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$stack" = "$GATED" ]; then
+              # What was approved is what applies: a plan that moved since asks again.
+              [ "$(sha256sum "$WORK/$stack.summary" | cut -d' ' -f1)" = "$APPROVED" ] || {
+                echo "::error::the $stack plan changed after approval was requested; run this workflow again"; exit 1; }
+            elif [ "$class" = gated ]; then
+              echo "::error::$stack also replaces or destroys; run this workflow again to approve it"
+              exit 1
+            fi
+            [ "$class" = none ] && continue
+            { echo '```'; cat "$WORK/$stack.summary"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            .github/scripts/terraform-stack.sh apply "$stack"
+            if [ "$stack" = runtime ] && grep -q 'aws_ecs_task_definition\.service\[' "$WORK/$stack.summary"; then redeploy=true; fi
+          done
+          echo "redeploy=$redeploy" >> "$GITHUB_OUTPUT"
+
+  live-release:
+    name: Find the live release
+    needs: [apply, apply-gated]
+    if: always() && (needs.apply.outputs.redeploy == 'true' || needs.apply-gated.outputs.redeploy == 'true') && vars.AWS_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: aws-production
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      tag: ${{ steps.live.outputs.tag }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+      - id: live
+        env:
+          CLUSTER: ${{ vars.AWS_ECS_CLUSTER }}
+          PREFIX: ${{ vars.AWS_ECS_SERVICE_PREFIX }}
+        run: |
+          set -euo pipefail
+          prefix=${PREFIX:-${CLUSTER##*/}}
+          def=$(aws ecs describe-services --cluster "$CLUSTER" --services "$prefix-backend" --query 'services[0].taskDefinition' --output text)
+          tag=$(aws ecs describe-task-definition --task-definition "$def" --include TAGS --query "tags[?key=='warmbly-release'].value | [0]" --output text)
+          if ! printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::warning::the live backend carries no release tag; redeploy a release by hand to roll out the new task definitions"
+            tag=""
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  # Services ignore task_definition in Terraform, so a new revision reaches them through a redeploy.
+  redeploy:
+    name: Roll the new task definitions out
+    needs: live-release
+    if: always() && needs.live-release.outputs.tag != ''
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+    uses: ./.github/workflows/deploy-aws.yml
+    with:
+      tag: ${{ needs.live-release.outputs.tag }}
+      mode: redeploy
+    secrets: inherit

@@ -171,6 +171,9 @@ func (a *Agent) beat(ctx context.Context, booted, stopping bool) *models.NodeHea
 		Stopping:           stopping,
 	}
 	if !stopping {
+		a.readUpdaterState(&beat)
+	}
+	if !stopping {
 		beat.Address = a.publicAddress(ctx)
 	}
 	if p := a.lastErr.Swap(nil); p != nil {
@@ -208,7 +211,81 @@ func (a *Agent) beat(ctx context.Context, booted, stopping bool) *models.NodeHea
 		return nil
 	}
 	a.applyTarget(reply.DesiredVersion)
+	a.applyDigest(reply.DesiredVersion, reply.DesiredDigest)
+	a.applyEnvRevision(reply.EnvRevision)
 	return reply
+}
+
+// The host updater shares the target directory: it writes update-failed and
+// env-revision there, and reads target-digest and target-env-revision.
+func (a *Agent) stateFile(name string) string {
+	if a.cfg.TargetVersionPath == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(a.cfg.TargetVersionPath), name)
+}
+
+func (a *Agent) readUpdaterState(beat *models.NodeHeartbeat) {
+	if a.cfg.TargetVersionPath == "" {
+		return
+	}
+	beat.UpdateFailed = readToken(a.stateFile("update-failed"))
+	beat.EnvRefresh = os.Getenv("WARMBLY_ENV_REFRESH") == "true"
+	if beat.EnvRefresh {
+		beat.EnvRevision = readToken(a.stateFile("env-revision"))
+	}
+}
+
+// readToken returns the first line of a small state file, or "" when it is
+// absent or holds anything but a plain token.
+func readToken(path string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil || len(raw) > 256 {
+		return ""
+	}
+	v := strings.TrimSpace(strings.SplitN(string(raw), "\n", 2)[0])
+	for _, c := range v {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune(".-_+:", c)) {
+			return ""
+		}
+	}
+	return v
+}
+
+// applyDigest records the digest a staged rollout pins the target to. It is
+// written as "<tag> <digest>" so the updater uses it only for that tag.
+func (a *Agent) applyDigest(version, digest string) {
+	path := a.stateFile("target-digest")
+	if path == "" {
+		return
+	}
+	if version == "" || digest == "" {
+		_ = os.Remove(path)
+		return
+	}
+	writeAtomic(path, version+" "+digest+"\n")
+}
+
+func (a *Agent) applyEnvRevision(rev string) {
+	path := a.stateFile("target-env-revision")
+	if path == "" || rev == "" || os.Getenv("WARMBLY_ENV_REFRESH") != "true" {
+		return
+	}
+	if readToken(path) == rev {
+		return
+	}
+	writeAtomic(path, rev+"\n")
+}
+
+func writeAtomic(path, body string) {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
+		log.Println("nodeagent: cannot write updater state:", err)
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		log.Println("nodeagent: cannot publish updater state:", err)
+	}
 }
 
 // applyTarget records the version the control plane wants. Writing a file the

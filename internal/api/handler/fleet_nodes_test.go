@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
+	zlog "github.com/rs/zerolog/log"
 	"github.com/warmbly/warmbly/internal/app/fleetnode"
 	"github.com/warmbly/warmbly/internal/app/nodelogs"
 	"github.com/warmbly/warmbly/internal/models"
@@ -25,6 +28,21 @@ type joinNodes struct {
 	upserts int
 	nodeID  uuid.UUID
 	role    models.NodeRole
+	hash    string
+}
+
+func (n *joinNodes) SetCredentialHash(_ context.Context, id uuid.UUID, hash string) error {
+	if id == n.nodeID {
+		n.hash = hash
+	}
+	return nil
+}
+
+func (n *joinNodes) CredentialHash(_ context.Context, id uuid.UUID) (string, error) {
+	if id == n.nodeID {
+		return n.hash, nil
+	}
+	return "", nil
 }
 
 func (n *joinNodes) Get(_ context.Context, id uuid.UUID) (*models.FleetNode, error) {
@@ -132,6 +150,9 @@ func TestFleetJoinReenrollsOriginalNodeIdentityWithEvidenceCredential(t *testing
 	env := envLines(t, string(raw))
 	if env["WARMBLY_NODE_ID"] != id.String() || env["NODE_LOG_TOKEN"] != strings.Repeat("l", 43) {
 		t.Fatal("protected environment did not bind the evidence credential to the existing node")
+	}
+	if env["NODE_CREDENTIAL"] == "" || nodes.hash != crypt.SHA256(env["NODE_CREDENTIAL"]) || env["NODE_CREDENTIAL"] == env["NODE_LOG_TOKEN"] {
+		t.Fatal("join must issue the node its own credential and store only its hash")
 	}
 }
 
@@ -274,23 +295,57 @@ func TestRenderNodeEnvBrokersCredentialProviders(t *testing.T) {
 	}
 }
 
-// A provider that needs no credential works on a node as it stands, and
-// translating it would break a local install for nothing.
+// A node cannot tell a hosted instance from a self-host, so it is handed the
+// mail-host policy the control plane resolved for itself.
+func TestRenderNodeEnvResolvesPrivateMailHostPolicy(t *testing.T) {
+	setInstanceEnv(t)
+	for _, tc := range []struct {
+		name, mode, appEnv, flag, want string
+	}{
+		{"hosted production refuses", "cloud", "prod", "true", "false"},
+		{"self-host allows", "self_hosted", "prod", "", "true"},
+		{"self-host opted out", "self_hosted", "prod", "false", "false"},
+		{"development allows", "cloud", "dev", "", "true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("DEPLOYMENT_MODE", tc.mode)
+			t.Setenv("APP_ENV", tc.appEnv)
+			t.Setenv("MAIL_ALLOW_PRIVATE_HOSTS", tc.flag)
+			env := envLines(t, renderNodeEnv(uuid.New(), models.NodeRoleWorker, ""))
+			if env["MAIL_ALLOW_PRIVATE_HOSTS"] != tc.want {
+				t.Errorf("MAIL_ALLOW_PRIVATE_HOSTS = %q, want %q", env["MAIL_ALLOW_PRIVATE_HOSTS"], tc.want)
+			}
+		})
+	}
+}
+
+// A provider that needs no credential works on a node as it stands. Local KMS
+// is the exception for a worker: the master key stays on the control plane and
+// the worker opens keys through the broker, while a consumer keeps it.
 func TestRenderNodeEnvPassesThroughLocalProviders(t *testing.T) {
 	setInstanceEnv(t)
 	t.Setenv("KMS_PROVIDER", "local")
+	t.Setenv("KMS_LOCAL_MASTER_KEY", "bWFzdGVyLWtleQ==")
 	t.Setenv("BLOB_PROVIDER", "filesystem")
 	t.Setenv("BLOB_FS_ROOT", "/data/blobs")
 
 	env := envLines(t, renderNodeEnv(uuid.New(), models.NodeRoleWorker, ""))
-	if env["KMS_PROVIDER"] != "local" {
-		t.Errorf("KMS_PROVIDER = %q, want local", env["KMS_PROVIDER"])
+	if env["KMS_PROVIDER"] != "brokered" {
+		t.Errorf("worker KMS_PROVIDER = %q, want brokered", env["KMS_PROVIDER"])
+	}
+	if _, ok := env["KMS_LOCAL_MASTER_KEY"]; ok {
+		t.Error("a worker was handed the KMS master key")
 	}
 	if env["BLOB_PROVIDER"] != "filesystem" {
 		t.Errorf("BLOB_PROVIDER = %q, want filesystem", env["BLOB_PROVIDER"])
 	}
 	if env["BLOB_FS_ROOT"] != "/data/blobs" {
 		t.Errorf("BLOB_FS_ROOT = %q", env["BLOB_FS_ROOT"])
+	}
+
+	consumer := envLines(t, renderNodeEnv(uuid.New(), models.NodeRoleConsumer, ""))
+	if consumer["KMS_PROVIDER"] != "local" || consumer["KMS_LOCAL_MASTER_KEY"] != "bWFzdGVyLWtleQ==" {
+		t.Errorf("consumer KMS = %q with key %v, want local with its key", consumer["KMS_PROVIDER"], consumer["KMS_LOCAL_MASTER_KEY"] != "")
 	}
 }
 
@@ -316,18 +371,47 @@ func TestRenderNodeEnvSendsNamesTheNodeReads(t *testing.T) {
 	}
 }
 
-// A worker reaches relational data through the internal API and nothing else.
-// The DSN must not travel even when the control plane has one to send.
+// A worker reaches relational data through the internal API and nothing else,
+// and opens only workspace-sealed material. Neither the DSN nor the instance
+// credential keys travel even when the control plane has them to send.
 func TestRenderNodeEnvWithholdsDSNFromWorker(t *testing.T) {
 	setInstanceEnv(t)
 	t.Setenv("PRIMARY_DB", "postgres://u:p@db/warmbly")
+	t.Setenv("CREDENTIALS_ENCRYPTION_READ_KEYS", `["`+strings.Repeat("b", 64)+`"]`)
+	t.Setenv("KMS_LOCAL_MASTER_KEY", "bWFzdGVyLWtleQ==")
 
 	env := envLines(t, renderNodeEnv(uuid.New(), models.NodeRoleWorker, ""))
-	if _, ok := env["PRIMARY_DB"]; ok {
-		t.Fatal("a worker was handed a database DSN")
+	for _, key := range []string{"PRIMARY_DB", "CREDENTIALS_ENCRYPTION_KEY", "CREDENTIALS_ENCRYPTION_READ_KEYS", "KMS_LOCAL_MASTER_KEY"} {
+		if _, ok := env[key]; ok {
+			t.Errorf("a worker was handed %s", key)
+		}
 	}
 	if env["ENCRYPTED_KEYS_PROVIDER"] != "http" {
 		t.Errorf("ENCRYPTED_KEYS_PROVIDER = %q, want http", env["ENCRYPTED_KEYS_PROVIDER"])
+	}
+
+	consumer := envLines(t, renderNodeEnv(uuid.New(), models.NodeRoleConsumer, ""))
+	if consumer["CREDENTIALS_ENCRYPTION_KEY"] != "deadbeef" || consumer["CREDENTIALS_ENCRYPTION_READ_KEYS"] == "" {
+		t.Error("a consumer seals and opens stored credentials, so it keeps the instance credential keys")
+	}
+}
+
+// A node resolves hosted or self-hosted from what the control plane resolved, so
+// a hosted node ignores the self-host-only opt-outs whatever node.local.env says.
+func TestRenderNodeEnvResolvesDeploymentMode(t *testing.T) {
+	setInstanceEnv(t)
+	for _, tc := range []struct{ mode, billing, want string }{
+		{"cloud", "", "cloud"},
+		{"self_hosted", "", "self_hosted"},
+		{"", "none", "self_hosted"},
+		{"", "stripe", "cloud"},
+	} {
+		t.Setenv("DEPLOYMENT_MODE", tc.mode)
+		t.Setenv("BILLING_PROVIDER", tc.billing)
+		env := envLines(t, renderNodeEnv(uuid.New(), models.NodeRoleWorker, ""))
+		if env["DEPLOYMENT_MODE"] != tc.want {
+			t.Errorf("mode=%q billing=%q: DEPLOYMENT_MODE = %q, want %q", tc.mode, tc.billing, env["DEPLOYMENT_MODE"], tc.want)
+		}
 	}
 }
 
@@ -426,4 +510,189 @@ func TestRenderNodeEnvSendsOnlyTheNodeToken(t *testing.T) {
 	if env["ENCRYPTED_KEYS_WORKER_TOKEN"] != "tok" || env["INTERNAL_API_TOKEN"] != "tok" {
 		t.Error("a single-token instance must keep sending the shared token")
 	}
+}
+
+// A rotation reaches nodes by pulling: the env endpoint and the revision in
+// the heartbeat reply must describe the same file, or the updater loops.
+func TestFleetNodeEnvMatchesHeartbeatRevision(t *testing.T) {
+	t.Setenv("WARMBLY_VERSION", "v0.6.44")
+	t.Setenv("FLEET_IMAGE_VARIANT", "")
+	t.Setenv("CREDENTIALS_ENCRYPTION_READ_KEYS", `["`+strings.Repeat("a", 64)+`"]`)
+	id := uuid.New()
+	nodes := &joinNodes{nodeID: id, role: models.NodeRoleWorker}
+	h := &Handler{FleetNodes: fleetnode.New(nodes, nil, joinSettings{})}
+
+	get := func(query string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/internal/fleet/node-env?"+query, nil)
+		h.InternalFleetNodeEnv(c)
+		return w
+	}
+	w := get("node_id=" + id.String() + "&role=worker")
+	if w.Code != http.StatusOK {
+		t.Fatalf("enrolled node was refused its env: %d", w.Code)
+	}
+	env := envLines(t, w.Body.String())
+	if env["WARMBLY_NODE_ID"] != id.String() {
+		t.Fatal("node env must carry the node identity")
+	}
+	if _, ok := env["CREDENTIALS_ENCRYPTION_READ_KEYS"]; ok {
+		t.Fatal("a worker env must never carry the instance credential read keys")
+	}
+	if _, ok := env["PRIMARY_DB"]; ok {
+		t.Fatal("a worker env must never carry a database DSN")
+	}
+	rev := w.Header().Get("X-Warmbly-Env-Revision")
+	if rev == "" || rev != fleetnode.EnvRevision(w.Body.String()) {
+		t.Fatal("the revision header must name the body it came with")
+	}
+
+	for _, q := range []string{"node_id=" + id.String() + "&role=consumer", "node_id=" + uuid.NewString() + "&role=worker", "node_id=x&role=worker"} {
+		if code := get(q).Code; code == http.StatusOK {
+			t.Fatalf("%s must be refused", q)
+		}
+	}
+
+	hw := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(hw)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/internal/fleet/heartbeat",
+		strings.NewReader(`{"node_id":"`+id.String()+`","role":"worker","env_refresh":true}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.FleetHeartbeat(c)
+	var reply models.NodeHeartbeatReply
+	if err := json.Unmarshal(hw.Body.Bytes(), &reply); err != nil || reply.EnvRevision != rev {
+		t.Fatalf("heartbeat revision %q must match the env endpoint's %q", reply.EnvRevision, rev)
+	}
+}
+
+// fleetOf is a registry of several enrolled nodes, each with its own credential hash.
+type fleetOf struct {
+	repository.FleetNodeRepository
+	roles  map[uuid.UUID]models.NodeRole
+	hashes map[uuid.UUID]string
+}
+
+func (f *fleetOf) Get(_ context.Context, id uuid.UUID) (*models.FleetNode, error) {
+	if role, ok := f.roles[id]; ok {
+		return &models.FleetNode{ID: id, Role: role}, nil
+	}
+	return nil, nil
+}
+
+func (f *fleetOf) SetCredentialHash(_ context.Context, id uuid.UUID, hash string) error {
+	f.hashes[id] = hash
+	return nil
+}
+
+func (f *fleetOf) CredentialHash(_ context.Context, id uuid.UUID) (string, error) {
+	return f.hashes[id], nil
+}
+
+// A node's env is handed only to that node: a worker's credential never opens a
+// consumer's env, and a worker never receives a database DSN.
+func TestFleetNodeEnvIsHandedOnlyToItsOwnNode(t *testing.T) {
+	setInstanceEnv(t)
+	t.Setenv("PRIMARY_DB", "postgres://u:p@db/warmbly")
+	t.Setenv("DEPLOYMENT_MODE", "self_hosted")
+	var logs bytes.Buffer
+	prev := zlog.Logger
+	zlog.Logger = zerolog.New(&logs)
+	defer func() { zlog.Logger = prev }()
+
+	worker, otherWorker, consumer := uuid.New(), uuid.New(), uuid.New()
+	fleet := &fleetOf{
+		roles:  map[uuid.UUID]models.NodeRole{worker: models.NodeRoleWorker, otherWorker: models.NodeRoleWorker, consumer: models.NodeRoleConsumer},
+		hashes: map[uuid.UUID]string{},
+	}
+	svc := fleetnode.New(fleet, nil, joinSettings{})
+	h := &Handler{FleetNodes: svc}
+	creds := map[uuid.UUID]string{}
+	for id := range fleet.roles {
+		secret, err := svc.IssueNodeCredential(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		creds[id] = secret
+	}
+
+	get := func(id uuid.UUID, role models.NodeRole, credential string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/internal/fleet/node-env?node_id="+id.String()+"&role="+string(role), nil)
+		if credential != "" {
+			c.Request.Header.Set(nodeCredentialHeader, credential)
+		}
+		h.InternalFleetNodeEnv(c)
+		return w
+	}
+
+	for _, tc := range []struct {
+		name       string
+		id         uuid.UUID
+		role       models.NodeRole
+		credential string
+		code       int
+	}{
+		{"a worker presenting its credential for a consumer", consumer, models.NodeRoleConsumer, creds[worker], http.StatusUnauthorized},
+		{"a worker presenting its credential for another worker", otherWorker, models.NodeRoleWorker, creds[worker], http.StatusUnauthorized},
+		{"a consumer env with no credential", consumer, models.NodeRoleConsumer, "", http.StatusForbidden},
+		{"a forged credential", consumer, models.NodeRoleConsumer, strings.Repeat("x", 43), http.StatusUnauthorized},
+		{"a node asking under the other role", consumer, models.NodeRoleWorker, creds[consumer], http.StatusNotFound},
+	} {
+		w := get(tc.id, tc.role, tc.credential)
+		if w.Code != tc.code || strings.Contains(w.Body.String(), "PRIMARY_DB") {
+			t.Fatalf("%s: status %d, want %d (body carried a DSN: %v)", tc.name, w.Code, tc.code, strings.Contains(w.Body.String(), "PRIMARY_DB"))
+		}
+	}
+
+	w := get(consumer, models.NodeRoleConsumer, creds[consumer])
+	if w.Code != http.StatusOK || envLines(t, w.Body.String())["PRIMARY_DB"] != "postgres://u:p@db/warmbly" {
+		t.Fatalf("a consumer presenting its own credential: status %d", w.Code)
+	}
+	for _, credential := range []string{creds[worker], ""} {
+		w = get(worker, models.NodeRoleWorker, credential)
+		env := envLines(t, w.Body.String())
+		if w.Code != http.StatusOK || env["WARMBLY_NODE_ID"] != worker.String() {
+			t.Fatalf("a worker fetching its own env (credential=%v): status %d", credential != "", w.Code)
+		}
+		for _, key := range []string{"PRIMARY_DB", "CREDENTIALS_ENCRYPTION_KEY"} {
+			if _, ok := env[key]; ok {
+				t.Fatalf("a worker env carried %s", key)
+			}
+		}
+	}
+
+	out := logs.String()
+	if strings.Count(out, `"operation":"fleet.node_env"`) != 8 || strings.Count(out, `"allowed":false`) != 5 {
+		t.Fatalf("every hand-out and refusal must be logged once: %s", out)
+	}
+	for _, leaked := range []string{"postgres://", creds[worker], creds[consumer], "deadbeef"} {
+		if strings.Contains(out, leaked) {
+			t.Fatal("the access log carried a secret")
+		}
+	}
+}
+
+// A cleartext control-plane address is reported on hosted production; a self-host on a LAN is not.
+func TestNodeBackendURLIsReportedWhenCleartextOnHostedProduction(t *testing.T) {
+	for _, tc := range []struct {
+		mode, appEnv, url string
+		ok                bool
+	}{
+		{"cloud", "prod", "https://api.example.com", true},
+		{"cloud", "prod", "http://api.example.com", false},
+		{"cloud", "prod", "http://localhost:8080", true},
+		{"cloud", "prod", "http://[::1]:8080", true},
+		{"cloud", "dev", "http://api.example.com", true},
+		{"self_hosted", "prod", "http://10.0.0.5:8080", true},
+	} {
+		t.Setenv("DEPLOYMENT_MODE", tc.mode)
+		t.Setenv("APP_ENV", tc.appEnv)
+		t.Setenv("ENCRYPTED_KEYS_BACKEND_URL", tc.url)
+		if err := fleetnode.CheckBackendURL(); (err == nil) != tc.ok {
+			t.Errorf("%s/%s %s: err = %v, want ok=%v", tc.mode, tc.appEnv, tc.url, err, tc.ok)
+		}
+	}
+
 }

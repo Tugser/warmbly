@@ -97,20 +97,16 @@ func (w *WorkerService) HandleSendEmail(ctx context.Context, sendEmail models.Se
 	}
 	transportGeneration := mail.TransportGeneration
 
-	// Decrypt subject
-	subject := sendEmail.Subject
-	if w.CipherService != nil {
-		c, cerr := w.CipherService.Cipher(ctx, sendEmail.OrgID)
-		if cerr == nil {
-			decSubject, cerr := c.Decrypt(ctx, sendEmail.Subject)
-			if cerr == nil {
-				subject = decSubject
-			}
-		}
+	subject, err := w.openSendField(ctx, sendEmail.OrgID, sendEmail.Subject)
+	if err != nil {
+		return w.failUnopenedSend(ctx, sendEmail, err)
 	}
 
 	// Fetch email body from S3 (attachment refs ride inside the emsg blob).
 	body, err := w.fetchEmailBody(ctx, sendEmail.OrgID, sendEmail.BodyS3Key)
+	if errors.Is(err, errSendKeyUnavailable) || errors.Is(err, errSendUndecryptable) {
+		return w.failUnopenedSend(ctx, sendEmail, err)
+	}
 	if err != nil {
 		log.Error().Err(err).Str("s3_key", sendEmail.BodyS3Key).Msg("Failed to fetch email body from S3")
 		return w.failSend(ctx, sendEmail, fmt.Sprintf("failed to fetch email body: %v", err), true)
@@ -273,19 +269,11 @@ func (w *WorkerService) fetchEmailBody(ctx context.Context, orgID uuid.UUID, s3K
 	bodyPlain := string(blob.PlainText)
 	bodyHTML := string(blob.HTMLBody)
 
-	if w.CipherService != nil {
-		if c, cerr := w.CipherService.Cipher(ctx, orgID); cerr == nil {
-			if bodyPlain != "" {
-				if decPlain, decErr := c.Decrypt(ctx, bodyPlain); decErr == nil {
-					bodyPlain = decPlain
-				}
-			}
-			if bodyHTML != "" {
-				if decHTML, decErr := c.Decrypt(ctx, bodyHTML); decErr == nil {
-					bodyHTML = decHTML
-				}
-			}
-		}
+	if bodyPlain, err = w.openSendField(ctx, orgID, bodyPlain); err != nil {
+		return nil, err
+	}
+	if bodyHTML, err = w.openSendField(ctx, orgID, bodyHTML); err != nil {
+		return nil, err
 	}
 
 	return &sendBody{
@@ -368,6 +356,42 @@ func (w *WorkerService) failSend(ctx context.Context, sendEmail models.SendEmail
 		return errors.New(reason)
 	}
 	return w.sendEmailFailure(sendEmail.TaskID, sendEmail.EmailID, nil, reason)
+}
+
+// Fixed reasons for a send the worker could not open; they never carry the underlying error.
+const (
+	sendReasonKeyUnavailable = "Nothing was sent because Warmbly could not load this workspace's encryption key just now. This is a problem on Warmbly's side, not with the mailbox or the recipient. A campaign tries the step again on its own; send a single email again in a few minutes. If it keeps happening, contact Warmbly support, or your instance's operator if Warmbly is self-hosted."
+	sendReasonUndecryptable  = "Nothing was sent because Warmbly could not read the stored message. This is a problem on Warmbly's side, not with the mailbox or the recipient. Contact Warmbly support, or your instance's operator if Warmbly is self-hosted, and mention when it failed."
+)
+
+var (
+	errSendKeyUnavailable = errors.New("send: workspace key unavailable")
+	errSendUndecryptable  = errors.New("send: message could not be decrypted")
+)
+
+// openSendField decrypts one sealed send field; an empty field stays empty.
+func (w *WorkerService) openSendField(ctx context.Context, orgID uuid.UUID, sealed string) (string, error) {
+	if w.CipherService == nil || sealed == "" {
+		return sealed, nil
+	}
+	c, err := w.CipherService.Cipher(ctx, orgID)
+	if err != nil {
+		return "", errSendKeyUnavailable
+	}
+	plain, err := c.Decrypt(ctx, sealed)
+	if err != nil {
+		return "", errSendUndecryptable
+	}
+	return plain, nil
+}
+
+// failUnopenedSend answers a send it could not open; a missing key is retried, unreadable ciphertext is not.
+func (w *WorkerService) failUnopenedSend(ctx context.Context, sendEmail models.SendEmail, err error) error {
+	log.Error().Str("task_id", sendEmail.TaskID.String()).Str("class", err.Error()).Msg("Send not opened")
+	if errors.Is(err, errSendKeyUnavailable) {
+		return w.failSend(ctx, sendEmail, sendReasonKeyUnavailable, true)
+	}
+	return w.failSend(ctx, sendEmail, sendReasonUndecryptable, false)
 }
 
 // Account-level refusals additionally raise their typed mailbox event.

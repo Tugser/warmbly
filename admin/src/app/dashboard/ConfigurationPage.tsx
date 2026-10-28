@@ -1,21 +1,22 @@
 // Configuration: everything an operator can read or change about this
-// deployment, in four tabs. Settings and notifications write to the instance
-// settings document; environment and limits are read only. ?tab= deep-links
+// deployment, in five tabs. Settings and notifications write to the instance
+// settings document; environment, limits and keys are read only. ?tab= deep-links
 // a tab, and a dirty form is confirmed before a tab switch or a navigation
 // discards it.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useBlocker, useSearchParams } from "react-router-dom";
-import { Bell, Gauge, Settings2, Terminal } from "lucide-react";
+import { Bell, Gauge, KeyRound, Settings2, Terminal } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { PageTabs } from "@/components/layout/PageTabs";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { EnvironmentTab } from "./configuration/EnvironmentTab";
+import { KeysTab } from "./configuration/KeysTab";
 import { LimitsTab } from "./configuration/LimitsTab";
 import { NotificationsTab } from "./configuration/NotificationsTab";
 import { SettingsTab } from "./configuration/SettingsTab";
 
-const TAB_IDS = ["settings", "notifications", "environment", "limits"] as const;
+const TAB_IDS = ["settings", "notifications", "environment", "limits", "keys"] as const;
 type TabId = (typeof TAB_IDS)[number];
 
 function isTabId(v: string | null): v is TabId {
@@ -117,6 +118,7 @@ export default function ConfigurationPage() {
                         { id: "notifications", label: "Notifications", icon: Bell },
                         { id: "environment", label: "Environment", icon: Terminal },
                         { id: "limits", label: "Limits", icon: Gauge },
+                        { id: "keys", label: "Keys", icon: KeyRound },
                     ]}
                     value={tab}
                     onChange={(id) => void setTab(id)}
@@ -129,6 +131,7 @@ export default function ConfigurationPage() {
                 {tab === "notifications" && <NotificationsTab onDirtyChange={onDirtyChange} />}
                 {tab === "environment" && <EnvironmentTab onSwitchTab={writeTab} />}
                 {tab === "limits" && <LimitsTab onSwitchTab={writeTab} />}
+                {tab === "keys" && <KeysTab />}
             </div>
         </div>
     );

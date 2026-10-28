@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizePastedHTML } from "./pasteHtml";
+import { isPageBackground, isUnreadableTextColour, normalizePastedHTML } from "./pasteHtml";
 import { htmlToPlain } from "./emailPreview";
 
 describe("normalizePastedHTML", () => {
@@ -69,6 +69,52 @@ describe("normalizePastedHTML", () => {
         // ProseMirror marks its own clipboard HTML and re-parses it exactly.
         const html = '<div data-pm-slice="1 1 []"><p>One</p><p><br></p></div>';
         expect(normalizePastedHTML(html)).toBe(html);
+    });
+
+    // A copy out of a dark-themed page carries its near-white text colour on
+    // every block, which on our white editor made every pasted line invisible.
+    it("keeps a block style whose value holds a semicolon", () => {
+        const out = normalizePastedHTML('<div style="background-image: url(data:image/png;base64,AAAA); font-size: 14px">Hi</div>');
+        expect(out).toBe('<div style="background-image: url(data:image/png;base64,AAAA)">Hi</div>');
+    });
+
+    it("drops the light text colour and dark background of a dark-themed page", () => {
+        const out = normalizePastedHTML(
+            '<p style="color: rgb(232, 234, 237); font-family: Roboto, sans-serif; font-size: 14px; background-color: rgb(32, 33, 36)">One</p>' +
+                '<div style="color:#fff;letter-spacing:normal;text-align:center">Two</div>' +
+                '<p><span style="color: rgba(255,255,255,0.87); background-color: #202124">Three</span></p>',
+        );
+        expect(out).toBe('<p>One</p><div style="text-align: center">Two</div><p>Three</p>');
+    });
+
+    it("keeps a colour or highlight that reads on white", () => {
+        expect(normalizePastedHTML('<p style="color: #c00">Hi</p>')).toBe('<p style="color: #c00">Hi</p>');
+        expect(normalizePastedHTML('<p><span style="color: white; background-color: yellow">Hi</span></p>')).toBe(
+            '<p><span style="background-color: yellow">Hi</span></p>',
+        );
+        expect(normalizePastedHTML('<p><font color="#eeeeee">Hi</font></p>')).toBe("<p>Hi</p>");
+    });
+
+    it("leaves a table cell's design alone apart from unreadable colours", () => {
+        expect(
+            normalizePastedHTML('<table><tbody><tr><td style="font-family: Georgia; color: #fafafa; padding: 8px">Hi</td></tr></tbody></table>'),
+        ).toContain('<td style="font-family: Georgia; padding: 8px">Hi</td>');
+    });
+});
+
+describe("colour judgement", () => {
+    it("reads every colour form a browser writes", () => {
+        expect(isUnreadableTextColour("#fff")).toBe(true);
+        expect(isUnreadableTextColour("#e8eaed")).toBe(true);
+        expect(isUnreadableTextColour("rgb(255 255 255 / 0.9)")).toBe(true);
+        expect(isUnreadableTextColour("hsl(0, 0%, 95%)")).toBe(true);
+        expect(isUnreadableTextColour("#999999")).toBe(false);
+        expect(isUnreadableTextColour("rgba(0, 0, 0, 0.6)")).toBe(false);
+        expect(isUnreadableTextColour("var(--text)")).toBe(false);
+        expect(isPageBackground("rgb(32, 33, 36)")).toBe(true);
+        expect(isPageBackground("transparent")).toBe(true);
+        expect(isPageBackground("#ffff00")).toBe(false);
+        expect(isPageBackground("rgb(232, 240, 254)")).toBe(false);
     });
 });
 

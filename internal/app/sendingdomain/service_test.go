@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/warmbly/warmbly/internal/app/owndomain"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/pkg/domainproof"
@@ -181,7 +182,22 @@ func (m *memRedirects) CloudServedElsewhere(_ context.Context, org uuid.UUID, do
 	}) != nil, nil
 }
 func (m *memRedirects) Due(context.Context, int) ([]models.DomainRedirect, error) { return nil, nil }
-func (m *memRedirects) Lookup(context.Context, string) (string, bool, error)      { return "", false, nil }
+func (m *memRedirects) Lookup(ctx context.Context, host string) (string, bool, error) {
+	got, ok, err := m.LookupServed(ctx, host)
+	if !ok {
+		return "", ok, err
+	}
+	return got.TargetURL, true, nil
+}
+func (m *memRedirects) LookupServed(_ context.Context, host string) (*models.DomainRedirectLookup, bool, error) {
+	e := m.find(func(e *models.DomainRedirect) bool {
+		return e.Verified && e.ServedBy == models.RedirectServedByInstance && (e.Domain == host || (e.IncludeWWW && "www."+e.Domain == host))
+	})
+	if e == nil {
+		return nil, false, nil
+	}
+	return &models.DomainRedirectLookup{TargetURL: e.TargetURL, OrganizationID: e.OrganizationID, LinkedInstanceID: e.LinkedInstanceID}, true, nil
+}
 func (m *memRedirects) ListLinked(_ context.Context, inst uuid.UUID) ([]models.DomainRedirect, error) {
 	var out []models.DomainRedirect
 	for _, e := range m.rows {
@@ -221,7 +237,22 @@ func (f *fakeReach) Probe(context.Context, string, string) models.RedirectReach 
 	return f.verdict
 }
 
-type fakeMailboxes struct{ counts map[string]int }
+// fakeMailboxes holds mailboxes on the counted domains; owned adds the workspace's other own domains.
+type fakeMailboxes struct {
+	counts map[string]int
+	owned  []string
+}
+
+func (f *fakeMailboxes) OwnedDomains(context.Context, uuid.UUID) ([]string, *errx.Error) {
+	out := append([]string{}, f.owned...)
+	for d := range f.counts {
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+// testOwned are the websites the test workspace redirects to.
+var testOwned = []string{"acme.com", "acme.co.uk", "evil.example", "x.com"}
 
 func (f *fakeMailboxes) DomainsOverview(context.Context, uuid.UUID) ([]models.SendingDomain, *errx.Error) {
 	return nil, nil
@@ -235,7 +266,7 @@ func (f *fakeMailboxes) SetDomainTracking(context.Context, uuid.UUID, string, st
 
 func newTest(dns *fakeDNS) (*Service, *memRedirects) {
 	repo := &memRedirects{rows: map[uuid.UUID]*models.DomainRedirect{}}
-	s := NewService(repo, &fakeMailboxes{counts: map[string]int{"acme.io": 2}}, dns, domainproof.New("test-secret"))
+	s := NewService(repo, &fakeMailboxes{counts: map[string]int{"acme.io": 2}, owned: testOwned}, dns, domainproof.New("test-secret"))
 	s.target = func() string { return "track.warmbly.test" }
 	s.reach = &fakeReach{verdict: models.RedirectReach{Status: models.RedirectReachOK}}
 	return s, repo
@@ -411,7 +442,7 @@ func TestVendorDomainsTakeTheEasyPath(t *testing.T) {
 
 func TestBulkSetupTakesEachDomainsEasiestPath(t *testing.T) {
 	s, repo := newTest(baseDNS())
-	s.mailboxes = &fakeMailboxes{counts: map[string]int{"acme.io": 2, "acme.co": 1}}
+	s.mailboxes = &fakeMailboxes{counts: map[string]int{"acme.io": 2, "acme.co": 1}, owned: testOwned}
 	v := &fakeVendors{links: map[string]models.VendorDomainLink{"acme.io": {Vendor: "inboxkit", CanForward: true, CanDNS: true, DNSTypes: []string{"CNAME"}}}, forwards: map[string]string{}}
 	s.WireVendors(v)
 	org, user := uuid.New(), uuid.New()
@@ -471,5 +502,69 @@ func TestBulkSetupTakesEachDomainsEasiestPath(t *testing.T) {
 	}
 	if v.forwards["acme.io"] != "https://acme.com" {
 		t.Fatalf("the shared website did not reach acme.io: %v", v.forwards)
+	}
+}
+
+func TestRedirectGoesOnlyToTheWorkspacesOwnDomains(t *testing.T) {
+	dns := baseDNS()
+	s, _ := newTest(dns)
+	mb := &fakeMailboxes{counts: map[string]int{"acme.io": 2}, owned: []string{"acme.com"}}
+	s.mailboxes = mb
+	ctx := context.Background()
+	org := uuid.New()
+
+	for _, bad := range []string{"https://evil-acme.com", "https://acme.com.evil.io/", "https://gmail.com"} {
+		if _, xerr := s.SetRedirect(ctx, org, uuid.New(), "acme.io", RedirectInput{TargetURL: bad}); xerr == nil || xerr.Identifier != owndomain.ErrIDNotOwn {
+			t.Errorf("%q = %v", bad, xerr)
+		}
+	}
+	r, xerr := s.SetRedirect(ctx, org, uuid.New(), "acme.io", RedirectInput{TargetURL: "https://shop.acme.com/start"})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if r.TargetActive == nil || !*r.TargetActive {
+		t.Fatalf("an own destination is not active: %+v", r.TargetActive)
+	}
+	dns.ips["acme.io"] = []string{"203.0.113.10"}
+	dns.txt["_warmbly.acme.io"] = []string{s.proof.Value(org, "acme.io")}
+	if r, _ = s.VerifyRedirect(ctx, org, "acme.io"); !r.Verified {
+		t.Fatalf("not verified: %s", r.LastError)
+	}
+	if target, ok, err := s.Lookup(ctx, "acme.io"); err != nil || !ok || target != "https://shop.acme.com/start" {
+		t.Fatalf("Lookup = %q, %v, %v", target, ok, err)
+	}
+
+	// The workspace stops sending from acme.com: the saved redirect is no longer served or shown as in use.
+	mb.owned = nil
+	if _, ok, err := s.Lookup(ctx, "acme.io"); err != nil || ok {
+		t.Fatalf("a destination off the workspace's domains is still served: %v, %v", ok, err)
+	}
+	if r, _ = s.VerifyRedirect(ctx, org, "acme.io"); r.TargetActive == nil || *r.TargetActive || r.TargetInactiveReason == "" {
+		t.Fatalf("an inactive destination is not flagged: %+v", r)
+	}
+}
+
+func TestACloudServedRedirectOffTheWorkspacesDomainsStopsOnCloud(t *testing.T) {
+	s, repo := newTest(baseDNS())
+	cloud := newFakeCloud()
+	s.WireCloud(cloud)
+	mb := &fakeMailboxes{counts: map[string]int{"acme.io": 2}, owned: []string{"acme.com"}}
+	s.mailboxes = mb
+	ctx := context.Background()
+	org := uuid.New()
+	if _, xerr := s.SetRedirect(ctx, org, uuid.New(), "acme.io", RedirectInput{TargetURL: "acme.com", ServedBy: models.RedirectServedByCloud}); xerr != nil {
+		t.Fatal(xerr)
+	}
+	if _, ok := cloud.rows["acme.io"]; !ok {
+		t.Fatal("Cloud was not asked to serve it")
+	}
+	mb.owned = nil
+	row, _ := repo.Get(ctx, org, "acme.io")
+	r, xerr := s.check(ctx, row, false)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if _, ok := cloud.rows["acme.io"]; ok || r.Verified || r.TargetActive == nil || *r.TargetActive {
+		t.Fatalf("Cloud still serves a destination off the workspace's domains: %+v", r)
 	}
 }

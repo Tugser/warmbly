@@ -51,12 +51,28 @@ func (s *Service) VerifyAppToken(token string, call AppCall) bool {
 	if err != nil || !parsed.Valid {
 		return false
 	}
-	// Pipedrive's panel tokens may carry no expiry; one that says when it was
-	// issued is refused once stale, so a token copied out of a URL ages out.
-	if iat, err := claims.GetIssuedAt(); err == nil && iat != nil && time.Since(iat.Time) > appTokenMaxAge {
+	if !appTokenFresh(claims, time.Now()) {
 		return false
 	}
 	return claimID(claims["userId"]) == call.UserID && claimID(claims["companyId"]) == call.CompanyID
+}
+
+// appTokenMaxLifetime bounds how far ahead an expiry-only token may be valid.
+const appTokenMaxLifetime = 24 * time.Hour
+
+// appTokenSkew tolerates clock drift between Pipedrive and this instance.
+const appTokenSkew = time.Minute
+
+// appTokenFresh requires a bounded lifetime: an iat within appTokenMaxAge, or
+// an exp (already checked unexpired by the parser) at most appTokenMaxLifetime away.
+func appTokenFresh(claims jwt.MapClaims, now time.Time) bool {
+	if iat, err := claims.GetIssuedAt(); err == nil && iat != nil {
+		return !iat.After(now.Add(appTokenSkew)) && now.Sub(iat.Time) <= appTokenMaxAge
+	}
+	if exp, err := claims.GetExpirationTime(); err == nil && exp != nil {
+		return exp.Sub(now) <= appTokenMaxLifetime
+	}
+	return false
 }
 
 func claimID(v any) string {

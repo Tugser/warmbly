@@ -36,15 +36,15 @@ Anything flagged on [Instance health](/development/instance-health/) links back 
 | Variable | What it does | Default | Restart needed |
 |---|---|---|---|
 | `APP_ENV` | `dev` or `prod`. `dev` tolerates the published default secrets and turns on Gin debug logging. Set `prod` for anything other people can reach | `dev` | yes |
-| `DEPLOYMENT_MODE` | `self_hosted` or `cloud`. Picks the auth defaults in [authentication](#authentication); every one stays individually overridable | `self_hosted` under compose | yes |
+| `DEPLOYMENT_MODE` | `self_hosted` or `cloud`. Picks the auth defaults in [authentication](#authentication); every one stays individually overridable. A joining node receives the mode its control plane resolved | `self_hosted` under compose | yes |
 | `ALLOW_INSECURE_DEFAULTS` | `true` lets the backend boot even when a secret still holds its published default. Only for a throwaway instance | unset | yes |
 | `GIN_MODE` | `debug` or `release` | `release` | yes |
 | `ENV_LABEL` | A label the admin panel shows next to the instance name | unset | yes (container start) |
 | `WARMBLY_CLOUD_URL` | The Warmbly Cloud API a self-hosted instance links to for the hosted warmup pool ([guide](/guides/warmbly-cloud/)). Outbound HTTPS only | `https://api.warmbly.com` | no |
 | `INSTANCE_NAME` | The name shown on the Warmbly Cloud approval page when linking this instance | the hostname | no |
 | `WARMBLY_VERSION` | Version string reported to Warmbly Cloud on link requests | `dev` | no |
+| `WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS` | `true` lets customer webhooks point at `http://` and private addresses. Honoured only on a self-hosted (`DEPLOYMENT_MODE=self_hosted`) or development (`APP_ENV=dev`) instance; a hosted production instance ignores it. It lets any workspace member make the backend reach into your internal network, so only set it where you control that network | `false` | yes |
 | `APP_VERSION` | Release name written into a workspace export archive's manifest (`source_app_version`). Informational only: an import never keys off it | unset | yes |
-| `WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS` | `true` lets customer webhooks point at `http://` and private addresses. Development only: it lets any workspace member make the backend reach into your internal network | `false` | yes |
 
 In Gin release mode, access logs omit successful health probes and internal GET lookups, including an expected missing email-message mapping. Authentication failures, server errors, other missing resources and all mutations remain logged. Gin debug mode keeps every access log. Query strings and credential path parameters remain redacted in both modes; organization audit events are unaffected.
 
@@ -63,6 +63,7 @@ Five values protect the whole instance. Compose ships a working default for each
 | `NODE_BROKER_TOKEN` | any random string | Every internal route only a fleet node calls: organization data keys (read, store and open), blob signing, provider access tokens for a mailbox Warmbly Cloud manages, the message map and sync lookups, worker config and the node heartbeat. Optional, and falls back to `INTERNAL_API_TOKEN`. The same value has to be set on the control plane and on every node, or those routes answer 401; a node joined after it is set receives it in `node.env` in place of `INTERNAL_API_TOKEN`, and a node joined before has to join again. The installer generates one for a new install; an existing install keeps the shared token until you set one | yes |
 | `NODE_ACCEPT_INTERNAL_TOKEN` | `true` or unset | While `true`, the node-only routes other than the key and blob brokers also accept `INTERNAL_API_TOKEN`. An upgrade does not need it: a heartbeat sent with `INTERNAL_API_TOKEN` is always answered with the node's version and nothing is recorded, so an older node updates itself. Set it only to keep older nodes syncing until they have updated, then remove it: while it is on, the tracking and forms services' token reaches those routes | no |
 | `NODE_LOG_TOKEN` | enrollment-issued 43-character base64url secret, different per node | Only node-specific log ingestion. Issued in the protected fleet join environment, hashed in primary Redis, never derived/exchanged from the fleet-wide broker/internal credential. Rejoin rotates only this evidence credential; deletion revokes it. Deploy backend before upgrading nodes, then rerun authenticated join using the same config directory and UUID, keeping local overrides. No fleet deletion, mailbox reassignment or manual secret copying is required; the script restarts the service. Upgrade alone does not fill unavailable coverage and no historical logs are backfilled. Never share one value fleet-wide | yes |
+| `NODE_CREDENTIAL` | join-issued 43-character base64url secret, different per node | Proves which node is asking when the host updater fetches that node's env. Issued in the protected fleet join environment; only its SHA-256 is stored, in the `fleet_nodes` table, so nothing a node can reach can rewrite it. A rejoin replaces it and deleting the node revokes it. A node joined before this setting existed holds none: a worker keeps refreshing its env without it, and a consumer's env is handed out only against it, so join a consumer again (same config directory, so it keeps its id and `node.local.env`) to resume env refresh. Kept across an env refresh; never copy it to another machine | yes |
 | `SECRET_KEY_BASE` | 64 characters or more | Phoenix session signing in the realtime service | yes |
 | `KMS_LOCAL_MASTER_KEY` | base64, exactly 32 bytes | The root key that seals every per-organization data key | yes |
 | `CREDENTIALS_ENCRYPTION_KEY` | exactly 64 hex characters | Mailbox credentials at rest: SMTP and IMAP passwords, and Gmail and Outlook OAuth access and refresh tokens | yes |
@@ -90,8 +91,8 @@ Values that must be identical across services, because each service reads its ow
 |---|---|---|
 | `AUTH_SECRET`, seen by realtime as `JWT_SECRET` | backend, realtime | The dashboard loads but never goes live: the websocket rejects every token |
 | `INTERNAL_API_TOKEN`, seen by workers as `ENCRYPTED_KEYS_WORKER_TOKEN` | backend, worker, tracking | Workers cannot fetch decryption keys and tracking cannot resolve click tickets. Both fail closed with `401` |
-| `KMS_LOCAL_MASTER_KEY` | backend, consumer, worker | Sealed data keys cannot be opened, so mailbox credentials stop decrypting |
-| `CREDENTIALS_ENCRYPTION_KEY` | backend, worker | Stored SMTP and IMAP passwords and OAuth tokens stop decrypting, so no mailbox can send or sync |
+| `KMS_LOCAL_MASTER_KEY` | backend, consumer, and a worker run outside the fleet (a joined worker opens keys through the backend instead) | Sealed data keys cannot be opened, so mailbox credentials stop decrypting |
+| `CREDENTIALS_ENCRYPTION_KEY` | backend, consumer | Stored SMTP and IMAP passwords and OAuth tokens stop decrypting, so no mailbox can send or sync |
 
 <Callout type="warn" title="Only the backend refuses to boot on a published default">
 The secret check runs in the backend. The consumer and the workers start happily on a published default, so an instance can look healthy while one process is using a key anyone can read from GitHub. The `secret_published_default` check on [Instance health](/development/instance-health/#secret_published_default) is what catches it.
@@ -126,6 +127,8 @@ Retain old keys until stored ciphertext, retained events, pending jobs and the s
 
 To rotate sessions while preserving existing MFA enrollments, unsubscribe links and published DNS proofs, first pin `TWOFA_SECRET`, `UNSUBSCRIBE_SIGNING_SECRET` and `DOMAIN_PROOF_SECRET` to their existing resolved values. Then change `AUTH_SECRET` and realtime's matching `JWT_SECRET` together. Users sign in again. Rotate the independent purpose keys separately; issued unsubscribe links remain valid for one year, so their read cutoff must cover the last previously issued link's expiry.
 
+Consumer nodes hold `CREDENTIALS_ENCRYPTION_KEY` and `CREDENTIALS_ENCRYPTION_READ_KEYS`, and every node holds `INTERNAL_API_TOKEN` or `NODE_BROKER_TOKEN`, in `node.env`. Workers are never sent the credential keys. A node that [keeps its env current](#keeping-a-nodes-env-current) receives each step of a rotation on its own; wait for `warmblyctl fleet env-status` to report every node current before activating a new credential key, and again before retiring an old key or token. A node still on the old values keeps sealing and authenticating with them. The [Keys tab](/development/admin-panel/#instance) under Configuration in the admin panel shows the same three answers in one place: values still under a read key, open overlap windows and nodes that have not applied the current env. On AWS, the rotation workflow runs the whole procedure; see [Rotate keys](/development/aws-fargate/#rotate-keys).
+
 ### Seal mailbox credentials under workspace keys
 
 `MAILBOX_CREDENTIALS_SEALING` chooses the key that seals newly stored mailbox credentials: SMTP and IMAP hosts, usernames and passwords, and OAuth access and refresh tokens.
@@ -135,7 +138,7 @@ To rotate sessions while preserving existing MFA enrollments, unsubscribe links 
 | `instance` (default) | Sealed with `CREDENTIALS_ENCRYPTION_KEY` | In the worker command, protected by the event bus |
 | `organization` | Sealed with the workspace's KMS-protected data key | Sealed with the same workspace key, opened only on the worker that runs the mailbox |
 
-Every release that reads this setting opens both formats, so the setting only decides what new writes use. With `organization`, the consumer also moves credentials already stored under the instance key onto workspace keys, in small resumable batches, and skips a mailbox whose stored value no key opens. Workspace keys are cached in each process for five minutes and in Redis for fifteen, so a busy workspace costs one KMS decrypt per cache period, not one per mailbox.
+Every release that reads this setting opens both formats, so the setting only decides what new writes use. With `organization`, the consumer also moves credentials already stored under the instance key onto workspace keys, in small resumable batches, and skips a mailbox whose stored value no key opens. With `instance`, the same consumer job seals any OAuth token still stored in plaintext under `CREDENTIALS_ENCRYPTION_KEY`. Workspace keys are cached in each process for five minutes and in Redis for fifteen, so a busy workspace costs one KMS decrypt per cache period, not one per mailbox.
 
 Set it on the backend and the consumer, and only after every backend, consumer and worker runs a release that reads it. That release becomes the rollback floor: an older release cannot open a workspace-sealed credential. Keep `CREDENTIALS_ENCRYPTION_KEY` configured, because personal mailboxes with no workspace, mailboxes not yet moved and older backups still use it.
 
@@ -193,7 +196,7 @@ TRUSTED_PROXIES=10.0.0.0/8,172.16.0.0/12
 | `WARMBLY_BOOTSTRAP_PASSWORD_HASH` | Argon2id PHC string for that owner, as `warmblyctl hash-password` prints it. Preferred over the plaintext form. A malformed hash, or one whose cost parameters are below `m=65536,t=3,p=2` with a 16-byte salt and 32-byte key, is refused and no owner is created | unset | yes |
 | `WARMBLY_BOOTSTRAP_PASSWORD` | Plaintext convenience form. Held to the same rules as any password (length, breached list); one that fails them is refused and no owner is created. Warns at boot, and leaves a password in your process environment | unset | yes |
 | `WARMBLY_BOOTSTRAP_ORG` | Name of the organization created with that owner. A value that breaks the [naming rules](/api/error-codes/#name-refusals) is ignored with a warning | derived from the name | yes |
-| `TWOFA_SECRET` | Key that encrypts stored TOTP secrets. Falls back to `AUTH_SECRET`. Keep matching `TWOFA_READ_SECRETS` while existing enrollments are resealed under a replacement key | `AUTH_SECRET` | yes |
+| `TWOFA_SECRET` | Key that encrypts stored TOTP secrets. Falls back to `AUTH_SECRET`. Keep matching `TWOFA_READ_SECRETS` while existing enrollments are resealed under a replacement key. Use at least 32 characters: a shorter value logs a warning and raises an instance health finding on a self-hosted or development instance, and hosted production refuses to start with one | `AUTH_SECRET` | yes |
 | `WEBAUTHN_RP_ID` | Passkey relying party id. Derived from `APP_URL` when unset. Changing it invalidates every enrolled passkey | derived | yes |
 | `WEBAUTHN_RP_ORIGINS` | Origins accepted for passkey ceremonies | derived from `APP_URL` | yes |
 | `WEBAUTHN_RP_DISPLAY_NAME` | The name the passkey prompt shows | `Warmbly` | yes |
@@ -267,7 +270,7 @@ Platform mail is the product's own outbound: registration codes, password resets
 | `SMTP_SECURITY` | `starttls` (587), `tls` (465) or `none` (25) | `starttls` | yes |
 | `SMTP_AUTH` | `auto`, `plain`, `login`, `cram-md5` or `none` | `auto` | yes |
 | `SMTP_EHLO_NAME` | EHLO name presented to the relay | the sender domain | yes |
-| `SMTP_TLS_INSECURE_SKIP_VERIFY` | Skips certificate verification. Only for a relay with a private certificate authority | `false` | yes |
+| `SMTP_TLS_INSECURE_SKIP_VERIFY` | Skips certificate verification. Only for a relay with a private certificate authority. Honoured on a self-hosted or development instance and ignored on hosted production | `false` | yes |
 | `EMAIL_BRAND_NAME` | The product name in transactional subjects and the header | `Warmbly` | yes |
 | `EMAIL_BRAND_LEGAL_ENTITY`, `EMAIL_BRAND_COMPANY_NUMBER`, `EMAIL_BRAND_PLACE_OF_REG`, `EMAIL_BRAND_ADDRESS` | The identification line in the transactional footer | unset on a self-host, which renders no line | yes |
 | `EMAIL_BRAND_WEBSITE_URL`, `EMAIL_BRAND_TERMS_URL`, `EMAIL_BRAND_PRIVACY_URL`, `EMAIL_BRAND_SUPPORT_EMAIL` | The footer's links and support address | unset on a self-host, which renders no link row | yes |
@@ -278,7 +281,7 @@ A self-hosted instance never fills those in with ours. Warmbly's own company det
 
 Despite the prefix, these are not only about email. `GET /v1/auth/config` serves the public half of them (name, website, terms, privacy, support address) and every surface that used to hardcode `warmbly.com` reads it: the sign-in screen's wordmark and its Terms and Privacy links, the copyable API example on the API keys page, a shared stats card, and the "powered by" line at the foot of a [hosted form page](/guides/forms/). Each renders nothing when the value is unset, so a stranger filling in one of your forms is never sent to a website with no relationship to it.
 
-`log` is a real transport, not a broken one: it writes every message to the backend log and delivers nothing. It exists so a fresh install can complete its first sign-in with no relay. What it costs you is password resets, invitation delivery and digests, all of which have a workaround described on [accounts and access](/development/accounts-and-access/#without-a-mail-relay).
+`log` is a real transport, not a broken one: it writes every message to the backend log and delivers nothing. It exists so a fresh install can complete its first sign-in with no relay. What it costs you is password resets, invitation delivery and digests, all of which have a workaround described on [accounts and access](/development/accounts-and-access/#without-a-mail-relay). Unless `APP_ENV` is `dev` (also `development` or `local`), the logged copy has the query string and fragment of every link replaced with `?[redacted]`, because that is where reset and invitation tokens travel; the rest of the message is logged as written. A transport that does not deliver never gates a sign-in or a signup on an emailed code, so no such code reaches the log.
 
 Read a code out of the log:
 
@@ -312,7 +315,7 @@ Verdicts are re-checked after 90 days (30 for an inconclusive one), in passes of
 
 | Variable | What it does | Default | Restart needed |
 |---|---|---|---|
-| `KMS_PROVIDER` | `local` (AES master key below), `aws` (AWS KMS), or `brokered` (hold no key material and ask the control plane to unwrap). A joining node is given `brokered` automatically wherever the instance runs `aws`, so no machine in the fleet needs a cloud credential | `local` under compose, `aws` for a bare binary | yes |
+| `KMS_PROVIDER` | `local` (AES master key below), `aws` (AWS KMS), or `brokered` (hold no key material and ask the control plane to unwrap). A joining node is given `brokered` automatically wherever the instance runs `aws`, so no machine in the fleet needs a cloud credential. A joining worker is given `brokered` on `local` too, so the master key stays on the backend and consumers | `local` under compose, `aws` for a bare binary | yes |
 | `KMS_LOCAL_MASTER_KEY` | base64, exactly 32 bytes. The root of trust for every per-organization data key | published default under compose | yes |
 | `KMS_LOCAL_MASTER_KEY_FILE` | Path to a file holding that key instead. Mutually exclusive with the inline value | unset | yes |
 | `KMS_AWS_KEY_ID` | Key id or alias when `KMS_PROVIDER=aws` | unset | yes |
@@ -505,12 +508,14 @@ Keep the copies private. GeoLite2 may not be redistributed, which is also why no
 | `WARMBLY_WORKER_CAPACITY` | Assigned-mailbox planning target for this worker. This guides placement and is not a mailbox-provider send limit | `100` | yes |
 | `WORKER_COMMAND_CONCURRENCY` | Worker command lanes, from `1` to `64`, on both Kafka and NATS. Commands are grouped by the mailbox in the payload, including older task-keyed sends. Each mailbox stays in order; independent lanes run concurrently, so one slow mail server holds only its own lane. On NATS a command waiting in a lane is kept from being redelivered while it waits. Invalid values use the default | `8` | yes |
 | `WARMBLY_NODE_REGION` | Free-form label for where this node egresses from, e.g. `eu-central`. Placement prefers a worker near where a mailbox's provider expects sign-ins; unset scores neutral. Written by the join script from `--region` | unset | yes |
-| `ENCRYPTED_KEYS_BACKEND_URL` | Backend base the worker fetches organization keys from | unset | yes |
+| `ENCRYPTED_KEYS_BACKEND_URL` | Backend base the worker fetches organization keys from, and the address a joining node is told to call back on. On hosted production it should be `https`, or a private-network address nodes reach without crossing the internet; a plain `http` address that does not name this machine is logged as a warning on every join and env refresh. A self-host may use plain `http` on its own network | unset | yes |
 | `ENCRYPTED_KEYS_WORKER_TOKEN` | The worker's copy of `INTERNAL_API_TOKEN` | unset | yes |
-| `MAIL_TLS_INSECURE` | Skips certificate verification on mailbox connections | `false` | yes |
+| `MAIL_TLS_INSECURE` | Skips certificate verification on mailbox connections and lets SMTP continue on a server that offers no STARTTLS. A password is still only sent over TLS or to this machine. Honoured on a self-hosted or development instance and ignored on hosted production, where a server with a self-signed or private certificate is trusted through its mailbox's own [certificate choice](/guides/mailboxes/#servers-with-their-own-certificate) instead. A joining node receives the value its control plane resolved | `false` | yes |
+| `MAIL_ALLOW_PRIVATE_HOSTS` | Whether a mailbox's SMTP or IMAP server may resolve to a loopback, private, link-local, CGNAT, multicast or metadata address. Checked on every connection, against the address actually dialled. A hosted production instance always refuses them; a self-hosted or development instance allows them unless this is `false`. A joining node receives the value its control plane resolved | `true` on a self-host or in development, refused on hosted production | yes |
 | `WARMBLY_BACKEND_URL` | Backend base a joined node calls for its heartbeat, and the brokered key and blob providers, when `ENCRYPTED_KEYS_BACKEND_URL` is unset. Written by the join script | unset | yes |
 | `WARMBLY_NODE_NAME` | Display name the node reports to the fleet list and admin panel. Written by the join script from `--name`, else the hostname | unset | yes |
 | `WARMBLY_TARGET_VERSION_PATH` | File the node writes the control plane's `desired_version` to, for the `warmbly-node-update` timer to apply. Unset, the node never writes one and does not update itself. Written by the join script | unset | yes |
+| `WARMBLY_ENV_REFRESH` | Read by the host updater, not the node. `true` lets it replace `node.env` with what the control plane renders now whenever the heartbeat names a different env revision, then restart the node. `node.local.env` is never touched. Written by the join script on a new join and by `--adopt --env-refresh`; a node without it keeps its env until it rejoins | unset | no (read by the updater) |
 | `APP_INTERNAL_URL` | Read by the backend: the address a joining node is told to call back on when `ENCRYPTED_KEYS_BACKEND_URL` is unset on the backend. Instance health checks whichever of the two is set | unset | no (read per join) |
 
 <Callout type="warn" title="An unset key URL is silent">
@@ -521,10 +526,13 @@ Workers hold no database connection by design. Everything relational they need a
 
 ### What a joining node is given
 
-`warmbly join` renders `/etc/warmbly/node.env` from the backend's own environment, so most of this page reaches a node without being set twice. Three things are decided rather than copied:
+`warmbly join` renders `/etc/warmbly/node.env` from the backend's own environment, so most of this page reaches a node without being set twice. Several things are decided rather than copied:
 
-- **The crypto and blob providers are translated.** An instance on `KMS_PROVIDER=aws` hands its nodes `brokered`, and one on `BLOB_PROVIDER=s3` hands them `brokered` too, so no machine in the fleet carries a cloud credential. Providers that need no credential pass through unchanged.
-- **A worker never receives `PRIMARY_DB`.** A consumer does, because it opens Postgres itself. An instance that keeps its DSN in a secret manager rather than the environment has none to send, and the join script says so.
+- **The crypto and blob providers are translated.** An instance on `KMS_PROVIDER=aws` hands its nodes `brokered`, and one on `BLOB_PROVIDER=s3` hands them `brokered` too, so no machine in the fleet carries a cloud credential. An instance on `KMS_PROVIDER=local` hands its workers `brokered` and keeps `local` for consumers, which may create a workspace's first data key. Filesystem blobs pass through unchanged.
+- **A worker never receives `PRIMARY_DB`, `CREDENTIALS_ENCRYPTION_KEY`, `CREDENTIALS_ENCRYPTION_READ_KEYS` or `KMS_LOCAL_MASTER_KEY`.** A consumer does, because it opens Postgres itself and seals stored credentials. A worker opens only what reaches it sealed under a workspace key. An instance that keeps its DSN in a secret manager rather than the environment has none to send, and the join script says so.
+- **`DEPLOYMENT_MODE`, `MAIL_ALLOW_PRIVATE_HOSTS` and `MAIL_TLS_INSECURE` are resolved.** A node cannot tell a hosted instance from a self-host on its own, so it receives the mode and the policies its control plane applies. On hosted production that means a node ignores `MAIL_TLS_INSECURE` and the other self-host-only opt-outs even when `node.local.env` sets them. A node that has not rejoined or refreshed its env since an upgrade keeps what it was given; on a hosted instance, rejoin existing nodes or write `DEPLOYMENT_MODE=cloud` in `node.local.env`.
+- **The backend address should be `https` on hosted production.** Join and env refresh log a warning when `ENCRYPTED_KEYS_BACKEND_URL` (or `APP_INTERNAL_URL`) is plain `http` and does not name this machine. Keep a cleartext address on a private network only. A self-host keeps whatever it uses on its own network.
+- **Each node gets credentials of its own.** `NODE_LOG_TOKEN` for log ingestion and `NODE_CREDENTIAL` for fetching its own env are issued per node on every join and never derived from the fleet-wide token.
 - **Addresses are inherited literally.** `NATS_URL`, `REDIS` and `ENCRYPTED_KEYS_BACKEND_URL` are used exactly as the backend has them, and a value that only resolves inside your container network produces a node that enrols cleanly and reaches nothing.
 
 ### Settings the control plane cannot know
@@ -537,6 +545,18 @@ That is where a per-machine value belongs: a DSN this instance does not hold, cr
 printf 'PRIMARY_DB=%s\n' "postgres://..." >> /etc/warmbly/node.local.env
 systemctl restart warmbly-consumer
 ```
+
+### Keeping a node's env current
+
+A node joined with `WARMBLY_ENV_REFRESH=true` picks up configuration changes without anyone signing in to it. Every heartbeat reply carries the revision of the env the control plane would render for that node now. When it differs from what the node applied, the updater fetches the new env from the backend with the node's broker token and its own `NODE_CREDENTIAL`, writes `node.env` in one step, restarts the node and reports the new revision. If the restarted node does not stay up, the previous `node.env` is put back and that revision is not tried again. The backend hands each node only its own env, and logs every hand-out and refusal (`"event":"broker_access"`, operation `fleet.node_env`) without its contents. A worker whose updater predates `NODE_CREDENTIAL` is still answered, because a worker's env carries nothing the fleet token does not already reach; a consumer's env is answered only against its credential.
+
+`warmblyctl fleet env-status` lists every live node as `current`, `stale` or `manual` (a node that does not refresh) and exits non-zero until all of them are current. A key rotation that reaches nodes waits on it, so a `manual` node holds a rotation open until it is rejoined, or adopted with `--env-refresh`:
+
+```bash
+curl -fsSL https://<your-instance>/join.sh | sudo sh -s -- --adopt --env-refresh
+```
+
+`--adopt` installs the standard unit and updater for the node the existing `node.env` describes, without enrolling again. With `--env-refresh` it first checks that a refresh would keep every key in `node.env`, and refuses, listing the names, when one exists only on this machine. Keys the control plane stopped sending a worker (the credential keys and the KMS master key) are not listed: dropping them is intended. Name the others with `--keep-local` to move them into `node.local.env`. It also refuses when the control plane asks for a different version than the node runs, because the updater would move it within two minutes; set the fleet version first, or pass `--accept-target`. Adopting issues no `NODE_CREDENTIAL`, so a consumer joined before node credentials existed resumes env refresh only after it is joined again.
 
 ## Mailbox connections
 
@@ -966,6 +986,7 @@ The Elixir websocket service. Its runtime configuration is read only when the re
 | `PORT` | Listen port | `4000` |
 | `CHECK_ORIGIN_HOSTS` | Origins a browser may open a socket from, comma separated, e.g. `https://app.example.com,https://admin.example.com`. Not this service's own host | unset |
 | `CHECK_ORIGIN` | Legacy host-based form, consulted only when `CHECK_ORIGIN_HOSTS` is empty. `true` accepts an upgrade only from `PHX_HOST` | `false` |
+| `REALTIME_ALLOW_QUERY_CREDENTIALS` | `true` accepts an API key or OAuth token in the socket URL's `token` parameter, for an older client that cannot send the `x-warmbly-token` header. URLs reach proxy and access logs, so leave it off unless such a client still depends on it; the realtime service logs a warning at boot while it is on. Read in every environment, not only `prod` | `false` |
 | `PUBSUB_ENABLED` | `true` swaps the Redis bridge for Google Pub/Sub | `false` |
 | `GCP_PROJECT_ID` | Required when `PUBSUB_ENABLED=true`; the service refuses to boot without it | unset |
 | `MAX_CONNECTIONS_PER_USER` | Concurrent sockets one account may hold. The caller's plan limit applies too, whichever is lower | `10` |
@@ -991,7 +1012,7 @@ These are the only settings a browser can change, and no environment variable ow
 
 | Setting | Type | Default | What it does |
 |---|---|---|---|
-| `invitations.ttl_hours` | integer, 1 to 720 | `168` | How long a new invitation stays valid. Read when the invitation row is written, so it applies to invitations created after the change, not to existing ones |
+| `invitations.ttl_hours` | integer, 1 to 48 | `48` | How long a new invitation stays valid. Read when the invitation row is written, so it applies to invitations created after the change, not to existing ones |
 | `invitations.links_enabled` | boolean | `true` | Whether the copyable invitation link is returned at all. Off makes `GET /organization/invitations/:id/link` return `404` with an explanation, so an invitation can only arrive by mail |
 | `access.allow_invited_signup` | boolean | `true` | Whether holding a live invitation lets someone create their own account under `invite_only`. Off means an administrator creates every account with `warmblyctl user create` |
 | `sync.backfill_days` | integer, 1 to 730 | `90` | How far back a newly connected mailbox's initial import reaches, newest first |
@@ -1002,7 +1023,7 @@ These are the only settings a browser can change, and no environment variable ow
 | `retention.form_event_days` | integer, 1 to 3650 | `180` | How long form funnel events (views, starts, field-level drop-off) are kept. Funnel reports range up to 90 days, so anything shorter shortens the report too |
 | `retention.audit_log_days` | integer, 1 to 3650 | `90` | How long the audit trail is kept. It carries IP addresses, user agents and change payloads, so this is also how long that data is held |
 | `retention.warmup_mail_days` | integer, 3 to 3650 | `30` | How long warmup mail stays in each mailbox before Warmbly deletes it, wherever the mailbox's filing setting keeps it (Trash on Gmail), with the stored copy of its body. A mailbox can set its own window on the Warmup tab of its drawer or through `warmup_retention_days` on the API; this is what every other mailbox follows. The floor leaves room for the engagement and for a reply in the thread to finish |
-| `retention.warmup_event_days` | integer, 30 to 3650 | `365` | How long the per-message warmup records (tokens, receipts, tampering events, spam reports) are kept. The pool health bands read the last 30 days, which is the floor. The daily sent and received counts behind the warmup analytics are separate and never pruned |
+| `retention.warmup_event_days` | integer, 30 to 3650 | `365` | How long the per-message warmup records (tokens, receipts, tampering events, spam reports, and a linked instance's closed commands and reported arrivals) are kept. The pool health bands read the last 30 days, which is the floor. The daily sent and received counts behind the warmup analytics are separate and never pruned |
 | `tracking.machine_window_open_seconds` | integer, 1 to 900 | `60` | How soon after a send was dispatched an open is recorded as automated rather than a person's. The clock starts when the send is handed to a worker, so this window also covers the sending provider's queue and the transit to the recipient, not just reading time. Raise it when delivery-time scanners are being counted as opens; lower it when recipients who read immediately are being missed. A change applies within a minute and only to events recorded after it |
 | `tracking.machine_window_click_seconds` | integer, 1 to 900 | `30` | The same window for click tickets. Kept separate because the two mistakes cost different things: a misjudged open loses a metric, a misjudged click loses the automation behind an interested lead |
 | `tracking.machine_window_probable_seconds` | integer, 1 to 86400 | `600` | The window used instead of the two above when the tracking service recognised the source as a mail-security network that also renders clicked pages for people, which Proofpoint, Mimecast and Cisco do through browser isolation. Such a match cannot settle whether a person is behind the request, so it widens the window rather than deciding: inside it the event is the delivery-time scan, past it the recipient who got to the mail later. Never applied shorter than the window for the kind of event in hand, so naming a network can only ever catch more scans. Its ceiling reaches a day because how long a vendor takes to detonate a link is the vendor's property, not the instance's |

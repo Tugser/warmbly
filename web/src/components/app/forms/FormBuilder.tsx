@@ -54,7 +54,7 @@ import AnalyticsTab from "./AnalyticsTab";
 import DesignPanel from "./DesignPanel";
 import FieldSettingsPanel from "./FieldSettingsPanel";
 import FormPreview from "./FormPreview";
-import SettingsPanel from "./SettingsPanel";
+import SettingsPanel, { REDIRECT_NOT_OWN_DOMAIN } from "./SettingsPanel";
 import ShareTab from "./ShareTab";
 import SubmissionsTab from "./SubmissionsTab";
 import {
@@ -190,6 +190,9 @@ export default function FormBuilder({ form }: { form: Form }) {
     });
     // The last-saved draft: Discard returns here, not to the original prop.
     const savedRef = React.useRef<Draft>(draftFrom(form));
+    // The saved redirect and whether visitors are sent to it; the builder never refetches the form.
+    const [savedRedirect, setSavedRedirect] = React.useState({ url: form.redirect_url, active: form.redirect_url_active });
+    const [redirectError, setRedirectError] = React.useState("");
     const baselineRef = React.useRef(sig(draftFrom(form)));
     const dirty = sig(draft) !== baselineRef.current;
     const [selectedId, setSelectedId] = React.useState<string | null>(null);
@@ -371,6 +374,8 @@ export default function FormBuilder({ form }: { form: Form }) {
         }
         try {
             const saved = await update.mutateAsync({ id: form.id, w: writeFrom(draft, nextStatus) });
+            setSavedRedirect({ url: saved.redirect_url, active: saved.redirect_url_active });
+            setRedirectError("");
             savedRef.current = draft;
             baselineRef.current = sig(draft);
             setStatus(saved.status);
@@ -378,7 +383,12 @@ export default function FormBuilder({ form }: { form: Form }) {
             setDraft((d) => ({ ...d }));
             return true;
         } catch (err) {
-            toast.error(buildError(err as AppError));
+            const e = err as AppError;
+            if (e.code === REDIRECT_NOT_OWN_DOMAIN) {
+                setRedirectError(e.message);
+                setTab("settings");
+            }
+            toast.error(buildError(e));
             return false;
         }
     }
@@ -580,9 +590,16 @@ export default function FormBuilder({ form }: { form: Form }) {
                     <div className="flex-1 overflow-y-auto">
                         <SettingsPanel
                             draft={draft}
+                            redirectError={redirectError}
+                            redirectInactive={
+                                savedRedirect.active === false && draft.redirect_url.trim() === savedRedirect.url
+                            }
                             captchaAvailable={captchaAvailable}
                             triageAvailable={triageAvailable}
-                            onChange={(patch) => patchDraft(patch)}
+                            onChange={(patch) => {
+                                if (patch.redirect_url !== undefined) setRedirectError("");
+                                patchDraft(patch);
+                            }}
                         />
                     </div>
                 )}

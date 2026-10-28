@@ -25,7 +25,7 @@ vi.mock("@/hooks/usePasswordStrength", () => ({ usePasswordStrength: () => ({ ev
 vi.mock("@/lib/api/hooks/auth/useRegister", () => ({ default: () => ({ isPending: false, mutateAsync: mocks.register }) }));
 vi.mock("@/lib/api/hooks/auth/useRegisterConfirm", () => ({ default: () => ({ isPending: false, mutateAsync: mocks.confirm }) }));
 vi.mock("@/lib/api/hooks/auth/useLogin", () => ({ default: () => ({ isPending: false, mutateAsync: mocks.login }) }));
-vi.mock("@/lib/auth", () => ({ saveTokens: vi.fn() }));
+vi.mock("@/lib/auth", () => ({ saveTokens: vi.fn(), takeSessionEndedNotice: vi.fn(() => false), SESSION_ENDED_MESSAGE: "" }));
 vi.mock("@/lib/api/client/auth/getUser", () => ({ default: vi.fn().mockResolvedValue({ id: "invitee" }) }));
 vi.mock("@/components/ui/input-otp", () => ({
     InputOTP: ({ value, onChange }: { value: string; onChange: (value: string) => void }) => <input aria-label="Verification code" value={value} onChange={(event) => onChange(event.target.value)} />,

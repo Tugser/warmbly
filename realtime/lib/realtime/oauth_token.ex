@@ -34,10 +34,10 @@ defmodule Realtime.OAuthToken do
   end
 
   @doc """
-  Validate an OAuth2 access token and return the user_id if valid.
+  Validate an OAuth2 access token and return its holder and grant if valid.
 
   Returns:
-  - {:ok, user_id} if valid
+  - {:ok, user_id, %{organization_id, scopes}} if valid
   - {:error, reason} if invalid
 
   Checks:
@@ -51,7 +51,7 @@ defmodule Realtime.OAuthToken do
          :ok <- check_revoked(grant),
          :ok <- check_expiration(grant),
          :ok <- check_scope(grant) do
-      {:ok, grant.user_id}
+      {:ok, grant.user_id, %{organization_id: grant.organization_id, scopes: grant.scopes}}
     end
   end
 
@@ -61,7 +61,7 @@ defmodule Realtime.OAuthToken do
   # The holder must still be a member, not banned from signing in, and the app usable,
   # the same conditions the API applies when it resolves the token.
   @lookup_query """
-  SELECT g.user_id::text, g.scopes, g.access_expires_at, g.revoked_at
+  SELECT g.user_id::text, g.scopes, g.access_expires_at, g.revoked_at, g.organization_id::text
   FROM oauth_access_grants g
   WHERE g.access_token_hash = $1
     AND EXISTS (SELECT 1 FROM organization_members m
@@ -73,10 +73,11 @@ defmodule Realtime.OAuthToken do
 
   defp lookup_token(token) do
     case Repo.query(@lookup_query, [hash_token(token)]) do
-      {:ok, %{rows: [[user_id, scopes, expires_at, revoked_at] | _]}} ->
+      {:ok, %{rows: [[user_id, scopes, expires_at, revoked_at, org_id] | _]}} ->
         {:ok,
          %{
            user_id: user_id,
+           organization_id: org_id,
            scopes: scopes,
            access_expires_at: expires_at,
            revoked_at: revoked_at

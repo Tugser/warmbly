@@ -95,10 +95,11 @@ type Store interface {
 	// legacy S3 Client.Exists already takes a bucket argument.)
 	Has(ctx context.Context, key string) (bool, error)
 
-	// PresignedGetURL returns a time-limited URL for a third party (typically
-	// the browser) to fetch the object directly. Implementations that can't
+	// PresignedGetURL returns a time-limited URL for a browser to download the
+	// object directly. The signed response is an attachment named after dl,
+	// typed with DownloadType(dl.ContentType). Implementations that can't
 	// produce one (filesystem, in particular) should return ErrUnsupported.
-	PresignedGetURL(ctx context.Context, key string, ttl time.Duration) (string, error)
+	PresignedGetURL(ctx context.Context, key string, ttl time.Duration, dl Download) (string, error)
 
 	// PresignedURL is PresignedGetURL generalised to the other verbs, so a
 	// caller that holds no credential for the bucket can still work against it

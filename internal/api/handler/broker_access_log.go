@@ -5,20 +5,16 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// Access logging for the two internal endpoints that hand out something worth
-// more than a record: the data-key decrypt broker and the blob presigner.
+// Access logging for every internal endpoint that hands a node something worth
+// more than a record: the data-key decrypt broker, the blob presigner, the
+// node env and the managed-mailbox access token. Each access, allowed or
+// refused, leaves one line naming the operation, the subject, the caller and
+// the outcome, so an operator can see a misconfigured node or someone holding
+// a node credential and looking around.
 //
-// CASA 6.7.1 asks that access to server-side secrets be logged or monitored,
-// and these two log every access. They are also the two where a
-// refusal is the clearest probe signal the instance produces: a node asks for
-// keys it owns and prefixes it uses, so a rejected key or a decrypt that fails
-// is either a misconfigured node or somebody holding the internal token and
-// looking around. Either way an operator should be able to see it.
-//
-// Deliberately not logged: the ciphertext, the plaintext key, and the signed
-// URL. What is recorded is who asked, for what shape of thing, and whether it
-// was allowed, which is what makes a pattern visible without the log itself
-// becoming the leak.
+// Never logged: ciphertext, plaintext keys, signed URLs, env contents or
+// tokens. The record is who asked for what shape of thing and whether it was
+// allowed, which makes a pattern visible without the log becoming the leak.
 func logBrokerAccess(c *gin.Context, operation, subject string, allowed bool, reason string) {
 	ev := log.Info()
 	if !allowed {

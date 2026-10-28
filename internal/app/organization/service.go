@@ -27,7 +27,7 @@ import (
 const (
 	// InvitationTTL is the invitation expiration used when no instance
 	// settings service is wired; the operator's value overrides it.
-	InvitationTTL = 7 * 24 * time.Hour // 7 days
+	InvitationTTL = 48 * time.Hour
 
 	// InvitationTokenLength is the length of invitation tokens
 	InvitationTokenLength = 32
@@ -109,6 +109,7 @@ type OrganizationService interface {
 
 	// Invitations
 	GetPendingInvitations(ctx context.Context, orgID uuid.UUID) ([]models.OrganizationInvitation, *errx.Error)
+	GetExpiredInvitations(ctx context.Context, orgID uuid.UUID) ([]models.OrganizationInvitation, *errx.Error)
 	GetUserPendingInvitations(ctx context.Context, email string) ([]models.OrganizationInvitation, *errx.Error)
 	CancelInvitation(ctx context.Context, orgID, invitationID uuid.UUID) *errx.Error
 
@@ -303,10 +304,13 @@ func (s *organizationService) Create(ctx context.Context, userID uuid.UUID, name
 	// Ban-scope enforcement (migration 000045). Block new workspace
 	// creation when the admin's set the BanScopeOrgCreate bit, even
 	// if the user can otherwise log in.
-	if scope, scopeErr := s.userRepo.GetBanState(ctx, userID); scopeErr == nil {
-		if models.BanScope(scope).Has(models.BanScopeOrgCreate) {
-			return nil, errx.New(errx.Forbidden, "this account cannot create new workspaces")
-		}
+	scope, scopeErr := s.userRepo.GetBanState(ctx, userID)
+	if scopeErr != nil {
+		errs.CaptureException(scopeErr)
+		return nil, errx.InternalError()
+	}
+	if models.BanScope(scope).Has(models.BanScopeOrgCreate) {
+		return nil, errx.ErrAccountWorkspaceCreateSuspended
 	}
 
 	// Daily creation throttle — caps "new workspaces per owner per
@@ -945,17 +949,18 @@ func (s *organizationService) acceptResolved(ctx context.Context, inv *models.Or
 		return nil, errx.New(errx.Forbidden, "this invitation is for "+inv.Email+", but you are signed in as "+email+"; sign out and use the invited address")
 	}
 
-	// Check if invitation is expired
+	// An expired invitation stays listed so the team page can send it again.
 	if inv.IsExpired() {
-		// Delete expired invitation
-		_ = s.orgRepo.DeleteInvitation(ctx, inv.ID)
-		return nil, errx.New(errx.BadRequest, "invitation has expired")
+		return nil, errx.NewWithIdentifier(errx.BadRequest, "invitation_expired", "This invitation has expired. Invitations last 48 hours; ask the person who invited you to send it again from the Team page.")
 	}
 
 	// Check if already a member
 	existing, _ := s.orgRepo.GetMember(ctx, inv.OrganizationID, userID)
 	if existing != nil {
-		_ = s.orgRepo.DeleteInvitation(ctx, inv.ID)
+		if err := s.orgRepo.DeleteInvitation(ctx, inv.ID); err != nil {
+			errs.CaptureException(err)
+			return nil, errx.InternalError()
+		}
 		return existing, nil
 	}
 
@@ -984,8 +989,10 @@ func (s *organizationService) acceptResolved(ctx context.Context, inv *models.Or
 		liveRoleIDs = append(liveRoleIDs, id)
 	}
 	if len(liveRoleIDs) == 0 {
-		_ = s.orgRepo.DeleteInvitation(ctx, inv.ID)
-		return nil, errx.New(errx.BadRequest, "the roles for this invitation no longer exist — ask for a new invite")
+		if err := s.orgRepo.DeleteInvitation(ctx, inv.ID); err != nil {
+			errs.CaptureException(err)
+		}
+		return nil, errx.NewWithIdentifier(errx.BadRequest, "invitation_roles_removed", "The roles this invitation granted no longer exist. Ask the person who invited you to send a new invitation.")
 	}
 
 	// Add the membership row, then assign the full role set (which recomputes
@@ -1004,13 +1011,13 @@ func (s *organizationService) acceptResolved(ctx context.Context, inv *models.Or
 		// Grants on resources deleted since the invite are dropped by the insert.
 		Access: inv.Access,
 	}
-	if err := s.orgRepo.AddMemberWithRoles(ctx, member, liveRoleIDs); err != nil {
+	if err := s.orgRepo.AcceptInvitation(ctx, inv.ID, member, liveRoleIDs); err != nil {
+		if errors.Is(err, repository.ErrInvitationInvalid) {
+			return nil, errx.NewWithIdentifier(errx.BadRequest, "invitation_used_or_expired", "This invitation has already been used or has expired. Ask the person who invited you to send it again from the Team page.")
+		}
 		errs.CaptureException(err)
 		return nil, errx.New(errx.Internal, "failed to add member")
 	}
-
-	// Delete the invitation
-	_ = s.orgRepo.DeleteInvitation(ctx, inv.ID)
 
 	if updated, _ := s.orgRepo.GetMember(ctx, inv.OrganizationID, userID); updated != nil {
 		member = updated
@@ -1107,6 +1114,25 @@ func (s *organizationService) GetPendingInvitations(ctx context.Context, orgID u
 	if err != nil {
 		errs.CaptureException(err)
 		return nil, errx.New(errx.Internal, "failed to get invitations")
+	}
+	if err := s.orgRepo.HydrateInvitationRoles(ctx, invitations); err != nil {
+		errs.CaptureException(err)
+	}
+	return invitations, nil
+}
+
+// expiredInvitationsListed bounds the expired invitations offered for sending again.
+const expiredInvitationsListed = 50
+
+// GetExpiredInvitations returns an organization's recently expired invitations, marked expired.
+func (s *organizationService) GetExpiredInvitations(ctx context.Context, orgID uuid.UUID) ([]models.OrganizationInvitation, *errx.Error) {
+	invitations, err := s.orgRepo.GetExpiredInvitations(ctx, orgID, expiredInvitationsListed)
+	if err != nil {
+		errs.CaptureException(err)
+		return nil, errx.New(errx.Internal, "failed to get invitations")
+	}
+	for i := range invitations {
+		invitations[i].Expired = true
 	}
 	if err := s.orgRepo.HydrateInvitationRoles(ctx, invitations); err != nil {
 		errs.CaptureException(err)

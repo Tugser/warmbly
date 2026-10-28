@@ -10,7 +10,8 @@ import (
 )
 
 type SocketService interface {
-	GenerateWebsocketToken(ctx context.Context, userID uuid.UUID) (string, *errx.Error)
+	// GenerateWebsocketToken mints a short-lived socket ticket bound to the caller's session.
+	GenerateWebsocketToken(ctx context.Context, userID, sessionID uuid.UUID) (string, *errx.Error)
 }
 
 type socketService struct {

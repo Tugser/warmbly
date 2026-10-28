@@ -64,6 +64,26 @@ func (g *guard) get(ctx context.Context, key string) string {
 	return ""
 }
 
+// takeScript reads and deletes a key in one step, so only one caller gets its value.
+var takeScript = redis.NewScript(`local v = redis.call("GET", KEYS[1]) if v then redis.call("DEL", KEYS[1]) end return v`)
+
+// take returns key's value and deletes it atomically; concurrent callers get it at most once.
+func (g *guard) take(ctx context.Context, key string) string {
+	if g.rdb != nil {
+		if v, err := takeScript.Run(ctx, g.rdb, []string{key}).Text(); err == nil && v != "" {
+			return v
+		}
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	v, ok := g.vals[key]
+	delete(g.vals, key)
+	if ok && v.exp.After(time.Now()) {
+		return v.v
+	}
+	return ""
+}
+
 func (g *guard) del(ctx context.Context, key string) {
 	if g.rdb != nil {
 		_ = g.rdb.Del(ctx, key).Err()

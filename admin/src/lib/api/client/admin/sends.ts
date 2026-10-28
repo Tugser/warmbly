@@ -45,6 +45,58 @@ export interface AdminInFlightResult {
     data: AdminInFlightSend[];
 }
 
+// ---- send holds ----
+
+export type AdminSendHoldReason = "unknown" | "conflict" | "permanent" | "authentication";
+
+export type AdminSendHoldBlocker =
+    | "mailbox_inactive"
+    | "task_missing"
+    | "resolution_pending"
+    | "result_settling"
+    | "task_not_settled"
+    | "too_recent"
+    | "other_unknown_sends"
+    | "provider_changed";
+
+// A mailbox held from sending and the send that holds it.
+export interface AdminSendHold {
+    email_account_id: string;
+    mailbox_email: string;
+    mailbox_status: string;
+    provider: string;
+    organization_id?: string;
+    organization_name: string;
+    reason: AdminSendHoldReason | string;
+    held_task_id?: string;
+    task_type: string;
+    task_status: string;
+    // What to look for in the mailbox's Sent folder.
+    recipients: string[];
+    message_id: string;
+    reserved_at?: string;
+    started_at?: string;
+    held_since?: string;
+    result_state: string;
+    other_unknown_sends: number;
+    resolvable: boolean;
+    blocker?: AdminSendHoldBlocker | string;
+}
+
+export interface AdminSendHoldsResult {
+    summary: { total: number; active: number; inactive: number; by_reason: Record<string, number> };
+    data: AdminSendHold[];
+}
+
+export interface AdminResolveSendHoldInput {
+    held_task_id: string;
+    held_reason: AdminSendHoldReason;
+    outcome: "sent" | "not_sent" | "provider_confirmed";
+    message_id?: string;
+    provider_msg_id?: string;
+    confirmation_reference: string;
+}
+
 // ---- dead letters ----
 
 export type AdminDeadLetterStatus = "pending" | "replayed" | "failed";
@@ -143,6 +195,23 @@ export function listInFlightSends(limit?: number): Promise<AdminInFlightResult> 
         method: "GET",
         url: `/admin/sends/in-flight${buildSearchQuery({ limit })}`,
         authorization: true,
+    });
+}
+
+export function listSendHolds(limit?: number): Promise<AdminSendHoldsResult> {
+    return Request({
+        method: "GET",
+        url: `/admin/sends/holds${buildSearchQuery({ limit })}`,
+        authorization: true,
+    });
+}
+
+export function resolveSendHold(mailboxId: string, input: AdminResolveSendHoldInput): Promise<{ accepted: boolean; applied_by_consumer: boolean }> {
+    return Request({
+        method: "POST",
+        url: `/admin/sends/holds/${mailboxId}/resolve`,
+        authorization: true,
+        data: input,
     });
 }
 
