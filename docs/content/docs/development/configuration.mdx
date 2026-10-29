@@ -268,7 +268,7 @@ Platform mail is the product's own outbound: registration codes, password resets
 | `SMTP_PORT` | Relay port. Follows `SMTP_SECURITY` when unset | derived | yes |
 | `SMTP_USERNAME`, `SMTP_PASSWORD` | Relay credentials. Never sent over an unencrypted connection | unset | yes |
 | `SMTP_SECURITY` | `starttls` (587), `tls` (465) or `none` (25) | `starttls` | yes |
-| `SMTP_AUTH` | `auto`, `plain`, `login`, `cram-md5` or `none` | `auto` | yes |
+| `SMTP_AUTH` | `auto`, `plain`, `login`, `cram-md5` or `none`. Hosted production permits LOGIN and PLAIN over TLS; `cram-md5` is available only on self-hosted or development instances | `auto` | yes |
 | `SMTP_EHLO_NAME` | EHLO name presented to the relay | the sender domain | yes |
 | `SMTP_TLS_INSECURE_SKIP_VERIFY` | Skips certificate verification. Only for a relay with a private certificate authority. Honoured on a self-hosted or development instance and ignored on hosted production | `false` | yes |
 | `EMAIL_BRAND_NAME` | The product name in transactional subjects and the header | `Warmbly` | yes |

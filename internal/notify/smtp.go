@@ -196,11 +196,14 @@ func (s *smtpEmailNotificationService) authMechanism(client *smtp.Client) (smtp.
 	case config.SMTPAuthLogin:
 		return wsmtp.NewLoginAuth(s.cfg.Username, s.cfg.Password, s.cfg.Host), nil
 	case config.SMTPAuthCRAMMD5:
+		if !config.SMTPCRAMMD5Allowed() {
+			return nil, fmt.Errorf("%w: CRAM-MD5 is unavailable on hosted production", wsmtp.ErrSMTPNoSupportedAuth)
+		}
 		return smtp.CRAMMD5Auth(s.cfg.Username, s.cfg.Password), nil
 	}
 
 	// auto: the mailbox send path's rule, which picks from what the server
-	// advertises over the link it is on (LOGIN, then PLAIN, CRAM-MD5 last).
+	// advertises over the link it is on, subject to the deployment's auth policy.
 	if ok, _ := client.Extension("AUTH"); !ok {
 		return nil, fmt.Errorf("smtp: %s advertises no AUTH extension but SMTP_USERNAME is set", s.cfg.Host)
 	}

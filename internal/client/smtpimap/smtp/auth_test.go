@@ -9,6 +9,7 @@ import (
 )
 
 func TestChooseAuthPicksByLinkAndAdvertisement(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "self_hosted")
 	for _, tc := range []struct {
 		name       string
 		advertised string
@@ -51,6 +52,26 @@ func TestChooseAuthPicksByLinkAndAdvertisement(t *testing.T) {
 				t.Fatalf("mechanism = %q, want %q", mech, tc.wantMech)
 			}
 		})
+	}
+}
+
+func TestHostedSMTPAuthUsesLoginOrPlain(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "cloud")
+	t.Setenv("APP_ENV", "prod")
+	for _, advertised := range []string{"CRAM-MD5", "cram-md5"} {
+		if auth, err := chooseAuth(advertised, true, "user", "password", "mail.example.com"); auth != nil || !errors.Is(err, ErrSMTPNoSupportedAuth) {
+			t.Fatalf("%q: auth=%v err=%v", advertised, auth, err)
+		}
+	}
+	for _, advertised := range []string{"CRAM-MD5 LOGIN", "CRAM-MD5 PLAIN"} {
+		auth, err := chooseAuth(advertised, true, "user", "password", "mail.example.com")
+		if err != nil {
+			t.Fatal(err)
+		}
+		mechanism, _, err := auth.Start(&smtp.ServerInfo{Name: "mail.example.com", TLS: true})
+		if err != nil || (mechanism != "LOGIN" && mechanism != "PLAIN") {
+			t.Fatalf("%q: mechanism=%q err=%v", advertised, mechanism, err)
+		}
 	}
 }
 

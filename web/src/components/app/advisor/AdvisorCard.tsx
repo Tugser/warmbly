@@ -53,9 +53,8 @@ interface Props {
     defaultOpen?: boolean;
 }
 
-// Evidence keys that only exist to identify the subject, which the card header
-// already shows.
-const REDUNDANT_EVIDENCE = new Set(["mailbox", "campaign", "step"]);
+// Subject identifiers and cache metadata do not help explain the finding.
+const REDUNDANT_EVIDENCE = new Set(["mailbox", "campaign", "step", "content_hash"]);
 
 export default function AdvisorCard({ finding, onFix, compact = false, defaultOpen = false }: Props) {
     const [open, setOpen] = useState(defaultOpen);

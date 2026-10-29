@@ -148,6 +148,9 @@ func ExplicitDevelopment() bool {
 // HostedProduction reports a hosted (not self-host) instance outside development.
 func HostedProduction() bool { return !SelfHosted() && !DevEnv() }
 
+// SMTPCRAMMD5Allowed preserves legacy mail-server compatibility outside hosted production.
+func SMTPCRAMMD5Allowed() bool { return !HostedProduction() }
+
 // UnsafeWebhookURLsAllowed reports whether outbound HTTP to customer URLs may use
 // http:// and private addresses. Only a self-hosted or development instance may opt in.
 func UnsafeWebhookURLsAllowed() bool {

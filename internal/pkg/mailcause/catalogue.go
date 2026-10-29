@@ -83,7 +83,7 @@ var catalogue = []Cause{
 	{TooManyLogins, "Too many sign-in attempts",
 		"The provider is limiting sign-ins for this account or from this network. Wait 15 to 60 minutes before retrying, and avoid retrying the same failing password repeatedly.", true},
 	{AuthUnavailable, "The server does not take a password here",
-		"The server did not offer a password sign-in method Warmbly supports (LOGIN, PLAIN or CRAM-MD5) on this port. Check the host and port: use the provider's submission server (usually port 587 or 465), not the MX server or port 25.", false},
+		"The server did not offer a password sign-in method allowed by this instance on this port. Use the provider's submission server with LOGIN or PLAIN over TLS (usually port 587 or 465), not the MX server or port 25.", false},
 	{AuthRefused, "The server refused the sign-in",
 		"The server refused this username and password. Check both, and whether the provider needs an app password or a username other than the email address.", true},
 	{HostNotFound, "The server name does not exist",

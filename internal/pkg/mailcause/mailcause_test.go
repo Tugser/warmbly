@@ -108,6 +108,8 @@ func TestClassify(t *testing.T) {
 			SMTP: Leg{Reason: models.MailProbeProtocol, Host: "mx.example.org", Port: 25, Detail: "smtp: server doesn't support AUTH; 503 5.5.1 Error: authentication not enabled"}}, AuthUnavailable},
 		{"no supported sign-in method", Input{IMAP: ok("IMAP"),
 			SMTP: Leg{Reason: models.MailProbeProtocol, Host: "mail.example.org", Port: 587, Detail: "the server offers no sign-in method Warmbly supports: it offers XOAUTH2, and Warmbly signs in with LOGIN, PLAIN or CRAM-MD5"}}, AuthUnavailable},
+		{"no allowed sign-in method", Input{IMAP: ok("IMAP"),
+			SMTP: Leg{Reason: models.MailProbeProtocol, Host: "mail.example.org", Port: 587, Detail: "the server offers no sign-in method allowed by this instance: it offers CRAM-MD5; use LOGIN or PLAIN over TLS"}}, AuthUnavailable},
 		{"timeout both", Input{IMAP: Leg{Reason: models.MailProbeTimeout, Port: 993}, SMTP: Leg{Reason: models.MailProbeTimeout, Port: 587}}, Timeout},
 		{"temporary", Input{IMAP: ok("IMAP"), SMTP: Leg{Reason: models.MailProbeTemporary, Detail: "451 4.3.0 Temporary server error"}}, Temporary},
 		{"auth outranks timeout", Input{MailHost: "other", IMAP: Leg{Reason: models.MailProbeTimeout},

@@ -373,6 +373,8 @@ A [placement batch](/guides/placement-tests/#testing-a-fleet-with-batches) runs 
 
 Recommendations about deliverability, mailbox configuration, warmup, campaign performance, copy, and list quality. See the [Advisor guide](/guides/advisor/).
 
+`GET /advisor/recommendations` returns open and applied findings by default. Pass `status=open` for outstanding suggestions only, `status=applied` for applied fixes, or `status=resolved` for findings cleared by a recheck. Repeat `status` to request several states. The dashboard requests open findings so applied fixes leave its suggestions immediately. Campaign, step and mailbox changes trigger a background recheck that clears findings which no longer apply.
+
 Reads are an analytics read of the workspace's sending posture. Applying or undoing a fix has no scope of its own: the change runs through the tool the fix actually uses and is refused if the caller lacks that tool's permission, so a key that can read recommendations cannot use them to make changes it could not make directly.
 
 | Method | Path | API Permission |

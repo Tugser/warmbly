@@ -73,6 +73,38 @@ func findingsByKey(findings []Finding) map[string]Finding {
 	return out
 }
 
+func TestFollowUpSpacingExcludesTheFirstEmail(t *testing.T) {
+	for _, firstPosition := range []int{1, 3} {
+		t.Run(fmt.Sprintf("opener_at_%d", firstPosition), func(t *testing.T) {
+			campaignID, otherID := uuid.New(), uuid.New()
+			openerID, followupID := uuid.New(), uuid.New()
+			s := &repository.AdvisorSnapshot{
+				Campaigns: []repository.AdvisorCampaign{
+					{ID: campaignID, Name: "Outbound", Status: "active"},
+					{ID: otherID, Name: "Other", Status: "active"},
+				},
+				Steps: []repository.AdvisorStep{
+					{ID: followupID, CampaignID: campaignID, Kind: "email", Position: firstPosition + 1},
+					{ID: uuid.New(), CampaignID: campaignID, Kind: "action", Position: firstPosition - 1},
+					{ID: openerID, CampaignID: campaignID, Kind: "email", Position: firstPosition},
+					{ID: uuid.New(), CampaignID: otherID, Kind: "email", Position: 7},
+				},
+			}
+			got := detectFollowUpSpacing(s)
+			if len(got) != 1 || got[0].EntityID == nil || *got[0].EntityID != followupID {
+				t.Fatalf("only the follow-up should need spacing: %+v", got)
+			}
+			if got[0].Evidence["step_position"] != firstPosition+1 {
+				t.Fatalf("step position must match the stored position: %+v", got[0].Evidence)
+			}
+			s.Steps[0].WaitAfter = 3
+			if got := detectFollowUpSpacing(s); len(got) != 0 {
+				t.Fatalf("a three-day follow-up should need no spacing advice: %+v", got)
+			}
+		})
+	}
+}
+
 func TestHealthyMailboxProducesNoFindings(t *testing.T) {
 	got := Detect(snapshotOf(healthyMailbox()), defaults())
 	if len(got) != 0 {
@@ -562,7 +594,7 @@ func TestCopyFindingsAttachToTheirCampaign(t *testing.T) {
 	snap := snapshotOf()
 	snap.Campaigns = []repository.AdvisorCampaign{{ID: campaignID, Name: "Q3 outbound", Status: "active"}}
 	snap.Steps = []repository.AdvisorStep{{
-		ID: uuid.New(), CampaignID: campaignID, Kind: "email", Position: 0,
+		ID: uuid.New(), CampaignID: campaignID, Kind: "email", Position: 1,
 		Name:      "Opener",
 		Subject:   "quick question",
 		BodyPlain: "Act now, this is a limited time offer with no obligation.",
@@ -590,7 +622,7 @@ func TestSingleSpamPhraseIsNotAFinding(t *testing.T) {
 	snap := snapshotOf()
 	snap.Campaigns = []repository.AdvisorCampaign{{ID: campaignID, Name: "Outbound", Status: "active"}}
 	snap.Steps = []repository.AdvisorStep{{
-		ID: uuid.New(), CampaignID: campaignID, Kind: "email", Position: 0,
+		ID: uuid.New(), CampaignID: campaignID, Kind: "email", Position: 1,
 		Subject:   "quick question about your onboarding",
 		BodyPlain: "We guarantee delivery within a day. Worth a chat?",
 	}}
@@ -693,7 +725,7 @@ func TestValidGoTemplatesAreNotFlagged(t *testing.T) {
 	snap := snapshotOf()
 	snap.Campaigns = []repository.AdvisorCampaign{{ID: campaignID, Name: "Outbound", Status: "active"}}
 	snap.Steps = []repository.AdvisorStep{{
-		ID: uuid.New(), CampaignID: campaignID, Kind: "email", Position: 0,
+		ID: uuid.New(), CampaignID: campaignID, Kind: "email", Position: 1,
 		Subject: "quick question about {{.Company}}",
 		BodyPlain: "Hi {{.FirstName}},\n\n" +
 			`{{if .Company}}Saw {{.Company}} is hiring.{{else}}Saw your team is hiring.{{end}}` +
@@ -712,7 +744,7 @@ func TestUnparseableTemplateIsFlagged(t *testing.T) {
 	snap := snapshotOf()
 	snap.Campaigns = []repository.AdvisorCampaign{{ID: campaignID, Name: "Outbound", Status: "active"}}
 	snap.Steps = []repository.AdvisorStep{{
-		ID: uuid.New(), CampaignID: campaignID, Kind: "email", Position: 0,
+		ID: uuid.New(), CampaignID: campaignID, Kind: "email", Position: 1,
 		Name:      "Opener",
 		Subject:   "quick question",
 		BodyPlain: "Hi {{.FirstName}},\n\n{{if .Company}}Saw you are hiring.\n\nWorth a chat?",
@@ -939,7 +971,7 @@ func judgedSnapshot(v *copyjudge.Verdict) (*repository.AdvisorSnapshot, uuid.UUI
 	snap := snapshotOf()
 	snap.Campaigns = []repository.AdvisorCampaign{{ID: campaignID, Name: "Outbound", Status: "active"}}
 	snap.Steps = []repository.AdvisorStep{{
-		ID: stepID, CampaignID: campaignID, Kind: "email", Position: 0,
+		ID: stepID, CampaignID: campaignID, Kind: "email", Position: 1,
 		Name:      "Opener",
 		Subject:   "quick question",
 		BodyPlain: "Saw your talk on onboarding. Would a short note on how we cut it to a day be useful?",
@@ -983,8 +1015,8 @@ func TestReadsAsBulkFiresOnAConfidentBulkVerdict(t *testing.T) {
 	if !fired {
 		t.Fatal("copy_reads_as_bulk did not fire on a confident bulk verdict")
 	}
-	if f.Severity != models.AdvisorMedium {
-		t.Errorf("severity should be medium, got %s", f.Severity)
+	if f.Severity != models.AdvisorLow {
+		t.Errorf("copy review should be low severity, got %s", f.Severity)
 	}
 	if f.EntityType != "step" || f.EntityID == nil || *f.EntityID != stepID || f.ParentType != "campaign" {
 		t.Error("finding is not attached to its step and campaign")
@@ -1016,8 +1048,26 @@ func TestReadsAsBulkNeedsConfidenceUnlessAClaimIsMade(t *testing.T) {
 	if !fired {
 		t.Fatal("copy_reads_as_bulk did not fire on a spam claim")
 	}
-	if !strings.Contains(f.Detail, "spam filter") {
+	if !strings.Contains(f.Detail, "may contain") || !strings.Contains(f.Detail, "not evidence") {
 		t.Errorf("detail should say the claim is the problem: %q", f.Detail)
+	}
+}
+
+func TestCopyReviewRequiresAgreementAndTracksRewrites(t *testing.T) {
+	snap, id := judgedSnapshot(&copyjudge.Verdict{
+		ReadsAs: 1, Personalization: 0, Ask: copyjudge.AskOneClear, Confidence: 0.95,
+	})
+	if got := detectReadsAsBulk(snap); len(got) != 0 {
+		t.Fatal("a message judged relevant should not get a bulk-tone suggestion")
+	}
+	v := snap.CopyJudgments[id]
+	v.Personalization = 1
+	snap.CopyJudgments[id] = v
+	before := detectReadsAsBulk(snap)[0]
+	snap.Steps[0].BodyPlain = "A different email with the same review scores."
+	after := detectReadsAsBulk(snap)[0]
+	if before.Evidence["content_hash"] == after.Evidence["content_hash"] {
+		t.Fatal("rewritten copy must invalidate the old explanation even when scores match")
 	}
 }
 
@@ -1292,13 +1342,13 @@ func busySnapshot() *repository.AdvisorSnapshot {
 	}
 	snap.Steps = []repository.AdvisorStep{
 		{
-			ID: uuid.New(), CampaignID: campaignID, Kind: "email", Position: 0, Name: "Opener", WaitAfter: 1,
+			ID: uuid.New(), CampaignID: campaignID, Kind: "email", Position: 1, Name: "Opener", WaitAfter: 1,
 			Subject:   "ACT NOW!! LIMITED TIME OFFER, THIS IS NOT SPAM AND IT IS 100% FREE FOR YOU AND YOUR WHOLE TEAM TODAY",
 			BodyPlain: "Hi {{.FirstName}},\n\n{{if .Company}}Act now, click here, buy now, limited time, no obligation, 100% free, risk free. " + strings.Repeat("More words here. ", 200),
 			Sent:      2000, Replied: 40,
 		},
 		{
-			ID: uuid.New(), CampaignID: campaignID, Kind: "email", Position: 1, Name: "Bump",
+			ID: uuid.New(), CampaignID: campaignID, Kind: "email", Position: 2, Name: "Bump",
 			Subject: "re", BodyPlain: "Hi {{.FirstName}}, any thoughts?",
 			Sent: 1000, Replied: 0,
 		},

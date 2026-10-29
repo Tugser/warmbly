@@ -52,6 +52,20 @@ value only this host holds, so move those into `node.local.env` with
 `--keep-local`. Run `warmblyctl fleet env-status` afterwards: every adopted host
 should report `current`.
 
+Complete the handover by checking the updater on every host:
+
+```sh
+sudo test -x /usr/local/bin/warmbly-node-update
+sudo systemctl is-enabled warmbly-node-update.timer
+sudo systemctl is-active warmbly-node-update.timer
+```
+
+All three commands must succeed before the host is ready for a release canary.
+Keep the fleet baseline at the version the workers currently run while adopting
+them, then start the target release with `warmblyctl fleet rollout start <target-tag>`.
+Automatic release deployments enable the same staged fleet rollout after the
+control-plane services pass their health watches.
+
 Private Valkey access is allowed from the worker security group. Coordinate its
 activation with every control-plane client, and check configured mail ports and
 AWS outbound restrictions before moving work. Do not switch one worker to an

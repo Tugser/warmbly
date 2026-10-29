@@ -151,7 +151,9 @@ The same holds for a server that answers but refuses what Warmbly asked. The dra
 
 With two-factor authentication on, generate an app password in your provider's security settings and use that.
 
-Warmbly signs in with whichever method your server offers, preferring LOGIN, then PLAIN, and using CRAM-MD5 only when the server offers neither. Every one of them is sent over the established TLS connection, never before it: a server that offers to sign in without encryption is refused with an error that says so and asks for the server's SSL/TLS port (usually 465) or a port that offers STARTTLS (usually 587), except a relay on the worker's own machine with the **None** mode. A server that offers none of the three methods is refused with the methods it does offer, so you can tell whether another host or port is needed. Servers that accept only one of these, which includes Microsoft 365 relays and most appliance relays, work without any setting to change.
+Warmbly signs in using LOGIN or PLAIN over an established TLS connection, preferring LOGIN when both are offered. Hosted production requires one of these password methods or a supported OAuth connection. Self-hosted and development instances also support CRAM-MD5 when the server offers neither LOGIN nor PLAIN. A server with no supported method is refused with the methods it offers, so you can check whether another submission host or port is needed.
+
+Password authentication requires encryption: use the server's SSL/TLS port (usually 465) or a port that offers STARTTLS (usually 587). The **None** mode is available only for a relay on the worker's own machine on a self-hosted instance.
 
 ### Servers with their own certificate
 

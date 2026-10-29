@@ -44,8 +44,8 @@ interface Props {
     onClose: () => void;
 }
 
-// Evidence keys that only name the subject, which the header already shows.
-const REDUNDANT_EVIDENCE = new Set(["mailbox", "campaign", "step"]);
+// Subject identifiers and cache metadata do not help explain the finding.
+const REDUNDANT_EVIDENCE = new Set(["mailbox", "campaign", "step", "content_hash"]);
 
 type Stage = "why" | "change" | "done";
 

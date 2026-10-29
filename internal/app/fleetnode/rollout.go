@@ -228,10 +228,15 @@ func (s *Service) stageVerdict(r *models.FleetRollout, nodes []models.FleetNode,
 			return fmt.Sprintf("node %s was removed during the rollout", id), false
 		case n.PinnedVersion != "":
 			continue
-		case !n.LiveAt(now):
-			return fmt.Sprintf("node %s (%s) stopped heartbeating", n.Name, id), false
 		case n.UpdateFailed != "" && n.UpdateFailed == target:
 			return fmt.Sprintf("node %s (%s) rolled back from %s on the host", n.Name, id, target), false
+		case !n.LiveAt(now):
+			// An updating node sends an inactive farewell before its replacement boots.
+			if n.Version != target && elapsed <= deadline && n.LastSeenAt != nil && !n.LastSeenAt.Before(r.StageStartedAt.Add(-models.NodeLivenessWindow)) {
+				done = false
+				continue
+			}
+			return fmt.Sprintf("node %s (%s) stopped heartbeating", n.Name, id), false
 		case n.Version != target:
 			if elapsed > deadline {
 				return fmt.Sprintf("node %s (%s) did not reach %s within %s", n.Name, id, target, deadline), false

@@ -350,7 +350,7 @@ var (
 	ErrMailAuthUnsupported = MError(
 		MailErrorCritical,
 		MailErrorCodeAuthUnsupported,
-		"This mail server offers no sign-in method Warmbly supports (Warmbly signs in with LOGIN, PLAIN or CRAM-MD5). Use the provider's documented SMTP submission host, which usually offers one of them, or check the server's documentation for an app password.",
+		"This mail server offers no sign-in method allowed by this instance. Use the provider's documented SMTP submission host with LOGIN or PLAIN over TLS, or check the server's documentation for an app password.",
 		MailErrorResolveMethodReload,
 	)
 	ErrMailDomainAuthRejected = MError(

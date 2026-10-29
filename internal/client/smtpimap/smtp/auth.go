@@ -6,6 +6,7 @@ import (
 	"net/smtp"
 	"strings"
 
+	"github.com/warmbly/warmbly/internal/config"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
@@ -29,7 +30,7 @@ var ErrSMTPNoSupportedAuth = errors.New("smtp: the server advertises no supporte
 // Over that link LOGIN and PLAIN come first: TLS already protects the
 // password, and a server that speaks only one of the two speaks LOGIN
 // (Exchange Online, most appliance relays), which is why it is negotiated
-// rather than sent blind. CRAM-MD5 is used only when neither is offered.
+// rather than sent blind. Self-hosts may use CRAM-MD5 when neither is offered.
 //
 // A server that advertises no AUTH at all gets a nil Auth and no error: it
 // wants no authentication, which is the local development sink.
@@ -57,7 +58,7 @@ func chooseAuth(advertised string, encrypted bool, username, password, host stri
 		return NewLoginAuth(username, password, host), nil
 	case offered["PLAIN"]:
 		return smtp.PlainAuth("", username, password, host), nil
-	case offered["CRAM-MD5"]:
+	case offered["CRAM-MD5"] && config.SMTPCRAMMD5Allowed():
 		return smtp.CRAMMD5Auth(username, password), nil
 	}
 	return nil, fmt.Errorf("%w: %q", ErrSMTPNoSupportedAuth, advertised)

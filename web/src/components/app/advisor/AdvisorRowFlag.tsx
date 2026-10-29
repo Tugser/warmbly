@@ -33,8 +33,6 @@ export default function AdvisorRowFlag({ findings, subject, className = "" }: Pr
     const [open, setOpen] = useState(false);
     const [reviewing, setReviewing] = useState<AdvisorFinding | null>(null);
 
-    if (findings.length === 0) return null;
-
     const severity = worstSeverity(findings) ?? "low";
     const outstanding = findings.filter((f) => f.status !== "applied");
     // Everything on this row has been applied and is waiting for the next
@@ -44,6 +42,7 @@ export default function AdvisorRowFlag({ findings, subject, className = "" }: Pr
 
     return (
         <>
+            {findings.length > 0 ? (
             <PopoverMenu align="end" open={open} onOpenChange={setOpen}>
                 <PopoverMenuTrigger asChild>
                     <motion.button
@@ -152,6 +151,7 @@ export default function AdvisorRowFlag({ findings, subject, className = "" }: Pr
                     </ul>
                 </PopoverMenuContent>
             </PopoverMenu>
+            ) : null}
 
             <AnimatePresence>
                 {reviewing ? (

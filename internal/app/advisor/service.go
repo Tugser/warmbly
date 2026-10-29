@@ -239,10 +239,8 @@ func (s *service) Evaluate(ctx context.Context, orgID uuid.UUID, trigger string)
 	}
 	s.finishRun(ctx, runID, newCount, summary.Total, closed, narrated, "")
 
-	// One audit entry per run, only when something actually changed. The spine
-	// turns this into a live refresh of every teammate's advisor strips and
-	// nav badges without a bespoke realtime event.
-	if (newCount > 0 || closed > 0 || fixed > 0) && s.audit != nil {
+	// Publish after edits so every client receives the completed review, including updated wording.
+	if (newCount > 0 || closed > 0 || fixed > 0 || narrated > 0 || trigger == "change") && s.audit != nil {
 		s.audit.LogAction(ctx, orgID, uuid.Nil, models.AuditActionUpdate, models.AuditEntityAdvisorFinding, nil, "", "",
 			nil, map[string]string{
 				"new":       fmt.Sprint(newCount),

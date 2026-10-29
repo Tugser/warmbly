@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/google/uuid"
+
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/repository"
 )
@@ -230,7 +232,7 @@ func detectStepDropoff(s *repository.AdvisorSnapshot) []Finding {
 
 			label := st.Name
 			if label == "" {
-				label = fmt.Sprintf("Step %d", st.Position+1)
+				label = fmt.Sprintf("Step %d", st.Position)
 			}
 			out = append(out, Finding{
 				Key:         "campaign_step_dropoff",
@@ -252,7 +254,7 @@ func detectStepDropoff(s *repository.AdvisorSnapshot) []Finding {
 				Evidence: map[string]any{
 					"campaign":                names[cid],
 					"step":                    label,
-					"step_position":           st.Position + 1,
+					"step_position":           st.Position,
 					"step_sends":              st.Sent,
 					"step_reply_rate_percent": band(r),
 					"best_step_rate_percent":  band(best),
@@ -451,15 +453,24 @@ func noSenderCopyFor(camp repository.AdvisorCampaign) noSenderCopy {
 func detectFollowUpSpacing(s *repository.AdvisorSnapshot) []Finding {
 	names := map[string]string{}
 	statuses := map[string]string{}
+	firstEmail := map[uuid.UUID]int{}
 	for _, camp := range s.Campaigns {
 		names[camp.ID.String()] = camp.Name
 		statuses[camp.ID.String()] = camp.Status
 	}
+	for _, st := range s.Steps {
+		if st.Kind != "email" {
+			continue
+		}
+		if position, ok := firstEmail[st.CampaignID]; !ok || st.Position < position {
+			firstEmail[st.CampaignID] = st.Position
+		}
+	}
 
 	out := []Finding{}
 	for _, st := range s.Steps {
-		// Position 0 is the first email; its wait is a start delay, not spacing.
-		if st.Kind != "email" || st.Position == 0 {
+		// The first email's wait is a start delay, not follow-up spacing.
+		if st.Kind != "email" || st.Position == firstEmail[st.CampaignID] {
 			continue
 		}
 		if statuses[st.CampaignID.String()] == "draft" {
@@ -471,7 +482,7 @@ func detectFollowUpSpacing(s *repository.AdvisorSnapshot) []Finding {
 
 		label := st.Name
 		if label == "" {
-			label = fmt.Sprintf("Step %d", st.Position+1)
+			label = fmt.Sprintf("Step %d", st.Position)
 		}
 
 		var detail, remedy string
@@ -510,7 +521,7 @@ func detectFollowUpSpacing(s *repository.AdvisorSnapshot) []Finding {
 				"step":          label,
 				"wait_days":     st.WaitAfter,
 				"recommended":   want,
-				"step_position": st.Position + 1,
+				"step_position": st.Position,
 			},
 			Action: withUndo(toolAction("update_campaign_step",
 				fmt.Sprintf("Wait %d days instead", want),
