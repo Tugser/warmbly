@@ -86,6 +86,12 @@ func (h *Handler) CreateCheckoutSession(c *gin.Context) {
 		return
 	}
 
+	// Sells public plans; a private one only to a workspace holding an open offer for it.
+	if xerr := h.authorizePlanPurchase(c, *orgID, req.PriceID, uuid.Nil); xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+
 	// Pinned to this instance's dashboard: Stripe will redirect the customer
 	// to whatever is set here.
 	successURL := billingReturnURL(c.Request.Context(), req.SuccessURL, "/app/settings/billing?checkout=done")
@@ -293,6 +299,11 @@ func (h *Handler) ChangePlan(c *gin.Context) {
 		return
 	}
 
+	if xerr := h.authorizePlanPurchase(c, *orgID, "", req.PlanID); xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+
 	updated, errX := h.StripeService.ChangePlan(c.Request.Context(), *orgID, req.PlanID, req.ProrationBehavior, req.DiscountCode, req.Interval)
 	if errX != nil {
 		errx.JSON(c, errX)
@@ -401,4 +412,15 @@ func (h *Handler) SubmitEnterpriseInquiry(c *gin.Context) {
 		"message":    "Thank you! Our team will contact you within 24 hours.",
 		"inquiry_id": created.ID,
 	})
+}
+
+// authorizePlanPurchase applies the plan offer rule to a price or, when priceID is empty, a plan id.
+func (h *Handler) authorizePlanPurchase(c *gin.Context, orgID uuid.UUID, priceID string, planID uuid.UUID) *errx.Error {
+	if h.PlanOfferService == nil {
+		return errx.New(errx.ServiceUnavailable, "billing is not enabled on this instance")
+	}
+	if priceID != "" {
+		return h.PlanOfferService.AuthorizePrice(c.Request.Context(), orgID, priceID)
+	}
+	return h.PlanOfferService.AuthorizePlanID(c.Request.Context(), orgID, planID)
 }

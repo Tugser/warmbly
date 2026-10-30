@@ -100,6 +100,14 @@ export default function BillingSettingsPage() {
     const [searchParams, setSearchParams] = useSearchParams();
     const poolParam = searchParams.get("pool");
     const [poolOpen, setPoolOpen] = React.useState(false);
+    const offerParam = searchParams.get("offer");
+    React.useEffect(() => {
+        if (offerParam !== "done") return;
+        toast.success("Payment received. The plan applies as soon as Stripe confirms.");
+        const next = new URLSearchParams(searchParams);
+        next.delete("offer");
+        setSearchParams(next, { replace: true });
+    }, [offerParam, searchParams, setSearchParams]);
     React.useEffect(() => {
         if (!poolParam) return;
         if (poolParam === "1") setPoolOpen(true);

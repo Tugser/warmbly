@@ -81,7 +81,7 @@ function refusedRefresh(err: unknown): boolean {
     return typeof status === "number" && status >= 400 && status < 500;
 }
 
-async function ensureValidToken(): Promise<Token> {
+export async function ensureValidToken(): Promise<Token> {
     const token = getToken();
     if (!token) {
         // The token can go away without this tab being the one that dropped it:

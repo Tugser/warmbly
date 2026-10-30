@@ -1731,6 +1731,11 @@ func Run(
 				poolLinkInstance.GET("/mailboxes/:remoteId/token", h.PoolLinkAccessToken)
 				poolLinkInstance.GET("/mailboxes/:remoteId/warmup-tokens/:token", h.PoolLinkVerifyWarmupToken)
 				poolLinkInstance.POST("/mailboxes/:remoteId/warmup-deliveries", h.PoolLinkVerifyWarmupDelivery)
+				// Mailboxes the instance executes: the command queue and its warmup reports.
+				poolLinkInstance.POST("/commands/lease", h.PoolLinkLeaseCommands)
+				poolLinkInstance.POST("/commands/:id/result", h.PoolLinkCommandResult)
+				poolLinkInstance.POST("/mailboxes/:remoteId/warmup-arrivals", h.PoolLinkWarmupArrival)
+				poolLinkInstance.POST("/mailboxes/:remoteId/warmup-observations", h.PoolLinkWarmupObservation)
 				poolLinkInstance.GET("/workspace-mailboxes", h.PoolLinkWorkspaceMailboxes)
 				poolLinkInstance.POST("/mailboxes/adopt", h.PoolLinkAdopt)
 				// The placement seed panel lent to linked instances.
@@ -1777,6 +1782,8 @@ func Run(
 				subscriptions.GET("/trial", h.GetTrialStatus)
 				subscriptions.GET("/features", h.GetFeatureStatus)
 				subscriptions.POST("/checkout", m.RequireOrganization(), m.RequirePermission(models.PermManageBilling), middleware.RequireFreshAuth(), h.CreateCheckoutSession)
+				subscriptions.GET("/offers", m.RequireOrganization(), h.ListPlanOffers)
+				subscriptions.POST("/offers/:planId/checkout", m.RequireOrganization(), m.RequirePermission(models.PermManageBilling), middleware.RequireFreshAuth(), h.PlanOfferCheckout)
 				subscriptions.POST("/discount/validate", h.ValidateDiscountCode)
 				subscriptions.POST("/portal", m.RequireOrganization(), m.RequirePermission(models.PermManageBilling), middleware.RequireFreshAuth(), h.CreateBillingPortalSession)
 				subscriptions.POST("/cancel", m.RequireOrganization(), m.RequirePermission(models.PermManageBilling), middleware.RequireFreshAuth(), h.CancelSubscription)
@@ -1874,6 +1881,13 @@ func Run(
 		adminRoutes.GET("/organizations/:id/managed-plan", middleware.RequireAdminPermission(models.AdminPermViewOrganizations), h.AdminGetOrgManagedPlan)
 		adminRoutes.PUT("/organizations/:id/managed-plan", middleware.RequireAdminPermission(models.AdminPermManageOrganizations), h.AdminGrantOrgManagedPlan)
 		adminRoutes.DELETE("/organizations/:id/managed-plan", middleware.RequireAdminPermission(models.AdminPermManageOrganizations), h.AdminRevokeOrgManagedPlan)
+		adminRoutes.GET("/organizations/:id/plan-offers", middleware.RequireAdminPermission(models.AdminPermViewOrganizations), h.AdminListOrgPlanOffers)
+		adminRoutes.PUT("/organizations/:id/plan-offers/:planId", middleware.RequireAdminPermission(models.AdminPermManageOrganizations), h.AdminPutOrgPlanOffer)
+		adminRoutes.DELETE("/organizations/:id/plan-offers/:planId", middleware.RequireAdminPermission(models.AdminPermManageOrganizations), h.AdminDeleteOrgPlanOffer)
+		adminRoutes.GET("/organizations/:id/self-execution", middleware.RequireAdminPermission(models.AdminPermViewOrganizations), h.AdminGetOrgSelfExecution)
+		adminRoutes.PUT("/organizations/:id/self-execution", middleware.RequireAdminPermission(models.AdminPermManageOrganizations), h.AdminPutOrgSelfExecution)
+		adminRoutes.DELETE("/organizations/:id/self-execution", middleware.RequireAdminPermission(models.AdminPermManageOrganizations), h.AdminDeleteOrgSelfExecution)
+		adminRoutes.GET("/organizations/:id/self-execution/mailboxes", middleware.RequireAdminPermission(models.AdminPermViewOrganizations), h.AdminListOrgSelfExecutedMailboxes)
 
 		// Promo codes. The customer-facing half (validate + redeem at
 		// checkout) has always existed; this is the operator half that

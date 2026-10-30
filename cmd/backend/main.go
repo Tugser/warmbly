@@ -98,6 +98,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/passkey"
 	"github.com/warmbly/warmbly/internal/app/pipedrive"
 	"github.com/warmbly/warmbly/internal/app/placement"
+	"github.com/warmbly/warmbly/internal/app/planoffer"
 	"github.com/warmbly/warmbly/internal/app/poollink"
 	"github.com/warmbly/warmbly/internal/app/ratelimit"
 	"github.com/warmbly/warmbly/internal/app/referral"
@@ -267,6 +268,9 @@ func main() {
 	var discountService discount.DiscountService
 	var referralService referral.Service
 	var organizationService organization.OrganizationService
+	// Private plan offers and the credential-free Cloud warmup grant; selfExecutionGrants is shared with the pool link.
+	var planOfferService planoffer.Service
+	var selfExecutionGrants repository.SelfExecutionGrantRepository
 
 	// Email send & templates
 	var templateService template.TemplateService
@@ -792,8 +796,7 @@ func main() {
 
 		// Warmup content bank + offline AI generator. The generator rides OpenAI's
 		// Batch API specifically, so it only runs when the selected provider is
-		// OpenAI itself; otherwise the live send path keeps using the static
-		// library and admin generation returns "not configured".
+		// OpenAI itself; otherwise new threads wait for fresh approved content.
 		var generationClient *generation.GenerationClient
 		if (aiProviderName == "" || aiProviderName == "openai") && aiKey != "" {
 			generationClient = generation.NewClient(aiKey)
@@ -880,6 +883,8 @@ func main() {
 		}
 		workerAssignmentService = worker.NewAssignmentService(workerRepository, subscriptionRepository, planRepository)
 		subscriptionService = subscription.NewService(subscriptionRepository, planRepository)
+		selfExecutionGrants = repository.NewSelfExecutionGrantRepository(primaryDB.Pool)
+		planOfferService = planoffer.New(repository.NewPlanOfferRepository(primaryDB.Pool), selfExecutionGrants, planRepository)
 		// dailyThrottleService needs the cache that's constructed
 		// earlier in main; instantiate up here so org create can use it.
 		if dailyThrottleService == nil {
@@ -1272,7 +1277,9 @@ func main() {
 		})
 		updatesService.Start(ctx)
 
-		eventsPublisher := events.NewPublisher(bus, s3, codecImpl, cipherService)
+		// Warmup for a mailbox a linked instance runs is queued for that instance instead of a worker.
+		eventsPublisher := poollink.NewSelfExecutionPublisher(events.NewPublisher(bus, s3, codecImpl, cipherService),
+			repository.NewPoolLinkRepository(primaryDB.Pool, primaryDB.ConnectSession), cipherService)
 
 		// apiCfg.Hostname is the bind address, not a reachable base. Building
 		// the mailbox-connect redirect_uri from it sends the provider
@@ -1353,9 +1360,24 @@ func main() {
 		if w, ok := poolLinkService.(interface{ WireCampaigns(poollink.CampaignUsage) }); ok {
 			w.WireCampaigns(campaignRepostory)
 		}
+		if w, ok := poolLinkService.(interface {
+			WireSelfExecution(poollink.SelfExecutionDeps)
+		}); ok && selfExecutionGrants != nil {
+			deps := poollink.SelfExecutionDeps{Grants: selfExecutionGrants, Cipher: cipherService, Jobs: poollink.NewJobPublisher(bus, codecImpl), Workers: eventsPublisher}
+			if r, ok := emailRepostory.(poollink.CredentialRestorer); ok {
+				deps.Restorer = r
+			}
+			if opsNotifier != nil {
+				deps.Notifier = opsNotifier
+			}
+			w.WireSelfExecution(deps)
+		}
 		cloudLinkRepository := repository.NewCloudLinkRepository(primaryDB.Pool, credEncrypter, primaryDB.ConnectSession)
 		emailService.WireCloudLink(cloudLinkRepository)
 		cloudLinkService = cloudlink.NewService(cloudLinkRepository, emailRepostory, emailService)
+		if w, ok := cloudLinkService.(cloudlink.ExecutionWirer); ok {
+			w.WireExecution(repository.NewCloudLinkExecRepository(primaryDB.Pool))
+		}
 		cloudLinkService.OnStandingChange(func(ctx context.Context, change models.CloudLinkStandingChange) {
 			state, cloudUnknown, err := warmupRepository.GetKnownHealthState(ctx, change.EmailAccountID)
 			// A missing Cloud report is no verdict; only a real hold beside it moves the band.
@@ -1830,6 +1852,11 @@ func main() {
 			advancedService.WireBounceJudge(typeSafeClient)
 		}
 		emailSender := tasks.NewEmailSender(emailRepostory, eventsPublisher)
+		if x, ok := poolLinkService.(tasks.SelfExecution); ok {
+			if w, ok := emailSender.(interface{ WireSelfExecution(tasks.SelfExecution) }); ok {
+				w.WireSelfExecution(x)
+			}
+		}
 		if aware, ok := emailSender.(interface {
 			WireSendAdmission(repository.OutboundAdmissionRepository)
 		}); ok {
@@ -2010,6 +2037,18 @@ func main() {
 			WireScheduler(poollink.WarmupScheduler)
 		}); ok {
 			w.WireScheduler(tasksService)
+		}
+		if w, ok := poolLinkService.(interface {
+			WireOutboundValidator(poollink.OutboundValidator)
+		}); ok {
+			if v, ok := tasksService.(poollink.OutboundValidator); ok {
+				w.WireOutboundValidator(v)
+			}
+		}
+		// Linked-instance commands nobody answered in time, and the placement audit of the mailboxes those instances run.
+		if j, ok := poolLinkService.(poollink.SelfExecutionService); ok {
+			go jobrun.Loop(ctx, "pool_link_command_expiry", time.Minute, true, j.SweepSelfExecution)
+			go jobrun.Loop(ctx, "pool_link_reporter_trust", time.Hour, false, j.AuditReporterTrust)
 		}
 		// Stops Cloud warmup on mailboxes of links revoked before revocation stopped it; a no-op once complete.
 		if j, ok := poolLinkService.(interface{ StopDetachedWarmup(context.Context) error }); ok {
@@ -2483,6 +2522,7 @@ func main() {
 		StripeService:       stripeService,
 		DiscountService:     discountService,
 		ReferralService:     referralService,
+		PlanOfferService:    planOfferService,
 
 		// Trial & feature gates
 		TrialService:            trialService,

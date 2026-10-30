@@ -19,6 +19,8 @@ export const STANDARD_VARS: TemplateVar[] = [
 // Keep in sync with the explicit allowlist in internal/tasks/template_sender.go.
 export const SENDER_VARS: TemplateVar[] = [
     ["Name", "Sender name", "The sending mailbox's configured display name", "Jamie Morgan"],
+    ["FirstName", "Sender first name", "The first word of the sending mailbox's display name", "Jamie"],
+    ["LastName", "Sender last name", "The rest of the sending mailbox's display name after the first word", "Morgan"],
     ["Email", "Sender email", "The actual From address, including the chosen send-as alias", "jamie@example.com"],
     ["MailboxEmail", "Mailbox email", "The connected mailbox's own address, before any send-as alias", "jamie@example.com"],
     ["SendAsEmail", "Send-as alias", "The chosen alias, empty when none is selected"],

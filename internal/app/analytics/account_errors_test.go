@@ -69,6 +69,15 @@ func TestUnknownWarmupHoldExplainsAutomaticRetirementWithoutPromisingResend(t *t
 	}
 }
 
+func TestUnknownCampaignHoldExplainsAutomaticIsolation(t *testing.T) {
+	message := sendRecoveryHoldMessage(repository.SendRecoveryHold{Reason: "unknown", Campaign: true})
+	for _, required := range []string{"automatically", "other contacts", "never retried", "No action is needed"} {
+		if !strings.Contains(message, required) {
+			t.Fatalf("campaign recovery guidance missing %q: %s", required, message)
+		}
+	}
+}
+
 type statusSendHoldReader struct {
 	repository.EmailRepository
 	calls int

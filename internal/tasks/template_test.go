@@ -100,6 +100,20 @@ func TestTemplateSender_EmptyAndEffectiveIdentity(t *testing.T) {
 	}
 }
 
+func TestTemplateSender_SplitsName(t *testing.T) {
+	cases := []struct{ name, want string }{
+		{"  Jamie   van der  Berg ", "Jamie|van der Berg|Jamie   van der  Berg"},
+		{"Jamie", "Jamie||Jamie"},
+		{"   ", "||"},
+	}
+	for _, tc := range cases {
+		context := templateContext(&models.Email{Name: tc.name}, "")
+		if got := RenderTemplateWith(`{{.Sender.FirstName}}|{{.Sender.LastName}}|{{.Sender.Name}}`, models.Contact{}, context); got != tc.want {
+			t.Errorf("name %q: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestAIVarAvailableVarsSkipsReservedSenderNamespace(t *testing.T) {
 	vars := aiVarAvailableVars(&models.Contact{CustomFields: map[string]string{"Sender": "not a mailbox", "UnsubscribeLink": "not a link", "role": "CTO"}})
 	for _, token := range vars {
@@ -158,6 +172,9 @@ func TestTemplateSender_MapsEveryAllowedMailboxField(t *testing.T) {
 	sender := reflect.ValueOf(templateContext(account, "").Sender)
 	for i := 0; i < sender.NumField(); i++ {
 		name := sender.Type().Field(i).Name
+		if name == "FirstName" || name == "LastName" {
+			continue // derived from Name, covered by TestTemplateSender_SplitsName
+		}
 		mailboxName := name
 		if name == "MailboxEmail" {
 			mailboxName = "Email"
@@ -383,47 +400,6 @@ func TestExtractPlainTextFromHTML(t *testing.T) {
 	}
 	if strings.Contains(plain, "<p>") || strings.Contains(plain, "<b>") {
 		t.Errorf("plain text should not contain HTML tags: %q", plain)
-	}
-}
-
-func TestGenerateWarmupSubject_NotEmpty(t *testing.T) {
-	subject := generateWarmupSubject()
-	if subject == "" {
-		t.Error("warmup subject should not be empty")
-	}
-}
-
-func TestRandomWarmupConversation_HasContent(t *testing.T) {
-	conv := randomWarmupConversation()
-	if conv.Theme == "" {
-		t.Error("conversation should have a theme")
-	}
-	if conv.Description == "" {
-		t.Error("conversation should have a description")
-	}
-	if len(conv.Messages) == 0 {
-		t.Error("conversation should have at least one message")
-	}
-}
-
-func TestConversationForTheme_MatchesKnownTheme(t *testing.T) {
-	conv := conversationForTheme("productivity")
-	if conv.Theme != "productivity" {
-		t.Errorf("expected theme productivity, got %q", conv.Theme)
-	}
-}
-
-func TestConversationForTheme_FallsBackOnUnknown(t *testing.T) {
-	conv := conversationForTheme("not-a-real-theme")
-	if conv.Theme == "" {
-		t.Error("fallback conversation should still have a theme")
-	}
-}
-
-func TestConversationForTheme_EmptyReturnsRandom(t *testing.T) {
-	conv := conversationForTheme("")
-	if conv.Theme == "" {
-		t.Error("empty theme should return a random conversation with a theme")
 	}
 }
 

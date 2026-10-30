@@ -52,6 +52,7 @@ import {
     Redo2Icon,
     CodeIcon,
     PencilLineIcon,
+    RemoveFormattingIcon,
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import toast from "react-hot-toast/headless";
@@ -97,6 +98,33 @@ function insertToken(editor: Editor, token: string) {
     }
 }
 
+// clearFormatting turns the selection, or the whole body when nothing is
+// selected, back into plain text: no marks but links, no block styles, no
+// headings. Lists, images, buttons, chips and table layout are content and stay.
+function clearFormatting(editor: Editor) {
+    const { state } = editor;
+    let { from, to } = state.selection;
+    if (from === to) {
+        from = 0;
+        to = state.doc.content.size;
+    }
+    const tr = state.tr;
+    for (const type of Object.values(state.schema.marks)) {
+        if (type.name !== "link") tr.removeMark(from, to, type);
+    }
+    const paragraph = state.schema.nodes.paragraph;
+    const restyle = new Set(["div", "bulletList", "orderedList", "listItem"]);
+    tr.doc.nodesBetween(from, to, (node, pos) => {
+        if (node.type.name === "heading") {
+            tr.setNodeMarkup(pos, paragraph, {});
+        } else if ((node.isTextblock || restyle.has(node.type.name)) && node.attrs.style) {
+            tr.setNodeMarkup(pos, undefined, { ...node.attrs, style: null });
+        }
+    });
+    if (tr.docChanged) editor.view.dispatch(tr);
+    editor.commands.focus();
+}
+
 // Picking the unsubscribe link with text selected links that text instead of
 // dropping a chip, so the copy keeps its own wording. With no selection the
 // chip is inserted and the send path gives it an anchor of its own.
@@ -117,6 +145,7 @@ export default function RichTextEditor({
     links = [],
     placeholder,
     minimal = false,
+    footer,
 }: {
     html: string;
     onChange: (html: string) => void;
@@ -134,6 +163,8 @@ export default function RichTextEditor({
     // formatting, no AI carets, and a short body. Chips, the {{ type-ahead, and
     // conditionals behave exactly as in the full editor.
     minimal?: boolean;
+    // Rendered inside the frame under the content, e.g. what the send appends.
+    footer?: React.ReactNode;
 }) {
     const confirm = useConfirm();
     // The editor is created once, so anything a ProseMirror handler needs at
@@ -164,6 +195,8 @@ export default function RichTextEditor({
     const placeRef = React.useRef(placeImageFiles);
     placeRef.current = placeImageFiles;
 
+    // HTML the editor reported that the parent has not echoed back yet.
+    const unechoed = React.useRef(new Set<string>());
     const editor = useEditor({
         injectCSS: false,
         extensions: [
@@ -252,7 +285,11 @@ export default function RichTextEditor({
                 return true;
             },
         },
-        onUpdate: ({ editor }) => onChange(editor.getHTML()),
+        onUpdate: ({ editor }) => {
+            const next = editor.getHTML();
+            unechoed.current.add(next);
+            onChange(next);
+        },
     });
     editorRef.current = editor;
 
@@ -271,13 +308,17 @@ export default function RichTextEditor({
     // applied, step switched, reset) without clobbering the user's caret on
     // their own edits. In HTML mode there is nothing to sync: parsing the body
     // is exactly what that mode exists to prevent.
+    // A value the editor reported itself is the parent catching up, not a new
+    // value: AI writing in streams several changes before the parent renders,
+    // and applying a lagging echo would put an older body back.
     React.useEffect(() => {
         if (!editor || code) return;
         const current = editor.getHTML();
         const incoming = upgradeVariableTokens(html || "");
-        if (incoming !== current) {
+        if (incoming !== current && !unechoed.current.has(html)) {
             editor.commands.setContent(incoming, { emitUpdate: false });
         }
+        if (incoming === current || !unechoed.current.has(html)) unechoed.current.clear();
     }, [html, editor, code]);
 
     // Switching modes. Into HTML is lossless; out of it hands the markup to
@@ -352,6 +393,7 @@ export default function RichTextEditor({
                     )}
                 </div>
             )}
+            {footer}
             {!code && (
                 <>
                     {/* Select an image → size, alignment, alt text and link over it. */}
@@ -507,6 +549,12 @@ function Toolbar({
             </Btn>
             <Btn active={editor.isActive("strike")} onClick={() => editor.chain().focus().toggleStrike().run()} title="Strikethrough">
                 <StrikethroughIcon className="w-3.5 h-3.5" />
+            </Btn>
+            <Btn
+                onClick={() => clearFormatting(editor)}
+                title="Clear formatting: plain text for the selection, or the whole email when nothing is selected. Ctrl+Shift+V pastes as plain text."
+            >
+                <RemoveFormattingIcon className="w-3.5 h-3.5" />
             </Btn>
             <Divider />
             <Btn

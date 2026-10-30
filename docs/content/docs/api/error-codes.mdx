@@ -252,6 +252,10 @@ Each registered key may make 30 protected calls per hour. Past that the call ans
 | `cloud_link_mailbox_inactive` | 422 | Only active mailboxes can be enrolled in Warmbly Cloud warmup |
 | `cloud_link_oauth_mailbox` | 422 | A Google or Microsoft mailbox connected with this instance's own OAuth app cannot be warmed by Warmbly Cloud, because its refresh grant is bound to that app. The `message` says how to connect it instead |
 | `cloud_link_lifecycle` | 400 | A pause or resume request named an action other than `pause` or `resume` |
+| `cloud_link_executor` | 400 | An enrollment named an `executor` other than `cloud` or `instance` |
+| `cloud_link_self_execution_not_granted` | 403 | Keeping a mailbox's credential on this server needs a permission Warmbly grants to the linked Cloud workspace, and it has none or it expired. Ask Warmbly support, or enroll with `executor` `cloud` |
+| `cloud_link_self_execution_unavailable` | 409 | The connected Warmbly Cloud cannot run warmup for a mailbox whose credential stays on this server. Upgrade Cloud, or enroll with `executor` `cloud` |
+| `cloud_link_self_execution_managed` | 422 | The mailbox signs in through Warmbly Cloud or is associated with its app-password copy there, so its credential already lives on Cloud and cannot stay on this server |
 
 #### Warmbly Cloud pool link
 
@@ -276,6 +280,21 @@ These come from Warmbly Cloud's side of the connection (`/v1/pool-link/*`), whic
 | `pool_link_warmup_unavailable` | 403 | Warmup is not available on the Cloud workspace |
 | `pool_link_oauth_pending` | 409 | A mailbox sign-in started through Warmbly Cloud has not completed yet. Poll again |
 | `pool_link_oauth_session` | 404 | The mailbox sign-in session is unknown or has expired. Start the sign-in again |
+| `pool_link_executor` | 400 | On Warmbly Cloud's linked-instance API: an enrollment named an `executor` other than `cloud` or `instance` |
+| `pool_link_executor_credential` | 400 | On Warmbly Cloud's linked-instance API: an enrollment for a mailbox the instance runs carried a credential. Those mailboxes are enrolled without one |
+| `pool_link_executor_conflict` | 409 | On Warmbly Cloud's linked-instance API: a credential was sent for a mailbox whose credential stays on the instance, without `executor` `cloud`. Update the instance, or switch the mailbox to Cloud explicitly |
+| `pool_link_executor_managed` | 422 | On Warmbly Cloud's linked-instance API: a mailbox Cloud connected through its own sign-in cannot be run by the instance |
+| `pool_link_self_execution_not_granted` | 403 | On Warmbly Cloud's linked-instance API: the Cloud workspace has no active permission to keep mailbox credentials on the instance |
+| `pool_link_self_execution_unavailable` | 409 | On Warmbly Cloud's linked-instance API: this Cloud deployment cannot run warmup through the instance |
+| `pool_link_mailbox_not_self_executed` | 409 | On Warmbly Cloud's linked-instance API: Cloud runs this mailbox's warmup, so it takes no warmup reports for it from the instance |
+| `pool_link_command_not_found` | 404 | On Warmbly Cloud's linked-instance API: no command with that ID belongs to the calling instance |
+| `pool_link_command_not_leased` | 409 | On Warmbly Cloud's linked-instance API: a command was answered before it was leased |
+| `pool_link_command_answered` | 409 | On Warmbly Cloud's linked-instance API: the command already has a different answer, expired, or was withdrawn. Repeating the stored answer returns `204` |
+| `pool_link_command_result_invalid` | 422 | On Warmbly Cloud's linked-instance API: the outcome does not fit the command kind, or a `sent` result has no valid `message_id` |
+| `pool_link_arrival_invalid` | 400 | On Warmbly Cloud's linked-instance API: a warmup report is missing its message handle, Message-ID, sender or received time |
+| `pool_link_arrival_pending` | 503 | On Warmbly Cloud's linked-instance API: Cloud has not recorded the send this report matches yet. Report it again shortly |
+| `pool_link_arrival_not_found` | 404 | On Warmbly Cloud's linked-instance API: an observation named a message Cloud never accepted from this mailbox |
+| `pool_link_observation_invalid` | 400 | On Warmbly Cloud's linked-instance API: the observation `kind` is not `removed`, `moved_to_spam` or `owner_activity` |
 
 #### CLI sign-in
 
@@ -677,6 +696,22 @@ A `403` whose `code` is `mailbox_gmail_oauth_disabled` comes from `POST /emails/
 **How to fix:**
 - Connect the mailbox through `POST /emails/onboarding/smtp-imap` with `smtp.gmail.com:465` and `imap.gmail.com:993`, both TLS, and a Google app password. See [Gmail and Google Workspace](/guides/mailboxes/#gmail-and-google-workspace)
 - An instance with its own Google app must set both `BOX_GOOGLE_CLIENT_ID` and `BOX_GOOGLE_CLIENT_SECRET`. Leave `BOX_GOOGLE_OAUTH_CONNECT` unset or set it to `true`, then enable the [dashboard visibility flag](/development/configuration/#google-sign-in-per-dashboard-deployment) on the deployments that should offer Google sign-in
+
+#### `plan_offer_required`
+
+A `403` whose `code` is `plan_offer_required` comes from `POST /subscription/checkout`, `POST /subscription/change-plan` or `POST /subscription/offers/:planId/checkout`. Those routes sell public plans, and a private plan only to a workspace Warmbly has offered it to. The workspace holds no open offer for the chosen plan: it was never offered, or the offer has ended or been withdrawn. The Warmup plan is sold through `POST /pool-link/checkout` and is refused here too.
+
+```json
+{
+  "error": "Forbidden",
+  "message": "This plan is available by invitation only. Ask Warmbly to offer it to this workspace.",
+  "code": "plan_offer_required",
+  "request_id": "4bbbd1b2-8f86-47dd-8a7f-9476501ad20e"
+}
+```
+
+**How to fix:**
+- Pick a plan from `GET /plans`, or one listed by `GET /subscription/offers`. See [plans offered to a workspace](/guides/billing/#plans-offered-to-a-workspace)
 
 #### Registration and invitation refusals
 

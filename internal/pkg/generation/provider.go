@@ -151,6 +151,7 @@ var (
 	_ WritingGenerator = (*openAIProvider)(nil)
 	_ WritingGenerator = (*AnthropicClient)(nil)
 	_ WritingGenerator = (*GenerationClient)(nil)
+	_ StreamCompleter  = (*openAIProvider)(nil)
 )
 
 // CompletionRequest is a single, tool-less generation with an explicit system
@@ -172,6 +173,19 @@ type CompletionRequest struct {
 func Deterministic() *float64 {
 	z := 0.0
 	return &z
+}
+
+// StreamCompleter is a backend that can hand a completion's text over while the
+// model writes it. onDelta receives each fragment in order; the result is what
+// Complete would have returned.
+type StreamCompleter interface {
+	CompleteStream(ctx context.Context, req CompletionRequest, onDelta func(string)) (*WritingResult, error)
+}
+
+// WritingRequest is the completion the writing assistant sends for a prompt, so
+// a streamed draft and a whole one are written from the same instructions.
+func WritingRequest(model, prompt string, voice VoiceContext) CompletionRequest {
+	return CompletionRequest{System: BuildVoiceRules(voice), Prompt: prompt, Model: model, MaxTokens: writingMaxTokens}
 }
 
 // Provider is a pluggable LLM backend that can run a tool-use agent loop.

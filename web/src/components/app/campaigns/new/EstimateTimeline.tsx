@@ -1,6 +1,6 @@
-// Day-by-day projection of a campaign that does not exist yet: first emails
-// and follow-ups stacked per day against what the pool can send, with the
-// warmup running alongside in the tooltip. Plain divs; one axis, one unit.
+// Day-by-day projection of a campaign that does not exist yet: first emails,
+// follow-ups and the warmup running alongside, stacked per day against what
+// the pool can send for the campaign. Plain divs; one axis, one unit.
 
 import React from "react";
 import type { CampaignEstimateDay } from "@/lib/api/client/app/campaigns/estimateCampaign";
@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 
 const FIRST = "bg-[#0369a1]"; // sky-700
 const FOLLOW = "bg-[#38bdf8]"; // sky-400
+const WARMUP = "bg-[#fcd34d]"; // amber-300
 
 type Bar = CampaignEstimateDay & { until?: string };
 
@@ -35,8 +36,10 @@ function bucket(days: CampaignEstimateDay[], size: number): Bar[] {
 export default function EstimateTimeline({
     days,
     height = 96,
-    maxBars = 60,
+    maxBars = 92,
     showFollowUps,
+    showWarmup = false,
+    mailboxes = 0,
     className,
 }: {
     days: CampaignEstimateDay[];
@@ -44,12 +47,16 @@ export default function EstimateTimeline({
     // Longer projections are summed into weeks (or more) to stay readable.
     maxBars?: number;
     showFollowUps: boolean;
+    // Stack the warmup on top, so a bar is everything the pool sends that day.
+    showWarmup?: boolean;
+    // Pool size, for the per-mailbox figure in the tooltip.
+    mailboxes?: number;
     className?: string;
 }) {
     const [hover, setHover] = React.useState<number | null>(null);
     // The hovered bar's centre and the row's width, so the tooltip sits on the bar.
     const [anchor, setAnchor] = React.useState<{ x: number; width: number } | null>(null);
-    const shown = React.useMemo(() => {
+    const { shown, size } = React.useMemo(() => {
         // Trailing idle days after the last send add nothing.
         let last = -1;
         for (let i = days.length - 1; i >= 0; i--) {
@@ -60,20 +67,25 @@ export default function EstimateTimeline({
         }
         const active = last >= 0 ? days.slice(0, last + 1) : [];
         const size = active.length <= maxBars ? 1 : 7 * Math.ceil(active.length / (7 * maxBars));
-        return bucket(active, size);
+        return { shown: bucket(active, size), size };
     }, [days, maxBars]);
-    const peak = Math.max(1, ...shown.map((d) => Math.max(d.sends, d.capacity)));
+    const warm = (d: Bar) => (showWarmup ? d.warmup : 0);
+    const peak = Math.max(1, ...shown.map((d) => Math.max(d.sends + warm(d), d.capacity)));
     if (shown.length === 0) return null;
 
     const h = hover !== null ? shown[hover] : null;
     const labelEvery = Math.max(1, Math.ceil(shown.length / 5));
+    const unit = size === 1 ? "day" : size === 7 ? "week" : `${size} days`;
 
     return (
-        <div className={cn("relative", className)} onMouseLeave={() => {
+        <div
+            className={cn("relative", className)}
+            onMouseLeave={() => {
                 setHover(null);
                 setAnchor(null);
-            }}>
-            <div className="flex items-center gap-3 text-[10.5px] text-slate-500 mb-2">
+            }}
+        >
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-slate-500 mb-2">
                 <span className="inline-flex items-center gap-1.5">
                     <span className={cn("size-2 rounded-sm", FIRST)} />
                     First emails
@@ -84,21 +96,32 @@ export default function EstimateTimeline({
                         Follow-ups
                     </span>
                 )}
+                {showWarmup && (
+                    <span className="inline-flex items-center gap-1.5">
+                        <span className={cn("size-2 rounded-sm", WARMUP)} />
+                        Warmup
+                    </span>
+                )}
                 <span className="inline-flex items-center gap-1.5">
                     <span className="size-2 rounded-sm bg-slate-100 ring-1 ring-inset ring-slate-200" />
-                    Pool capacity
+                    Campaign capacity
                 </span>
+                <span className="ml-auto text-slate-400">Each bar is one {unit}</span>
             </div>
             <div
                 className="flex items-end gap-[2px] border-b border-slate-200"
                 style={{ height }}
                 role="img"
-                aria-label={`Projected sends, ${shown.length} ${shown[0]?.until ? "weeks" : "days"}`}
+                aria-label={`Projected sends, one bar per ${unit}, ${shown.length} bars`}
             >
                 {shown.map((d, i) => {
                     const cap = (d.capacity / peak) * 100;
-                    const follow = (d.follow_ups / peak) * 100;
-                    const first = (d.first_emails / peak) * 100;
+                    const parts = [
+                        { n: warm(d), cls: WARMUP },
+                        { n: d.follow_ups, cls: FOLLOW },
+                        { n: d.first_emails, cls: FIRST },
+                    ].filter((p) => p.n > 0);
+                    const total = parts.reduce((n, p) => n + p.n, 0);
                     return (
                         <div
                             key={d.date}
@@ -118,16 +141,10 @@ export default function EstimateTimeline({
                                     style={{ height: `${cap}%` }}
                                 />
                             )}
-                            <div className="relative flex flex-col justify-end gap-[2px]" style={{ height: `${Math.min(100, follow + first)}%` }}>
-                                {d.follow_ups > 0 && (
-                                    <div className={cn("w-full rounded-t-[4px]", FOLLOW)} style={{ flexBasis: `${(follow / Math.max(1, follow + first)) * 100}%` }} />
-                                )}
-                                {d.first_emails > 0 && (
-                                    <div
-                                        className={cn("w-full", FIRST, d.follow_ups > 0 ? "" : "rounded-t-[4px]")}
-                                        style={{ flexBasis: `${(first / Math.max(1, follow + first)) * 100}%` }}
-                                    />
-                                )}
+                            <div className="relative flex flex-col justify-end gap-[2px]" style={{ height: `${Math.min(100, (total / peak) * 100)}%` }}>
+                                {parts.map((p, k) => (
+                                    <div key={p.cls} className={cn("w-full", p.cls, k === 0 && "rounded-t-[4px]")} style={{ flexBasis: `${(p.n / total) * 100}%` }} />
+                                ))}
                             </div>
                         </div>
                     );
@@ -142,30 +159,35 @@ export default function EstimateTimeline({
             </div>
             {h && anchor && (
                 <div
-                    className="pointer-events-none absolute z-10 top-0 rounded-md border border-slate-200 bg-white px-2.5 py-2 shadow-[0_8px_24px_-8px_rgba(15,23,42,0.18)] text-[11px] min-w-[150px]"
+                    className="pointer-events-none absolute z-10 top-0 rounded-md border border-slate-200 bg-white px-2.5 py-2 shadow-[0_8px_24px_-8px_rgba(15,23,42,0.18)] text-[11px] min-w-[170px]"
                     style={{
                         left: anchor.x,
                         transform: `translate(${anchor.x > anchor.width / 2 ? "-100%" : "0"}, -100%)`,
                     }}
                 >
                     <p className="text-slate-900 font-medium mb-1">
+                        {hover === 0 && size === 1 ? "Day 1, " : ""}
                         {fmtDay(h.date)}
                         {h.until && h.until !== h.date ? ` to ${fmtDay(h.until)}` : ""}
                     </p>
-                    {!h.sending_day ? (
-                        <p className="text-slate-500">{h.until ? "No sending days" : "Not a sending day"}</p>
-                    ) : (
-                        <div className="space-y-0.5 tabular-nums">
-                            <Row swatch={FIRST} label="First emails" value={h.first_emails} />
-                            {showFollowUps && <Row swatch={FOLLOW} label="Follow-ups" value={h.follow_ups} />}
-                            <Row label="Pool capacity" value={h.capacity} muted />
-                        </div>
-                    )}
-                    {h.warmup > 0 && (
-                        <p className="mt-1 pt-1 border-t border-slate-100 text-slate-500 tabular-nums">
-                            Plus {h.warmup.toLocaleString()} warmup
-                        </p>
-                    )}
+                    <div className="space-y-0.5 tabular-nums">
+                        {!h.sending_day ? (
+                            <p className="text-slate-500">{h.until ? "No campaign sending days" : "No campaign sends on this day"}</p>
+                        ) : (
+                            <>
+                                <Row swatch={FIRST} label="First emails" value={h.first_emails} />
+                                {showFollowUps && <Row swatch={FOLLOW} label="Follow-ups" value={h.follow_ups} />}
+                            </>
+                        )}
+                        {warm(h) > 0 && <Row swatch={WARMUP} label="Warmup" value={warm(h)} />}
+                    </div>
+                    <div className="mt-1 pt-1 border-t border-slate-100 space-y-0.5 tabular-nums">
+                        <Row label="Sent in total" value={h.sends + warm(h)} />
+                        {mailboxes > 0 && size === 1 && h.sends + warm(h) > 0 && (
+                            <Row label="Per mailbox, about" value={Math.round((h.sends + warm(h)) / mailboxes)} muted />
+                        )}
+                        {h.sending_day && <Row label="Campaign capacity" value={h.capacity} muted />}
+                    </div>
                 </div>
             )}
         </div>

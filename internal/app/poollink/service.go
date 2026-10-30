@@ -124,6 +124,7 @@ type service struct {
 	cache      *cache.Cache
 	campaigns  CampaignUsage
 	delegation DelegatedTokenBroker
+	exec       *selfExecution
 }
 
 // DelegatedTokenBroker mints tokens without moving the administrator's grant to an instance.
@@ -406,6 +407,7 @@ func (s *service) InstanceInfo(ctx context.Context, inst *models.PoolLinkInstanc
 		Instance:                *inst,
 		Organization:            models.PoolLinkOrgInfo{ID: org.ID, Name: org.Name},
 		Plan:                    plan,
+		SelfExecution:           s.selfExecutionInfo(ctx, inst.OrganizationID),
 	}, nil
 }
 
@@ -483,9 +485,14 @@ func (s *service) Enroll(ctx context.Context, inst *models.PoolLinkInstance, req
 	if req.RemoteID == uuid.Nil || strings.TrimSpace(req.Email) == "" {
 		return nil, ErrBadRequest
 	}
-	if existing, err := s.repo.GetMailboxByRemote(ctx, inst.ID, req.RemoteID); err != nil {
+	existing, err := s.repo.GetMailboxByRemote(ctx, inst.ID, req.RemoteID)
+	if err != nil {
 		return nil, errx.InternalError()
-	} else if existing != nil {
+	}
+	if out, xerr, routed := s.enrollExecutor(ctx, inst, existing, req); routed {
+		return out, xerr
+	}
+	if existing != nil {
 		// Re-enrolling refreshes the credential and ramp, nothing else.
 		return s.PatchMailbox(ctx, inst, req.RemoteID, models.PoolLinkMailboxPatch{Warmup: &req.Warmup, OAuth: req.OAuth, SMTPIMAP: req.SMTPIMAP})
 	}
@@ -823,6 +830,7 @@ func mailboxState(acc *models.Email, m *models.PoolLinkMailbox) *models.PoolLink
 		EnrolledAt:     m.EnrolledAt,
 		Managed:        m.Managed,
 		AuthState:      acc.AuthState,
+		Executor:       m.Executor.OrCloud(),
 		Settings: models.PoolLinkWarmupSettings{
 			Base: acc.WarmupBase, Max: acc.WarmupMax, Increase: acc.WarmupIncrease, ReplyRate: acc.WarmupReplyRate,
 			StartTime: acc.WarmupStartTime, EndTime: acc.WarmupEndTime, Days: acc.WarmupDays, Timezone: acc.ClockTimezone(),
@@ -871,6 +879,9 @@ func (s *service) PatchMailbox(ctx context.Context, inst *models.PoolLinkInstanc
 	}
 	if m == nil {
 		return nil, ErrMailboxNotFound
+	}
+	if m.Executor.OrCloud() == models.PoolLinkExecutorInstance && (patch.OAuth != nil || patch.SMTPIMAP != nil) {
+		return nil, ErrExecutorConflict
 	}
 	userID, xerr := s.ownerUserID(ctx, inst)
 	if xerr != nil {
@@ -948,6 +959,7 @@ func (s *service) unenroll(ctx context.Context, inst *models.PoolLinkInstance, r
 	if xerr := s.stopParticipation(ctx, inst, *m); xerr != nil {
 		return xerr
 	}
+	s.cancelSelfExecutedCommands(ctx, *m)
 	if !m.Managed {
 		if xerr := s.emailSvc.Delete(ctx, inst.OrganizationID.String(), m.EmailAccountID.String()); xerr != nil && xerr != errx.ErrNotFound {
 			return xerr

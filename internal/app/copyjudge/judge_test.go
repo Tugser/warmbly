@@ -116,9 +116,12 @@ func TestReadsAsBulkNeedsConfidenceUnlessAClaimIsMade(t *testing.T) {
 		v    Verdict
 		want bool
 	}{
-		{"confident bulk", Verdict{ReadsAs: 1, Confidence: 0.9}, true},
-		{"at the threshold", Verdict{ReadsAs: BulkAt, Confidence: ConfFloor}, true},
-		{"bulk but unsure", Verdict{ReadsAs: 1, Confidence: 0.5}, false},
+		{"confident bulk and generic", Verdict{ReadsAs: 1, Personalization: 1, Confidence: 0.9}, true},
+		{"at the threshold", Verdict{ReadsAs: BulkAt, Personalization: BulkAt, Confidence: ConfFloor}, true},
+		{"promotional but relevant", Verdict{ReadsAs: 1, Personalization: 0, Confidence: 0.9}, false},
+		{"generic but conversational", Verdict{ReadsAs: 0, Personalization: 1, Confidence: 0.9}, false},
+		{"relevance borderline", Verdict{ReadsAs: 1, Personalization: BulkAt - 0.01, Confidence: 0.9}, false},
+		{"bulk but unsure", Verdict{ReadsAs: 1, Personalization: 1, Confidence: 0.5}, false},
 		{"between", Verdict{ReadsAs: 0.5, Confidence: 0.95}, false},
 		{"personal with a spam claim", Verdict{ReadsAs: 0, Confidence: 0.2, SpamClaim: 0.8}, true},
 		{"spam claim below its line", Verdict{ReadsAs: 0, Confidence: 0.9, SpamClaim: 0.5}, false},

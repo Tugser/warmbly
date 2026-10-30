@@ -458,6 +458,9 @@ func (s *analyticsService) assembleAccountStatus(ctx context.Context, email *mod
 func sendRecoveryHoldMessage(hold repository.SendRecoveryHold) string {
 	switch hold.Reason {
 	case "unknown":
+		if hold.Campaign {
+			return "Warmbly is checking an unconfirmed campaign send automatically. When safe, it isolates that email so this mailbox can continue sending to other contacts. The affected contact waits for confirmation, and the uncertain email is never retried. No action is needed."
+		}
 		if hold.Warmup {
 			return "Sending is paused after an unconfirmed warmup send. Warmbly checks it automatically and, when safe, retires that message so new sends can resume. The uncertain message is never retried."
 		}

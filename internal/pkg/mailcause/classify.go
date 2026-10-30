@@ -122,7 +122,7 @@ func classify(in Input) string {
 		return PrivateHost
 	case hasAny(text, "no such host", "nxdomain", "name or service not known"):
 		return HostNotFound
-	case hasAny(text, "no supported authentication", "no sign-in method warmbly supports", "auth not supported", "authentication not supported",
+	case hasAny(text, "no supported authentication", "no sign-in method warmbly supports", "no sign-in method allowed by this instance", "auth not supported", "authentication not supported",
 		"authentication not enabled", "unrecognized authentication type", "does not support auth",
 		"authentication mechanism not supported", "auth not available", "authentication not available"):
 		return AuthUnavailable

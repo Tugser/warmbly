@@ -256,7 +256,8 @@ func (s *JobsService) fileWarmupOutOfMailbox(ctx context.Context, e *models.JobE
 		}
 		action.FilingID = id.String()
 	}
-	if account.WorkerID == nil {
+	workerID, routable := s.warmupActionWorker(ctx, account)
+	if !routable {
 		if s.WarmupRecoveryRepo != nil {
 			return nil
 		}
@@ -266,7 +267,7 @@ func (s *JobsService) fileWarmupOutOfMailbox(ctx context.Context, e *models.JobE
 		s.markSelfMove(ctx, e.Message.EmailID, e.Message.MessageID)
 	}
 	// Durable filings use presence verification instead of assuming every attempt moves mail.
-	err := s.Publisher.PublishWarmupAction(ctx, *account.WorkerID, &action)
+	err := s.Publisher.PublishWarmupAction(ctx, workerID, &action)
 	if s.WarmupRecoveryRepo != nil {
 		return nil // The persisted filing survives a failed publish.
 	}

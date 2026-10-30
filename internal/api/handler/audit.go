@@ -37,23 +37,18 @@ func (h *Handler) auditInOrg(c *gin.Context, orgID uuid.UUID, action models.Audi
 		return
 	}
 	h.AuditService.LogAction(c.Request.Context(), orgID, actorID, action, entityType, entityID, c.ClientIP(), c.Request.UserAgent(), changes, metadata)
-	h.refreshAdvisorAfter(orgID, action, entityType)
+	h.refreshAdvisorAfter(orgID, entityType)
 }
 
-// refreshAdvisorAfter re-evaluates the advisor after a change it reads, so its
-// advice follows the change instead of the next scheduled pass. Campaign and
-// step edits are left to the schedule: they autosave, and each pass re-judges copy.
-func (h *Handler) refreshAdvisorAfter(orgID uuid.UUID, action models.AuditAction, entityType models.AuditEntityType) {
-	switch {
-	case entityType == models.AuditEntityEmailAccount,
-		action == models.AuditActionDelete && (entityType == models.AuditEntityCampaign || entityType == models.AuditEntitySequence),
-		entityType == models.AuditEntityCampaign && (action == models.AuditActionStart || action == models.AuditActionStop):
+// Campaign and step edits refresh findings; concurrent refreshes coalesce per org.
+func (h *Handler) refreshAdvisorAfter(orgID uuid.UUID, entityType models.AuditEntityType) {
+	switch entityType {
+	case models.AuditEntityEmailAccount, models.AuditEntityCampaign, models.AuditEntitySequence:
 		h.refreshAdvisorNow(orgID)
 	}
 }
 
-// refreshAdvisorNow re-evaluates the advisor now, for a change it reads that is
-// not an autosave (a campaign's sender pool, its start or stop).
+// refreshAdvisorNow requests a background evaluation of the organization's current state.
 func (h *Handler) refreshAdvisorNow(orgID uuid.UUID) {
 	if h.AdvisorService == nil {
 		return

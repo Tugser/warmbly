@@ -2,6 +2,7 @@ package stripe
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	stripe "github.com/stripe/stripe-go/v86"
@@ -33,6 +34,10 @@ func (d *disabledService) GetCustomer(_ context.Context, _ string) (*stripe.Cust
 }
 
 func (d *disabledService) CreateCheckoutSession(_ context.Context, _, _ uuid.UUID, _, _, _, _ string) (*stripe.CheckoutSession, *errx.Error) {
+	return nil, billingDisabled()
+}
+
+func (d *disabledService) CreateCheckoutSessionUntil(_ context.Context, _, _ uuid.UUID, _, _, _, _ string, _ time.Time) (*stripe.CheckoutSession, *errx.Error) {
 	return nil, billingDisabled()
 }
 

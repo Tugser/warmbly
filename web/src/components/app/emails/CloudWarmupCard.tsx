@@ -23,8 +23,9 @@ import type { DiagnosticParticipation } from "@/lib/api/models/app/cloudlink/Clo
 import { Toggle } from "@/components/app/campaigns/preferences/components/CampaignPreferenceBoolBox";
 import { cloudMailboxPickerOpened } from "@/lib/cloudMailboxConnect";
 import { cloudLinkScope, invalidateWarmupReports } from "@/lib/api/hooks/app/cloudlink/warmupReports";
+import type Inbox from "@/lib/api/models/app/emails/Inbox";
 
-export default function CloudWarmupCard({ mailboxId, email, provider }: { mailboxId: string; email: string; provider: string }) {
+export default function CloudWarmupCard({ mailboxId, email, provider, status }: { mailboxId: string; email: string; provider: string; status: Inbox["status"] }) {
     const pool = useCloudPool();
     const enroll = useEnrollCloudLinkMailbox();
     const unenroll = useUnenrollCloudLinkMailbox();
@@ -49,7 +50,7 @@ export default function CloudWarmupCard({ mailboxId, email, provider }: { mailbo
         }
     };
 
-    const warmup = resolveMailboxWarmup({ id: mailboxId, status: "active" }, undefined, pool);
+    const warmup = resolveMailboxWarmup({ id: mailboxId, status }, undefined, pool);
     if (warmup.source === "unknown") return <p className="px-5 py-3 text-xs text-slate-500">Cloud warmup status {warmup.activity === "checking" ? "checking…" : "unavailable"}</p>;
     if (!pool.connected) {
         return (
@@ -92,8 +93,9 @@ export default function CloudWarmupCard({ mailboxId, email, provider }: { mailbo
 
     const p = cloud?.participation;
     const unknown = warmupUnknown(warmup);
-    const paused = warmup.activity === "paused" || warmup.activity === "receive_only";
-    const resume = paused || warmup.activity === "off";
+    const cloudActivity = warmup.cloudActivity ?? warmup.activity;
+    const paused = cloudActivity === "paused" || cloudActivity === "receive_only";
+    const resume = paused || cloudActivity === "off";
     const health = cloudStandingUnavailable(cloud?.health) ? "status unavailable" : cloud?.health?.state;
     return (
         <div className="px-5 py-4">
@@ -104,7 +106,7 @@ export default function CloudWarmupCard({ mailboxId, email, provider }: { mailbo
                     </span>
                     <div className="min-w-0 flex-1">
                         <div className="text-[12.5px] font-medium text-slate-900">
-                            {warmup.activity === "connecting" ? "Cloud enrollment pending" : warmup.activity === "removing" ? "Cloud removal pending" : unknown ? "Cloud warmup status unavailable" : warmup.activity === "off" ? "Diagnostics off in Warmbly Cloud" : warmup.activity === "inactive" ? "Cloud mailbox off" : paused ? "Diagnostic sending paused in Cloud" : row.managed ? "Signed in through Warmbly Cloud" : "Automated diagnostics in Warmbly Cloud"}
+                            {warmup.activity === "connecting" ? "Cloud enrollment pending" : warmup.activity === "removing" ? "Cloud removal pending" : unknown ? "Cloud warmup status unavailable" : warmup.activity === "off" ? "Diagnostics off in Warmbly Cloud" : warmup.activity === "inactive" ? row.executor === "instance" && status !== "active" ? "Mailbox off on this server" : "Cloud mailbox off" : paused ? "Diagnostic sending paused in Cloud" : row.managed ? "Signed in through Warmbly Cloud" : "Automated diagnostics in Warmbly Cloud"}
                         </div>
                         <div className="text-[11px] text-slate-500 truncate">
                             {!unknown && cloud
@@ -113,7 +115,7 @@ export default function CloudWarmupCard({ mailboxId, email, provider }: { mailbo
                         </div>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
-                        {!unknown && cloud && warmup.activity !== "inactive" && (
+                        {!unknown && cloud && cloudActivity !== "inactive" && (
                             <button
                                 type="button"
                                 disabled={busy}
@@ -133,6 +135,8 @@ export default function CloudWarmupCard({ mailboxId, email, provider }: { mailbo
                                         ? `Remove ${email} from this instance and stop its Cloud warmup sending and receiving? Its mailbox, sign-in and history stay in your Warmbly Cloud workspace. You can restart warmup there.`
                                         : row.independent_smtp || cloud?.managed
                                         ? `Disconnect Cloud warmup for ${email}? Its Cloud mailbox, credentials and warmup history stay on Cloud. Campaigns here keep their existing app-password connection. Cloud warmup sending and receiving stop until you restart them there.`
+                                        : row.executor === "instance"
+                                        ? `Stop warming ${email} in the Warmbly pool? Its credential never left this server, and local warmup takes over.`
                                         : `Stop warming ${email} in the Warmbly pool? The cloud deletes its credential right away and local warmup takes over.`,
                                     async () => {
                                         await run(() => unenroll.mutateAsync(mailboxId), row.managed ? `${email} removed from this instance` : `${email} removed from the pool`);

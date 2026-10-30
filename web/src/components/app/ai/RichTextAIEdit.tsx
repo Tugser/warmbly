@@ -13,21 +13,15 @@ import React from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { SparklesIcon } from "lucide-react";
-import toast from "react-hot-toast/headless";
 import type { Editor } from "@tiptap/react";
-import useGenerateEdit from "@/lib/api/hooks/app/generation/useGenerateEdit";
-import type { AppError } from "@/lib/api/client/normalizeError";
-import buildError from "@/lib/helper/buildError";
-import AIEditPopover, { type AIEditPhase } from "./AIEditPopover";
-import { AI_CARD_WIDTH, clampCardLeft } from "./floatingBounds";
-import {
-    clampContext,
-    passageAIConfigs,
-    passageHTML,
-    passageText,
-    replacePassage,
-    restoreEdges,
-} from "./richTextPassage";
+import AIEditPopover from "./AIEditPopover";
+import AIRunCard from "./AIRunCard";
+import { AI_CARD_CLASS, EDIT_REFINEMENTS, aiRunCardClass } from "./aiCard";
+import useEditorSheen from "./useEditorSheen";
+import useEditorAIRun from "./useEditorAIRun";
+import useClickOutside from "@/hooks/useClickOutside";
+import { clampCardLeft, AI_CARD_WIDTH } from "./floatingBounds";
+import { clampContext, passageAIConfigs, passageText } from "./richTextPassage";
 
 interface EditorRange {
     from: number;
@@ -60,31 +54,27 @@ function anchorFor(editor: Editor, from: number, to: number): Anchor | null {
 }
 
 export default function RichTextAIEdit({ editor }: { editor: Editor }) {
-    const editMut = useGenerateEdit();
     const [range, setRange] = React.useState<EditorRange | null>(null);
     const [anchor, setAnchor] = React.useState<Anchor | null>(null);
     const [open, setOpen] = React.useState(false);
-    const [phase, setPhase] = React.useState<AIEditPhase>("idle");
-    const [changed, setChanged] = React.useState(true);
-    const [usage, setUsage] = React.useState<{ charged: number; tokens: number } | null>(null);
 
     const rootRef = React.useRef<HTMLDivElement>(null);
     const frozen = React.useRef<EditorRange | null>(null);
-    const lastRun = React.useRef<{
-        instruction: string;
-        prevHTML: string;
-        range: EditorRange;
-    } | null>(null);
     const openRef = React.useRef(open);
     openRef.current = open;
 
     const closeAll = React.useCallback(() => {
         setOpen(false);
-        setPhase("idle");
         setRange(null);
         setAnchor(null);
         frozen.current = null;
     }, []);
+
+    const ai = useEditorAIRun(editor, closeAll);
+    const aiRef = React.useRef(ai);
+    aiRef.current = ai;
+    const busy = ai.phase === "thinking" || ai.phase === "writing" || ai.phase === "checking";
+    useEditorSheen(editor.view.dom, ai.phase === "thinking");
 
     // Track selection while the popover is closed.
     React.useEffect(() => {
@@ -114,7 +104,7 @@ export default function RichTextAIEdit({ editor }: { editor: Editor }) {
     React.useEffect(() => {
         if (!range && !frozen.current) return;
         const sync = () => {
-            const target = frozen.current ?? range;
+            const target = aiRef.current.range() ?? frozen.current ?? range;
             if (!target) return;
             setAnchor(anchorFor(editor, target.from, target.to));
         };
@@ -126,116 +116,57 @@ export default function RichTextAIEdit({ editor }: { editor: Editor }) {
         };
     }, [range, editor]);
 
-    // Click-away and Escape while open.
+    // The passage grows while it is written; the card stays with it.
     React.useEffect(() => {
-        if (!open) return;
-        const onDown = (e: MouseEvent | TouchEvent) => {
-            const t = e.target as Node | null;
-            if (rootRef.current?.contains(t)) return;
-            if (editor.view.dom.contains(t as Node)) return;
-            closeAll();
+        if (!busy && ai.phase !== "review") return;
+        let frame = 0;
+        const follow = () => {
+            const r = aiRef.current.range();
+            if (r) setAnchor(anchorFor(editor, r.from, r.to));
+            if (busy) frame = requestAnimationFrame(follow);
         };
-        const onKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") {
-                e.stopPropagation();
-                closeAll();
+        follow();
+        return () => cancelAnimationFrame(frame);
+    }, [busy, ai.phase, editor]);
+
+    // Escape steps back: stop the writing, then discard it, then close.
+    // Clicking away keeps a finished rewrite and leaves a running one running.
+    const editorDom = React.useMemo(() => ({ get current() { return editor.view.dom; } }), [editor]);
+    useClickOutside(
+        open,
+        (cause) => {
+            const run = aiRef.current;
+            if (cause === "escape") {
+                if (run.phase === "writing") run.stop();
+                else if (run.phase !== "idle") run.discard();
+                else {
+                    closeAll();
+                    editor.commands.focus();
+                }
+                return false;
             }
-        };
-        document.addEventListener("mousedown", onDown, true);
-        document.addEventListener("touchstart", onDown, true);
-        document.addEventListener("keydown", onKey, true);
-        return () => {
-            document.removeEventListener("mousedown", onDown, true);
-            document.removeEventListener("touchstart", onDown, true);
-            document.removeEventListener("keydown", onKey, true);
-        };
-    }, [open, closeAll, editor]);
-
-    const apply = React.useCallback(
-        (
-            target: EditorRange,
-            prevHTML: string,
-            instruction: string,
-            text: string,
-            charged: number,
-            tokens: number,
-        ) => {
-            setUsage({ charged, tokens });
-            const html = passageHTML(restoreEdges(target.text, text), target.aiConfigs);
-            const newTo = replacePassage(editor, target.from, target.to, html);
-            editor.commands.focus();
-            lastRun.current = { instruction, prevHTML, range: target };
-            // A rewrite that changed nothing is reported as nothing, not as a
-            // rewrite that did not show up in the body (issue #432).
-            setChanged(newTo !== null);
-            const end = newTo ?? target.to;
-            // Re-read the range that is now there, so chaining another
-            // instruction onto the result edits what the body actually holds.
-            frozen.current = {
-                from: target.from,
-                to: end,
-                text: passageText(editor, target.from, end),
-                aiConfigs: passageAIConfigs(editor, target.from, end),
-            };
-            setAnchor(anchorFor(editor, target.from, end));
-            setPhase("applied");
+            if (run.phase === "review") run.keep();
+            else if (run.phase === "idle") closeAll();
+            return false;
         },
-        [editor],
+        [editorDom, rootRef],
     );
 
-    const run = React.useCallback(
-        (instruction: string, target?: EditorRange, baseHTML?: string) => {
-            const t = target ?? frozen.current;
-            if (!t || editMut.isPending) return;
-            const prevHTML = baseHTML ?? editor.getHTML();
-            setPhase("busy");
-            editMut.mutate(
-                { text: t.text, instruction, context: clampContext(editor.getText()) },
-                {
-                    onSuccess: (res) => {
-                        if (!openRef.current) return;
-                        apply(
-                            t,
-                            prevHTML,
-                            instruction,
-                            res.text,
-                            res.credits_charged ?? 0,
-                            res.tokens_used ?? 0,
-                        );
-                    },
-                    onError: (e) => {
-                        const err = e as unknown as AppError;
-                        if (err?.status === 402) {
-                            toast.error("You're out of AI credits. Upgrade or purchase more to keep editing with AI.");
-                        } else {
-                            toast.error(buildError(err));
-                        }
-                        setPhase("idle");
-                    },
-                },
-            );
-        },
-        [apply, editMut, editor],
-    );
-
-    const undo = React.useCallback(() => {
-        const last = lastRun.current;
-        if (!last) return;
-        editor.commands.setContent(last.prevHTML, { emitUpdate: true });
-        editor.commands.setTextSelection({ from: last.range.from, to: last.range.to });
-        frozen.current = last.range;
-        setAnchor(anchorFor(editor, last.range.from, last.range.to));
-        lastRun.current = null;
-        setPhase("idle");
-    }, [editor]);
-
-    const retry = React.useCallback(() => {
-        const last = lastRun.current;
-        if (!last) return;
-        editor.commands.setContent(last.prevHTML, { emitUpdate: true });
-        frozen.current = last.range;
-        run(last.instruction, last.range, last.prevHTML);
-    }, [editor, run]);
+    const run = (instruction: string) => {
+        const t = frozen.current;
+        if (!t || ai.phase !== "idle") return;
+        ai.run({
+            from: t.from,
+            to: t.to,
+            select: "range",
+            original: t.text,
+            aiConfigs: t.aiConfigs,
+            request: {
+                path: "/generation/edit",
+                body: { text: t.text, instruction, context: clampContext(editor.getText()) },
+            },
+        });
+    };
 
     if (typeof document === "undefined") return null;
 
@@ -258,10 +189,8 @@ export default function RichTextAIEdit({ editor }: { editor: Editor }) {
                         className="h-7 pl-2 pr-2.5 rounded-full border border-slate-200 bg-white shadow-[0_6px_20px_-6px_rgba(15,23,42,0.25)] inline-flex items-center gap-1.5 text-[11.5px] font-medium text-slate-700 hover:text-sky-700 hover:border-sky-300 transition-colors"
                         onMouseDown={(e) => {
                             e.preventDefault();
-                            if (!range) return;
+                            if (!range || ai.phase !== "idle") return;
                             frozen.current = range;
-                            lastRun.current = null;
-                            setPhase("idle");
                             setOpen(true);
                         }}
                     >
@@ -284,17 +213,13 @@ export default function RichTextAIEdit({ editor }: { editor: Editor }) {
                                 ? { bottom: window.innerHeight - anchor.top + 8 }
                                 : { top: anchor.bottom + 8 }),
                         }}
-                        className="rounded-lg border border-slate-200 bg-white shadow-[0_12px_32px_-8px_rgba(15,23,42,0.22)] overflow-hidden"
+                        className={ai.phase === "idle" ? AI_CARD_CLASS : aiRunCardClass(ai.phase)}
                     >
-                        <AIEditPopover
-                            phase={phase}
-                            changed={changed}
-                            usage={usage}
-                            onRun={(instruction) => run(instruction)}
-                            onUndo={undo}
-                            onRetry={retry}
-                            onDone={closeAll}
-                        />
+                        {ai.phase === "idle" ? (
+                            <AIEditPopover phase="idle" usage={null} onRun={run} onUndo={closeAll} onRetry={closeAll} onDone={closeAll} />
+                        ) : (
+                            <AIRunCard run={ai} thinking="Reading the passage…" writing="Rewriting…" refinements={EDIT_REFINEMENTS} />
+                        )}
                     </motion.div>
                 )}
             </AnimatePresence>

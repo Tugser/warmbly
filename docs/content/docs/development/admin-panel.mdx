@@ -66,7 +66,7 @@ Relative ages use your browser's current clock when a snapshot arrives, with per
 | **Sync** | The platform copy of each mailbox's backfill progress and fair-use throttle, with clear-throttle and restart-backfill. The budgets it enforces are the four `sync.*` values under [Configuration > Settings](/development/configuration/#settings-stored-in-the-database); the worker-side engine is the sync governor described under [anti-abuse layers](/development/architecture/#anti-abuse-layers) |
 | **Warmup** | The pools, the blocked list, and the block and unblock history |
 | **Warmup appeals** | Appeals from blocked mailboxes, to approve or reject |
-| **Warmup content** | The generated and reviewed [diagnostic conversation bank](/development/warmup-generation/), effective generation controls, library and generation jobs. Changing effective controls requires `manage_settings`; existing library reads still require `view_warmup_pool` |
+| **Warmup content** | The generated and reviewed [warmup conversation bank](/development/warmup-generation/), effective generation controls, library and generation jobs. Changing effective controls requires `manage_settings`; existing library reads still require `view_warmup_pool` |
 | **Seed panel** | The instance's placement seed inboxes by provider, adding and removing them, every workspace's recent [placement tests](/guides/placement-tests/) with their results, and an operator test that counts against no allowance |
 | **Campaigns** | Every campaign on the instance with its state and owner |
 | **Sends** | In-flight reservations no worker has answered, and the reclaimer that resolves them after 30 minutes; mailboxes held from sending, with a [resolve action](/development/send-safety/#from-the-admin-panel); dead letters with replay limited to non-sending campaign wakeups; task failures; customer webhook delivery health, with reclaim |
@@ -86,6 +86,35 @@ Mailbox diagnostic participation, sender/recipient flags and shared/rolling limi
 | **Promo codes** | Every discount code on the instance, who has redeemed each one, and the builder that creates them |
 | **Outreach** | Mail an operator sends from the instance to a user, a workspace or an address, and the delivery state of each message sent so far |
 | **Admins** | Who holds platform admin bits, and grant and revoke by preset or per bit. This replaces the CLI-only path; `warmblyctl user grant-admin` still works |
+
+### Plan, offers and the Cloud link on an organization
+
+An organization's page has three cards that decide what the workspace may buy and run, beside its abuse posture.
+
+- **Managed plan** puts the workspace on a plan without Stripe; see [plans granted by an operator](/guides/billing/#plans-granted-by-an-operator).
+- **Plan offers** lets the workspace buy a private plan. Pick a private plan, give a reason, and optionally an end date (the end of that day in your timezone). The workspace then sees the plan on its billing overview and can check out; the generic checkout and plan change refuse a private plan to any workspace without an open offer (`plan_offer_required`). Offering the same plan again renews it with the new reason and end date, and **Withdraw** closes it. Neither touches a subscription the workspace already bought. Withdrawing stops new checkouts; a Stripe checkout page the customer already opened stays usable until it lapses, which is at most 24 hours and never past the offer's end date by more than Stripe's 30-minute minimum. The Warmup plan has its own checkout and is not offered here.
+- **Credential-free Cloud warmup** lets the workspace's linked self-hosted instances enroll mailboxes by address and keep every credential on their own server, as [Warmbly Cloud](/guides/warmbly-cloud/) describes. Buying a plan does not grant it. Grant it with a reason and an optional end date; revoking it, or letting it lapse, stops new credential-free enrollment and pauses warmup for the mailboxes the instances already run until it is granted again. Below the grant, a table lists each of those mailboxes with how far Cloud trusts its placement reports (`trusted`, `probation` or `untrusted`), the samples behind that reading, how far its reports diverge from what Cloud observes itself, and when its instance last collected work. A backend that predates the table shows the grant alone.
+
+Each grant, renewal, withdrawal and revocation is written to the **Audit log** with the reason. Reading the cards needs `view_organizations`; changing them needs `manage_organizations`.
+
+#### Pricing the Partnership plan
+
+The Partnership plan (`00000000-0000-0000-0000-000000000003`, $90 a month) ships with no Stripe price, like the Warmup plan, so an offer shows as not purchasable until one is attached. Create a recurring monthly price in Stripe, then set it on the plan row:
+
+```sql
+UPDATE plans
+SET stripe_price_id = 'price_...', updated_at = now()
+WHERE id = '00000000-0000-0000-0000-000000000003';
+```
+
+A yearly option needs both `stripe_price_id_yearly` and `price_yearly` (the yearly amount); with only one of them the yearly period is not offered. Change `price` as well if you charge a different monthly amount, so the billing page shows what Stripe bills.
+
+**Upgrade first, and do not roll back below this release while the plan is in use.** Only this release and later know the Partnership plan warms only. An older backend or consumer reads a Partnership subscriber as a plan that sends, with the plan row's limits (20 sends a day, 2 campaigns, 100 contacts, no AI). So:
+
+- attach the Stripe price, offer the plan or grant it as a managed plan only after every backend and consumer on the instance runs this release;
+- while any workspace subscribes to the Partnership plan or holds it as a managed grant, do not roll back to a release before this one.
+
+Until a price is attached or a grant is made nobody can be on the plan, which is why it ships unpriced. There is no code-level guard for older releases, because they decide what a plan includes from the Warmup plan's id alone.
 
 ### Promo codes
 

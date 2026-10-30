@@ -97,6 +97,10 @@ func (s *JobsService) applyEmailSent(ctx context.Context, result models.SendEmai
 				log.Warn().Err(err).Str("task_id", task.ID.String()).Msg("could not record a placement probe's message id")
 			}
 		}
+	case repository.TaskTypeCloudWarmup:
+		if s.CloudExec != nil {
+			return s.CloudExec.SendResolved(ctx, task.ID, result)
+		}
 	case "warmup":
 		// Without this the recipient has nothing to match a warmup email
 		// against when the verify header did not survive delivery.
@@ -217,6 +221,10 @@ func (s *JobsService) applyEmailFailed(ctx context.Context, result models.SendEm
 		if s.PlacementRepo != nil {
 			return s.PlacementRepo.FailProbeByTask(ctx, task.ID, reason)
 		}
+	case repository.TaskTypeCloudWarmup:
+		if s.CloudExec != nil {
+			return s.CloudExec.SendResolved(ctx, task.ID, result)
+		}
 	}
 	return nil
 }
@@ -299,7 +307,7 @@ func (s *JobsService) failCampaignSend(ctx context.Context, task *repository.Tas
 
 	attempts, exhausted, rolledBack := 0, false, false
 	if ct.ContactID != nil && ct.SequenceID != nil && s.CampaignProgressRepo != nil {
-		if copyExcluded {
+		if copyExcluded || code == models.MailboxLoadingCode {
 			attempts, exhausted, rolledBack, err = s.CampaignProgressRepo.WalkBackSend(ctx, campaignID, *ct.ContactID, *ct.SequenceID, reason, false)
 		} else {
 			attempts, exhausted, rolledBack, err = s.CampaignProgressRepo.RecordSendFailure(ctx, campaignID, *ct.ContactID, *ct.SequenceID, reason)
@@ -465,8 +473,7 @@ func (s *JobsService) publishCampaignUpdated(ctx context.Context, campaign *mode
 	})
 }
 
-// logCampaignSendFailure writes the failure to the campaign activity log.
-// metadata.level "error" tints it red in the dashboard's activity feed.
+// logCampaignSendFailure records failures and automatic reconnect retries in campaign activity.
 func (s *JobsService) logCampaignSendFailure(ctx context.Context, campaignID uuid.UUID, ct *repository.CampaignTask, recipient, reason, code string, attempts int, exhausted, rolledBack, reopened bool) {
 	if s.CampaignLogRepo == nil {
 		return
@@ -509,9 +516,16 @@ func (s *JobsService) logCampaignSendFailure(ctx context.Context, campaignID uui
 	if reopened {
 		meta["reopened"] = true
 	}
+	eventType := "email_failed"
+	if code == models.MailboxLoadingCode && rolledBack && !exhausted {
+		eventType = "email_deferred"
+		meta["level"] = "info"
+		meta["mailbox_loading_retry"] = true
+		msg = fmt.Sprintf("Sending to %s was delayed while the mailbox reconnected. An automatic retry was scheduled.", who)
+	}
 	_ = s.CampaignLogRepo.CreateLog(ctx, &repository.CampaignLogEntry{
 		CampaignID: campaignID,
-		EventType:  "email_failed",
+		EventType:  eventType,
 		Message:    msg,
 		Metadata:   meta,
 	})
@@ -549,6 +563,15 @@ func sendFailureReason(result models.SendEmailResult) (reason, code string) {
 	}
 	if reason == "" {
 		reason = "the sending worker reported an unknown error"
+	}
+	if strings.HasPrefix(reason, models.MailboxNotLoadedPrefix) && (code == "" || code == string(errx.MailErrorCodeServerUnreachable)) {
+		var failure *errx.SendFailure
+		if result.Error != nil {
+			failure = result.Error.Failure
+		}
+		if failure != nil && failure.Protocol == "internal" && failure.Stage == "prepare" && failure.Disposition == errx.SendRetry {
+			code = models.MailboxLoadingCode
+		}
 	}
 	if code == "" {
 		code = "SEND_FAILED"

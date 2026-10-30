@@ -6,11 +6,16 @@ import { useEffect, useRef, type RefObject } from "react";
 
 type ElRef = RefObject<HTMLElement | null>;
 
+// Why a layer is being dismissed. A close returning false handled it itself
+// (stayed open, or moved focus), so focus is not handed back to the trigger.
+export type DismissCause = "outside" | "escape";
+type Dismiss = (cause: DismissCause) => void | false;
+
 // Every open layer, oldest first. Opening one closes the others unless it was
 // opened from inside them, and Escape closes only the newest.
 interface Layer {
     contains: (node: Node) => boolean;
-    close: () => void;
+    close: (cause: DismissCause) => void | false;
 }
 
 const layers: Layer[] = [];
@@ -24,7 +29,7 @@ const FOCUSABLE = "button:not(:disabled), [href], input:not(:disabled), select, 
  * the layer was opened from (its trigger, or a wrapper holding trigger and
  * panel). A portaled panel marked `[data-floating]` counts as inside it.
  */
-export default function useClickOutside(open: boolean, onClose: () => void, inside: ElRef | ElRef[]) {
+export default function useClickOutside(open: boolean, onClose: Dismiss, inside: ElRef | ElRef[]) {
     // Through refs: callers pass inline closures and ref arrays, and re-running
     // the effect on every render would reorder the stack.
     const dismiss = useRef(onClose);
@@ -35,7 +40,7 @@ export default function useClickOutside(open: boolean, onClose: () => void, insi
     useEffect(() => {
         if (!open) return;
         const contains = (node: Node) => refs.current.some((r) => r.current?.contains(node));
-        const self: Layer = { contains, close: () => dismiss.current() };
+        const self: Layer = { contains, close: (cause) => dismiss.current(cause) };
 
         // The stack is one chain of nested layers: the one holding the origin and
         // everything below it stay, everything above it closes. Opened from inside
@@ -44,7 +49,7 @@ export default function useClickOutside(open: boolean, onClose: () => void, insi
         let parent = layers.length - 1;
         while (parent >= 0 && !(origin && layers[parent].contains(origin))) parent--;
         const nested = parent < 0 && !!origin?.closest?.("[data-floating]");
-        if (!nested) for (const other of layers.slice(parent + 1)) other.close();
+        if (!nested) for (const other of layers.slice(parent + 1)) other.close("outside");
         layers.push(self);
 
         // A floating layer this one opened (its own portaled panel, a calendar, a
@@ -55,7 +60,7 @@ export default function useClickOutside(open: boolean, onClose: () => void, insi
             return !!floating && !refs.current.some((r) => r.current && floating.contains(r.current));
         };
         const onPointerDown = (e: PointerEvent) => {
-            if (!isInside(e.target as Node)) self.close();
+            if (!isInside(e.target as Node)) self.close("outside");
         };
         // Escape takes the innermost layer only, and stops there so the dialog or
         // drawer holding it stays open. Focus inside goes back to where it was opened.
@@ -68,7 +73,7 @@ export default function useClickOutside(open: boolean, onClose: () => void, insi
             e.stopPropagation();
             const active = document.activeElement;
             const origin = refs.current[0]?.current;
-            self.close();
+            if (self.close("escape") === false) return;
             if (!origin?.isConnected || !active || !isInside(active)) return;
             const target = origin.matches(FOCUSABLE) ? origin : origin.querySelector<HTMLElement>(FOCUSABLE);
             target?.focus({ preventScroll: true });
@@ -77,7 +82,7 @@ export default function useClickOutside(open: boolean, onClose: () => void, insi
         let blurTimer: ReturnType<typeof setTimeout> | undefined;
         const onBlur = () => {
             blurTimer = setTimeout(() => {
-                if (document.activeElement?.tagName === "IFRAME") self.close();
+                if (document.activeElement?.tagName === "IFRAME") self.close("outside");
             });
         };
         // A tap on a phone does not move focus into the frame either, so a
@@ -85,7 +90,7 @@ export default function useClickOutside(open: boolean, onClose: () => void, insi
         // (re)loading while open is picked up on its load.
         const frameDocs = new Set<Document>();
         const shieldedFrames = new Set<HTMLIFrameElement>();
-        const onFramePress = () => self.close();
+        const onFramePress = () => self.close("outside");
         const watchFrame = (frame: HTMLIFrameElement) => {
             if (isInside(frame)) return;
             // iOS/WebKit may deliver neither focus nor events in script-sandboxed frames.

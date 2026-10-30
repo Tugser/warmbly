@@ -26,7 +26,7 @@ import { SENDING_DOMAINS_KEY } from "@/lib/api/hooks/app/emails/useSendingDomain
 import { useInstanceAdmin } from "@/hooks/usePermission";
 import { CLOUD_MAILBOX_PICKER_EVENT, CLOUD_MAILBOX_PICKER_OPENED } from "@/lib/cloudMailboxConnect";
 import type { AppError } from "@/lib/api/client/normalizeError";
-import type { CloudLinkMailboxRow } from "@/lib/api/models/app/cloudlink/CloudLink";
+import type { CloudLinkExecutor, CloudLinkMailboxRow } from "@/lib/api/models/app/cloudlink/CloudLink";
 import { CLOUD_LINK_KEY, cloudLinkScope, invalidateWarmupReports } from "./warmupReports";
 
 export { CLOUD_LINK_KEY } from "./warmupReports";
@@ -78,9 +78,10 @@ export function useEnrollCloudLinkMailbox() {
     const admin = useInstanceAdmin();
     return useMutation({
         onMutate: () => cloudLinkScope(qc),
-        mutationFn: async (id: string) => {
+        mutationFn: async (input: string | { id: string; executor?: CloudLinkExecutor }) => {
+            const { id, executor } = typeof input === "string" ? { id: input, executor: undefined } : input;
             try {
-                return await enrollCloudLinkMailbox(id);
+                return await enrollCloudLinkMailbox(id, executor);
             } catch (error) {
                 const failure = error as AppError;
                 if (failure.code !== "pool_link_mailbox_conflict") throw error;

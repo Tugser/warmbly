@@ -89,6 +89,7 @@ import {
 import { useReplyDraft } from "@/lib/unibox/useReplyDraft";
 import { answerAddress, replyInboxSender } from "@/lib/unibox/replyInbox";
 import { errorMessage } from "@/lib/errors/message";
+import { shortcutLabel } from "@/components/ui/shortcut-tooltip";
 
 export type { ReplyMode, ReplySeed } from "@/lib/unibox/replyDraft";
 
@@ -793,8 +794,8 @@ export function ReplyComposer({ threadId, replyTo, mode, seed, onClose }: ReplyC
                 onChange={(e) => setBody(e.target.value.slice(0, MAX_BODY_LEN))}
                 placeholder={
                     mode === "forward"
-                        ? "Add a note (optional). ⌘J for AI, ⌘Enter to send."
-                        : "Write your reply. ⌘J for AI, ⌘Enter to send."
+                        ? `Add a note (optional). ${shortcutLabel("mod+J")} for AI, ${shortcutLabel("mod+Enter")} to send.`
+                        : `Write your reply. ${shortcutLabel("mod+J")} for AI, ${shortcutLabel("mod+Enter")} to send.`
                 }
                 onKeyDown={(e) => {
                     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {

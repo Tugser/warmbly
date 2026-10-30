@@ -17,6 +17,7 @@ export type WarmupActivity = "active" | "paused" | "receive_only" | "off" | "ina
 export interface MailboxWarmup {
     source: "local" | "cloud" | "unknown";
     activity: WarmupActivity;
+    cloudActivity?: WarmupActivity;
     info?: WarmupStatusInfo;
     sentToday?: number;
 }
@@ -42,13 +43,13 @@ export function resolveMailboxWarmup(mailbox: Pick<Inbox, "id" | "status" | "war
         if (pool?.reportsUnavailable || !cloud) return { source, activity: "unavailable" };
         const info = cloud.warmup ? { ...cloud.warmup, current_volume: cloud.sent_today } : undefined;
         const values = { source, info, sentToday: cloud.sent_today };
-        if (cloud.status && cloud.status !== "active") return { ...values, activity: "inactive" };
-        if (!info?.enabled || cloud.participation?.mode === "off") return { ...values, activity: "off" };
-        if (info.paused) return { ...values, activity: "paused" };
-        if (cloud.participation && !cloud.participation.send) {
-            return { ...values, activity: cloud.participation.receive ? "receive_only" : "off" };
-        }
-        return { ...values, activity: "active" };
+        const cloudActivity: WarmupActivity = cloud.status && cloud.status !== "active" ? "inactive"
+            : !info?.enabled || cloud.participation?.mode === "off" ? "off"
+            : info.paused ? "paused"
+            : cloud.participation && !cloud.participation.send ? cloud.participation.receive ? "receive_only" : "off"
+            : "active";
+        const activity = row.executor === "instance" && mailbox.status !== "active" ? "inactive" : cloudActivity;
+        return { ...values, activity, cloudActivity };
     }
     if (pool?.loading) return { source: "unknown", activity: "checking" };
     if (pool?.unavailable) return { source: "unknown", activity: "unavailable" };

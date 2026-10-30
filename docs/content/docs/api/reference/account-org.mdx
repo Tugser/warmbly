@@ -2049,6 +2049,60 @@ Auth: Session only (not available to API keys). **Org permission** `manage_billi
 }
 ```
 
+The price must belong to a public plan, or to a private plan the workspace holds an open offer for. Any other price answers `403` with code `plan_offer_required`, and a price that is no plan on the instance answers `400`.
+
+### List offered plans
+
+`GET /subscription/offers`
+
+Lists the private plans Warmbly has offered this workspace and that are still open. See [plans offered to a workspace](/guides/billing/#plans-offered-to-a-workspace).
+
+Auth: Session only (not available to API keys). Requires a selected organization.
+
+#### Response
+
+```json
+{
+  "offers": [
+    {
+      "plan_id": "00000000-0000-0000-0000-000000000003",
+      "name": "Partnership",
+      "currency": "usd",
+      "monthly_usd": 90,
+      "monthly_available": true,
+      "yearly_available": false,
+      "available": true,
+      "warmup_only": true,
+      "expires_at": null
+    }
+  ]
+}
+```
+
+`available` is false while the instance bills nothing or the plan has no Stripe price for either period. `yearly_usd` is present only when a yearly price is set.
+
+### Check out an offered plan
+
+`POST /subscription/offers/:planId/checkout`
+
+Buys an offered plan. The Stripe price is resolved on the server from the plan, never taken from the request.
+
+Auth: Session only (not available to API keys). **Org permission** `manage_billing`, and a recent sign-in.
+
+#### Request body
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `interval` | string | no | `month` (default) or `year`. |
+
+#### Response
+
+```json
+{ "checkout_url": "https://checkout.stripe.com/c/pay/cs_test_..." }
+```
+
+A workspace with an active Stripe subscription is switched to the plan on that subscription instead, prorated, and the answer is `{ "changed": true }`. Without an open offer the answer is `403` `plan_offer_required`; a period the plan has no price for is `503`.
+
 ### Validate a discount code
 
 `POST /subscription/discount/validate`
@@ -2154,6 +2208,8 @@ Auth: Session only (not available to API keys). **Org permission** `manage_billi
   "interval": "year"
 }
 ```
+
+The target must be a public plan, or a private plan the workspace holds an open offer for; otherwise the answer is `403` `plan_offer_required`.
 
 #### Response
 

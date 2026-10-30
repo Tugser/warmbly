@@ -66,8 +66,6 @@ export default function AdvisorSummaryBar({
         };
     }, [data]);
 
-    if (view.findings.length === 0) return null;
-
     // Anything a row cannot show has to be visible without a click.
     const forceOpen = view.critical > 0 || view.unattached.length > 0;
     const expanded = manuallyOpen ?? forceOpen;
@@ -83,6 +81,7 @@ export default function AdvisorSummaryBar({
 
     return (
         <>
+            {view.findings.length > 0 ? (
             <section className={`overflow-hidden rounded-md border backdrop-blur-sm ${tone} ${className}`}>
                 <button
                     type="button"
@@ -156,6 +155,7 @@ export default function AdvisorSummaryBar({
                     ) : null}
                 </AnimatePresence>
             </section>
+            ) : null}
 
             <AnimatePresence>
                 {fixing ? <AdvisorFixDrawer finding={fixing} onClose={() => setFixing(null)} /> : null}

@@ -42,7 +42,7 @@ import { DirtyContext, useDirtyRegistry } from "@/components/app/flow/dirty";
 import { layoutFlow, type InsertPoint, type PlacedEdge } from "@/components/app/flow/tree";
 import { cn } from "@/lib/utils";
 import StepEmailArms from "./StepEmailArms";
-import { conversationOpenerFor, conversationSubjectFor } from "./threading";
+import { conversationOpenerFor, conversationSubjectFor, earlierEmailsFor } from "./threading";
 import { ActionEditor, NodeTypeSwitcher, PathEditor, ReplyStopWarning, StopOnReplyToggle } from "./CampaignEditors";
 import { defaultActionFor } from "./campaignActions";
 import {
@@ -635,6 +635,8 @@ function StepPanel({
     onSelectPath: (port: string) => void;
     onAddCondition: () => void;
 }) {
+    // Parses earlier bodies; kept stable so the editor's AI context is too.
+    const earlierEmails = React.useMemo(() => earlierEmailsFor(steps, index), [steps, index]);
     const footer = canEdit ? (
         <button type="button" onClick={onDelete} className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] font-medium text-rose-600 transition-colors hover:bg-rose-50">
             <Trash2Icon className="h-3.5 w-3.5" />
@@ -687,6 +689,7 @@ function StepPanel({
                         index={index}
                         conversationSubject={conversationSubjectFor(steps, index)}
                         conversationOpener={conversationOpenerFor(steps, index)}
+                        earlierEmails={earlierEmails}
                     />
                 ) : (
                     <ActionEditor campaignId={campaignId} sequence={step} onSaved={onChanged} />

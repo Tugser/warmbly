@@ -11,6 +11,7 @@ import type Sequence from "@/lib/api/models/app/campaigns/sequences/Sequence";
 import EmailContentEditor from "./EmailContentEditor";
 import StepAttachments from "./StepAttachments";
 import type { ArmSubject } from "./threading";
+import type { EarlierEmail } from "./emailAIPrompt";
 import { Label, TextInput } from "@/components/ui/field";
 import { SettingRow, Toggle } from "@/components/app/campaigns/preferences/components/CampaignPreferenceBoolBox";
 import useUpdateSequence from "@/lib/api/hooks/app/campaigns/sequences/useUpdateSequence";
@@ -43,6 +44,7 @@ export default function SequenceView({
     conversationArms,
     embedded = false,
     headerExtra,
+    earlierEmails,
 }: {
     campaignId: string;
     sequence: Sequence;
@@ -60,6 +62,8 @@ export default function SequenceView({
     // Optional control rendered to the left of Reset/Save in the header (used to
     // surface the "A/B test this step" entry point when no variants exist yet).
     headerExtra?: React.ReactNode;
+    // Email steps before this one, for AI follow-ups.
+    earlierEmails?: EarlierEmail[];
 }) {
     const updateSequence = useUpdateSequence(campaignId, sequence.id);
 
@@ -193,6 +197,7 @@ export default function SequenceView({
                     stepId={sequence.id}
                     canSendTest
                     dirty={savable}
+                    earlierEmails={earlierEmails}
                 />
 
                 {sequence.kind === "email" && (

@@ -303,9 +303,6 @@ func (h *Handler) UpdateCampaign(c *gin.Context) {
 	if campaignID, err := uuid.Parse(id); err == nil {
 		h.auditOrg(c, models.AuditActionUpdate, models.AuditEntityCampaign, &campaignID, nil, nil)
 	}
-	if data.EmailTags != nil || data.SenderStrategy != nil || data.Status != nil {
-		h.refreshAdvisorNow(*orgID)
-	}
 
 	c.JSON(http.StatusOK, resp)
 }
@@ -611,7 +608,6 @@ func (h *Handler) ReplaceCampaignSenders(c *gin.Context) {
 	if campaignID, err := uuid.Parse(c.Param("id")); err == nil {
 		h.auditOrg(c, models.AuditActionUpdate, models.AuditEntityCampaign, &campaignID, nil, map[string]string{"scope": "senders"})
 	}
-	h.refreshAdvisorNow(*orgID)
 
 	c.JSON(http.StatusOK, gin.H{"data": senders})
 }

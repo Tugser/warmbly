@@ -222,7 +222,7 @@ export default function ProductTour() {
 
     // Only the owner changes the plan; the cards carry the choice, so the footer only defers it.
     const canChoose = !selfHost && access.isOwner;
-    const planName = selfHost ? null : access.warmupOnly ? "Warmup" : productPaid ? getPlan(access.plan).label : null;
+    const planName = selfHost ? null : access.warmupOnly ? getPlan(access.plan).label : productPaid ? getPlan(access.plan).label : null;
     const heading = selfHost
         ? {
               lead: jumped ? "Before you go." : "Hosted plans.",

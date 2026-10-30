@@ -18,6 +18,10 @@ on:
         description: all, or a comma-separated list of backend,consumer,forms,tracking,realtime
         default: all
         type: string
+      fleet:
+        description: Start a canary rollout of the workers and consumers after the services
+        default: true
+        type: boolean
   workflow_dispatch:
     inputs:
       tag:

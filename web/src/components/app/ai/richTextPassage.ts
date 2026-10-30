@@ -236,10 +236,19 @@ function parseSlice(editor: Editor, html: string): Slice {
 // replacement is left selected, for review; an insertion at a caret leaves the
 // caret after what was written, so the next keystroke continues it. Returns the
 // end of the new content, or null when the document did not change — a rewrite
-// that changed nothing must not be reported as one that did.
-export function replacePassage(editor: Editor, from: number, to: number, html: string): number | null {
-    const inserting = from === to;
+// that changed nothing must not be reported as one that did. A streamed draft
+// passes history: false for every frame but the last, and select: "end" so a
+// growing insertion keeps the caret behind it.
+export function replacePassage(
+    editor: Editor,
+    from: number,
+    to: number,
+    html: string,
+    opts: { history?: boolean; select?: "end" | "range" } = {},
+): number | null {
+    const inserting = opts.select ? opts.select === "end" : from === to;
     const tr = editor.state.tr.replaceRange(from, to, parseSlice(editor, html));
+    if (opts.history === false) tr.setMeta("addToHistory", false);
     // docChanged only says a step ran: replacing a passage with the same words
     // still produces one. The documents themselves are compared instead.
     if (tr.doc.eq(editor.state.doc)) return null;

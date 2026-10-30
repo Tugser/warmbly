@@ -64,7 +64,7 @@ func copyDetectors() []Detector {
 		{
 			Key:      "copy_reads_as_bulk",
 			Category: models.AdvisorCategoryCopy,
-			About:    "Copy that a calibrated reader model places at the bulk-mail end of a personal-to-bulk scale, or that makes a claim a spam filter objects to (guaranteed results, free money, prizes, pressure to act now). Unlike the phrase list this judges the whole email as its recipient would, so it catches copy that avoids every trigger word and still reads as a blast. Only runs when the operator has configured TypeSafe.",
+			About:    "An optional automated copy review, not a measurement of spam placement or reply likelihood. It flags tone only when a confident reader model agrees the message sounds promotional and lacks relevance to a specific reader or role. A business offer, reusable template or merge variable alone does not qualify. Explicit guarantees, free-money or prize promises and urgency are checked separately. Present this as a possible wording issue to review, never a fact about how recipients or spam filters will react. Only runs with TypeSafe configured.",
 			Reads:    []repository.AdvisorSection{repository.AdvisorSectionCampaigns, repository.AdvisorSectionSteps},
 			Run:      detectReadsAsBulk,
 		},
@@ -127,7 +127,7 @@ func emailSteps(s *repository.AdvisorSnapshot) []stepContext {
 func stepLabel(sc stepContext) string {
 	name := sc.step.Name
 	if name == "" {
-		name = fmt.Sprintf("Step %d", sc.step.Position+1)
+		name = fmt.Sprintf("Step %d", sc.step.Position)
 	}
 	return name
 }
@@ -487,19 +487,18 @@ func detectReadsAsBulk(s *repository.AdvisorSnapshot) []Finding {
 			continue
 		}
 
-		reason := "reads as a bulk marketing email rather than a note from one person to another"
+		reason := "may sound promotional and lack a clear connection to the recipient or their role"
+		title := fmt.Sprintf("Review the tone of %s", stepLabel(sc))
 		if v.SpamClaim >= copyjudge.SpamClaimAt {
-			reason = "makes the kind of claim a spam filter objects to: guaranteed results, free money, a prize, or pressure to act now"
-			if v.ReadsAs >= copyjudge.BulkAt && v.Confidence >= copyjudge.ConfFloor {
-				reason = "reads as a bulk marketing email and makes the kind of claim a spam filter objects to"
-			}
+			reason = "may contain a guarantee, a free-money or prize promise, or pressure to act immediately"
+			title = fmt.Sprintf("Review the claims in %s", stepLabel(sc))
 		}
 
 		out = append(out, Finding{
 			Key:         "copy_reads_as_bulk",
-			GroupTitle:  "{count} steps read as bulk mail to their reader",
+			GroupTitle:  "{count} steps have wording to review",
 			Category:    models.AdvisorCategoryCopy,
-			Severity:    models.AdvisorMedium,
+			Severity:    models.AdvisorLow,
 			Surface:     models.AdvisorSurfaceCampaigns,
 			EntityType:  "step",
 			EntityID:    ref(sc.step.ID),
@@ -507,16 +506,16 @@ func detectReadsAsBulk(s *repository.AdvisorSnapshot) []Finding {
 			ParentType:  "campaign",
 			ParentID:    ref(sc.step.CampaignID),
 			Impact:      clampImpact(35 + int(v.ReadsAs*20) + sc.step.Sent/100),
-			Title:       fmt.Sprintf("%s reads as bulk mail to its reader", stepLabel(sc)),
+			Title:       title,
 			Detail: fmt.Sprintf(
-				"Read as its recipient would read it, %s in %s %s. It passes the phrase list; the problem is the whole email, not a word in it. A person who takes a message for a blast does not reply to it, and a filter that does is right.",
+				"An automated copy review suggests %s in %s %s. This is a wording assessment, not evidence that recipients will ignore it or that a spam filter will reject it.",
 				stepLabel(sc), sc.campaign, reason),
-			Remedy: "Rewrite it as you would write to this one person: open with the reason you are writing to them specifically, say what you do in a line, and ask one small question. Drop any promise you could not make face to face.",
+			Remedy: "Check whether the email explains why the offer is relevant to this recipient, describes what you do plainly, and asks one small question. Edit any unsupported promises or artificial urgency. If the wording already fits, dismiss this suggestion.",
 			Steps: []string{
 				fmt.Sprintf("Open the campaign and go to %s.", stepLabel(sc)),
 				"Read it aloud as if to the one person it is addressed to. Every line that would be strange to say to them is a line to cut.",
 				"Replace claims (guaranteed, free, act now, limited time) with what is true for this reader: what you noticed, why it is relevant to them.",
-				"Run Analyze under the content check and confirm it now reads as a personal note.",
+				"Save any changes to refresh the review, or dismiss it if the assessment does not fit your message.",
 			},
 			Evidence: map[string]any{
 				"campaign":        sc.campaign,
@@ -527,6 +526,7 @@ func detectReadsAsBulk(s *repository.AdvisorSnapshot) []Finding {
 				"spam_claim":      round2(v.SpamClaim),
 				"confidence":      round2(v.Confidence),
 				"step_sends":      sc.step.Sent,
+				"content_hash":    copyjudge.ContentHash(sc.step.Subject, copyjudge.Body(sc.step.BodyPlain, sc.step.BodyHTML)),
 			},
 		})
 	}

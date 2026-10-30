@@ -140,7 +140,7 @@ function SelfHostedCloud() {
                             description="Enrolled mailboxes are warmed by Warmbly Cloud; their local warmup stops. Campaigns keep sending from this server."
                         >
                             <CloudMailboxPicker />
-                            <MailboxTable />
+                            <MailboxTable selfExecution={st.info?.self_execution} />
                         </Section>
                         <Section eyebrow="Disconnect">
                             <Row

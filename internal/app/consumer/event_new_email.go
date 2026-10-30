@@ -61,6 +61,13 @@ func (s *JobsService) ingestNewEmail(ctx context.Context, e *models.JobEventNewE
 			return fmt.Errorf("record seed observation: %w", err)
 		}
 	}
+	if s.CloudExec != nil {
+		if own, err := s.CloudExec.OwnSentCopy(ctx, e.Message); err != nil {
+			return fmt.Errorf("%w: %w", errWarmupVerification, err)
+		} else if own {
+			return nil
+		}
+	}
 	warmupToken := warmupTokenFromMessage(e.Message)
 	if warmupToken != "" {
 		handled, err := s.handleWarmupEmail(ctx, e, warmupToken)
@@ -79,12 +86,12 @@ func (s *JobsService) ingestNewEmail(ctx context.Context, e *models.JobEventNewE
 	if warmup, err := s.isKnownWarmupEmail(ctx, e); err != nil {
 		return fmt.Errorf("%w: %w", errWarmupVerification, err)
 	} else if warmup {
-		return s.fileWarmupOutOfMailbox(ctx, e)
+		return s.fileOrReportWarmup(ctx, e)
 	}
 	if reply, err := s.isWarmupThreadReply(ctx, e); err != nil {
 		return fmt.Errorf("%w: %w", errWarmupVerification, err)
 	} else if reply {
-		return s.fileWarmupOutOfMailbox(ctx, e)
+		return s.fileOrReportWarmup(ctx, e)
 	}
 	if report, err := s.isWarmupReport(ctx, e); err != nil {
 		return fmt.Errorf("%w: %w", errWarmupVerification, err)
@@ -363,6 +370,25 @@ func (s *JobsService) isWarmupReport(ctx context.Context, e *models.JobEventNewE
 	return known, nil
 }
 
+// fileOrReportWarmup hands warmup mail in an instance-executed mailbox to Cloud, which decides its engagement.
+func (s *JobsService) fileOrReportWarmup(ctx context.Context, e *models.JobEventNewEmail) error {
+	if s.CloudExec != nil {
+		handled, err := s.CloudExec.ReportArrival(ctx, e.UserID, e.Message, warmupTokenFromMessage(e.Message), firstSenderAddress(e.Message.FromAddr))
+		if err != nil {
+			return fmt.Errorf("%w: report cloud warmup arrival: %w", errWarmupVerification, err)
+		}
+		if handled {
+			if s.WarmupRecoveryRepo != nil {
+				if err := s.WarmupRecoveryRepo.RememberMessage(ctx, e.Message.EmailID, e.Message.MessageID, e.Message.InternalDate); err != nil {
+					return fmt.Errorf("%w: remember warmup message: %w", errWarmupVerification, err)
+				}
+			}
+			return nil
+		}
+	}
+	return s.fileWarmupOutOfMailbox(ctx, e)
+}
+
 // isKnownWarmupEmail separates inbox visibility from single-use recipient engagement.
 func (s *JobsService) isKnownWarmupEmail(ctx context.Context, e *models.JobEventNewEmail) (bool, error) {
 	defer arrivaldiag.Begin(ctx, arrivaldiag.WarmupKnown)()
@@ -633,13 +659,14 @@ func (s *JobsService) performWarmupActions(ctx context.Context, e *models.JobEve
 
 	// Resolve the receiving mailbox once (worker routing, timezone for the
 	// waking-hours engagement guard, and where its owner wants warmup filed).
-	var workerID *uuid.UUID
+	var workerID uuid.UUID
+	routable := false
 	var recipientTZ string
 	if recipient == nil {
 		recipient = s.recipientAccount(ctx, e.Message.EmailID)
 	}
 	if recipient != nil {
-		workerID = recipient.WorkerID
+		workerID, routable = s.warmupActionWorker(ctx, recipient)
 		recipientTZ = recipient.ClockTimezone()
 		base.Placement, base.TargetFolder = recipient.WarmupFiling()
 		actions = recipient.PermittedWarmupActions(actions)
@@ -652,7 +679,7 @@ func (s *JobsService) performWarmupActions(ctx context.Context, e *models.JobEve
 	}
 	immediate, delayed := splitEngagementLegs(actions)
 
-	if workerID == nil {
+	if !routable {
 		// No assigned worker (mid-migration / just-unassigned / assignment lag):
 		// the warmup mail can't be foldered or engaged with. Log instead of
 		// dropping silently so the gap is observable.
@@ -680,7 +707,7 @@ func (s *JobsService) performWarmupActions(ctx context.Context, e *models.JobEve
 			// Asks the worker to report what the rescue came to.
 			act.InternalID = e.Message.ID.String()
 		}
-		s.Publisher.PublishWarmupAction(ctx, *workerID, &act)
+		s.Publisher.PublishWarmupAction(ctx, workerID, &act)
 	}
 
 	if len(delayed) == 0 {
@@ -695,20 +722,20 @@ func (s *JobsService) performWarmupActions(ctx context.Context, e *models.JobEve
 	// schedule so a worker restart mid-dwell can't drop it. The poller publishes
 	// it when fire_at passes.
 	if delaySeconds <= 0 || s.WarmupEngagementRepo == nil {
-		s.Publisher.PublishWarmupAction(ctx, *workerID, &act)
+		s.Publisher.PublishWarmupAction(ctx, workerID, &act)
 		return rescueQueued
 	}
 
 	payload, err := json.Marshal(act)
 	if err != nil {
 		log.Warn().Err(err).Str("email_id", e.Message.EmailID.String()).Msg("Failed to marshal delayed warmup engagement; publishing immediately")
-		s.Publisher.PublishWarmupAction(ctx, *workerID, &act)
+		s.Publisher.PublishWarmupAction(ctx, workerID, &act)
 		return rescueQueued
 	}
 	fireAt := humanizeFireAt(time.Now().Add(time.Duration(delaySeconds)*time.Second), recipientTZ)
 	if err := s.WarmupEngagementRepo.EnqueuePendingEngagement(ctx, e.Message.EmailID, payload, fireAt); err != nil {
 		log.Warn().Err(err).Str("email_id", e.Message.EmailID.String()).Msg("Failed to enqueue delayed warmup engagement; publishing immediately")
-		s.Publisher.PublishWarmupAction(ctx, *workerID, &act)
+		s.Publisher.PublishWarmupAction(ctx, workerID, &act)
 	}
 	return rescueQueued
 }

@@ -109,6 +109,8 @@ type Service interface {
 	WarmupStats(ctx context.Context, orgID uuid.UUID, id *uuid.UUID, from, to time.Time) ([]models.WarmupDailyStats, *errx.Error)
 	WarmupPlacementData(ctx context.Context, orgID uuid.UUID, id *uuid.UUID, from, to time.Time) (*models.WarmupPlacementData, *errx.Error)
 	Enroll(ctx context.Context, orgID, accountID uuid.UUID) (*models.CloudLinkMailboxRow, *errx.Error)
+	// EnrollAs enrolls a mailbox with the chosen executor, or switches an enrolled one to it.
+	EnrollAs(ctx context.Context, orgID, accountID uuid.UUID, executor models.PoolLinkExecutor) (*models.CloudLinkMailboxRow, *errx.Error)
 	Unenroll(ctx context.Context, orgID, accountID uuid.UUID) *errx.Error
 	// RefreshCredentials re-sends an enrolled mailbox's credential after it changes here; the cloud keeps its ramp.
 	RefreshCredentials(ctx context.Context, orgID, accountID uuid.UUID) *errx.Error
@@ -185,6 +187,10 @@ type service struct {
 	disconnected    []func(context.Context, uuid.UUID)
 	standingChanged func(context.Context, models.CloudLinkStandingChange)
 	settingsChanged func(context.Context, []uuid.UUID)
+
+	// exec stores instance-executed enrollment and its commands; nil disables that mode.
+	exec    repository.CloudLinkExecRepository
+	selfExe map[uuid.UUID]cachedSelfExecution
 }
 
 func (s *service) OnStandingChange(fn func(context.Context, models.CloudLinkStandingChange)) {
@@ -249,6 +255,7 @@ func (s *service) Status(ctx context.Context, orgID uuid.UUID) (*models.CloudLin
 	st.Reachable = true
 	st.Info = &info
 	s.rememberOffer(l.InstanceID, info.Redirects)
+	s.rememberSelfExecution(l.InstanceID, info.SelfExecution)
 	_ = s.repo.SetSyncResult(ctx, l.InstanceID, time.Now(), "")
 	return st, nil
 }
@@ -580,6 +587,14 @@ func (s *service) ListMailboxes(ctx context.Context, orgID uuid.UUID) ([]models.
 			return nil, errx.InternalError()
 		}
 	}
+	counts := map[uuid.UUID]repository.CloudCommandCounts{}
+	if s.exec != nil {
+		if c, err := s.exec.CommandCounts(ctx, orgID); err == nil {
+			counts = c
+		} else {
+			log.Warn().Err(err).Str("organization_id", orgID.String()).Msg("cloud link: command counts could not be read")
+		}
+	}
 	healthFor := func(e models.CloudLinkMailbox) *models.WarmupHealthInfo {
 		if statuses != nil {
 			return statuses[e.EmailAccountID]
@@ -602,6 +617,10 @@ func (s *service) ListMailboxes(ctx context.Context, orgID uuid.UUID) ([]models.
 			row.EnrollmentState = e.EnrollmentState
 			row.StandingObservedAt = e.StandingObservedAt
 			row.SettingsObservedAt = e.SettingsObservedAt
+			row.Executor = e.Executor.OrCloud()
+			if c, ok := counts[a.ID]; ok {
+				row.CommandsPending, row.CommandsFailed = c.Pending, c.Failed
+			}
 			row.Cloud = cloudByAccount[a.ID]
 			// The recorded standing covers a mailbox the cloud holds out of its pool.
 			if row.Cloud != nil {
@@ -664,11 +683,23 @@ func (s *service) syncLocalPool(ctx context.Context, accountID uuid.UUID) {
 }
 
 func (s *service) Enroll(ctx context.Context, orgID, accountID uuid.UUID) (*models.CloudLinkMailboxRow, *errx.Error) {
+	return s.enroll(ctx, orgID, accountID, "")
+}
+
+func (s *service) EnrollAs(ctx context.Context, orgID, accountID uuid.UUID, executor models.PoolLinkExecutor) (*models.CloudLinkMailboxRow, *errx.Error) {
+	if executor == "" || !executor.Valid() {
+		return nil, errx.NewWithIdentifier(errx.BadRequest, "cloud_link_executor", "Executor must be cloud or instance.")
+	}
+	return s.enroll(ctx, orgID, accountID, executor)
+}
+
+// enroll keeps an enrolled mailbox's executor when want is empty.
+func (s *service) enroll(ctx context.Context, orgID, accountID uuid.UUID, want models.PoolLinkExecutor) (*models.CloudLinkMailboxRow, *errx.Error) {
 	if !reconciliationLocked(ctx) {
 		var row *models.CloudLinkMailboxRow
 		xerr := s.reconcileLocked(ctx, func(ctx context.Context) *errx.Error {
 			var xerr *errx.Error
-			row, xerr = s.Enroll(ctx, orgID, accountID)
+			row, xerr = s.enroll(ctx, orgID, accountID, want)
 			return xerr
 		})
 		return row, xerr
@@ -695,6 +726,22 @@ func (s *service) Enroll(ctx context.Context, orgID, accountID uuid.UUID) (*mode
 	}
 	if l.DisconnectPending {
 		return nil, ErrAlreadyLinked
+	}
+	previous := models.PoolLinkExecutorCloud
+	if m != nil {
+		previous = m.Executor.OrCloud()
+	}
+	executor := want
+	if executor == "" {
+		executor = previous
+	}
+	if executor == models.PoolLinkExecutorInstance {
+		if m != nil && (m.Managed || m.SMTPCloudAccountID != nil) {
+			return nil, ErrSelfExecutionManaged
+		}
+		if xerr := s.requireSelfExecution(ctx, l); xerr != nil {
+			return nil, xerr
+		}
 	}
 	if m != nil && m.SMTPCloudAccountID != nil {
 		if m.EnrollmentState == "active" {
@@ -724,8 +771,11 @@ func (s *service) Enroll(ctx context.Context, orgID, accountID uuid.UUID) (*mode
 		Provider: models.InboxProvider(acc.Provider),
 		Warmup:   warmup,
 	}
-	switch req.Provider {
-	case models.InboxProviderSMTPIMAP:
+	switch {
+	case executor == models.PoolLinkExecutorInstance:
+		// No credential leaves: this instance's own worker sends and syncs.
+		req.Executor = models.PoolLinkExecutorInstance
+	case req.Provider == models.InboxProviderSMTPIMAP:
 		creds, xerr := s.emails.GetSMTPCredentials(ctx, acc.ID)
 		if xerr != nil {
 			return nil, xerr
@@ -743,7 +793,22 @@ func (s *service) Enroll(ctx context.Context, orgID, accountID uuid.UUID) (*mode
 		return nil, errx.InternalError()
 	}
 	s.syncLocalPool(ctx, acc.ID)
+	// The pending row carries the wanted executor, so a retried enrollment asks for the same one.
+	if executor != previous || m == nil {
+		if s.exec == nil {
+			if executor == models.PoolLinkExecutorInstance {
+				return nil, ErrSelfExecutionUnavailable
+			}
+		} else if err := s.exec.SetExecutor(ctx, acc.ID, executor); err != nil {
+			return nil, errx.InternalError()
+		}
+	}
 	if xerr := s.clientFor(l).do(ctx, http.MethodPost, "/instance/mailboxes", req, &state); xerr != nil {
+		if executor != previous && m != nil && s.exec != nil {
+			if err := s.exec.SetExecutor(ctx, acc.ID, previous); err != nil {
+				log.Error().Err(err).Str("account_id", acc.ID.String()).Msg("cloud link: executor could not be restored after a refused switch")
+			}
+		}
 		return nil, xerr
 	}
 	if _, err := s.repo.Enroll(ctx, acc.ID, acc.ID, l.InstanceID, false); err != nil {
@@ -761,8 +826,8 @@ func (s *service) RefreshCredentials(ctx context.Context, orgID, accountID uuid.
 	if err != nil {
 		return errx.InternalError()
 	}
-	// A managed mailbox's sign-in lives on the cloud; nothing here to hand over.
-	if m == nil || m.Managed || m.SMTPCloudAccountID != nil || m.EnrollmentState == "pending_remove" {
+	// A managed mailbox's sign-in lives on the cloud, and an instance-executed one's stays here.
+	if m == nil || m.Managed || m.SMTPCloudAccountID != nil || m.EnrollmentState == "pending_remove" || m.Executor.OrCloud() == models.PoolLinkExecutorInstance {
 		return nil
 	}
 	// Enrolling again is how the cloud takes a new credential: it updates the mailbox it already holds.

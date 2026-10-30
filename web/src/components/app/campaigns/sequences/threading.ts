@@ -1,5 +1,9 @@
 import type Sequence from "@/lib/api/models/app/campaigns/sequences/Sequence";
 import type ABVariant from "@/lib/api/models/app/campaigns/ABVariant";
+import type { EarlierEmail } from "./emailAIPrompt";
+import { htmlToPlain } from "./emailPreview";
+import { stepPorts } from "./campaignGraph";
+import { reachableFrom } from "@/components/app/flow/tree";
 
 /**
  * conversationOpenerFor is the step that opened the conversation a step at
@@ -34,6 +38,29 @@ export function conversationOpenerFor(steps: Sequence[], index: number): Sequenc
  */
 export function conversationSubjectFor(steps: Sequence[], index: number): string | null {
     return conversationOpenerFor(steps, index)?.subject ?? null;
+}
+
+/**
+ * earlierEmailsFor lists the emails every contact reaching the step at `index`
+ * has already been sent, oldest first: the email steps on every path to it from
+ * the first step. An email on only some paths (one side of a branch) is left
+ * out, because a contact on the other side never read it.
+ */
+export function earlierEmailsFor(steps: Sequence[], index: number): EarlierEmail[] {
+    const target = steps[index];
+    const first = steps[0];
+    if (!target || !first || target === first) return [];
+    const byId = new Map(steps.map((s) => [s.id, s]));
+    const ports = (id: string) => (byId.get(id) ? stepPorts(byId.get(id)!) : []);
+    const reached = reachableFrom({ ports }, first.id);
+    if (!reached.has(target.id)) return [];
+    const onEveryPath = (s: Sequence) =>
+        s === first || !reachableFrom({ ports: (id) => (id === s.id ? [] : ports(id)) }, first.id).has(target.id);
+    // Steps on every path lie on one chain, so each is reachable from those before it.
+    const chain = steps.filter((s) => s !== target && s.kind === "email" && reached.has(s.id) && onEveryPath(s));
+    const after = new Map(chain.map((s) => [s.id, reachableFrom({ ports }, s.id)]));
+    chain.sort((a, b) => (a === b ? 0 : after.get(a.id)!.has(b.id) ? -1 : 1));
+    return chain.map((s) => ({ subject: s.subject, body: s.body_plain?.trim() ? s.body_plain : htmlToPlain(s.body_html ?? "") }));
 }
 
 export interface ArmSubject {

@@ -246,15 +246,20 @@ func (s *Subscription) ManagedExpired() bool {
 // WarmupPlanID is the Warmup plan: the premium pool and no mailbox cap, nothing else.
 var WarmupPlanID = uuid.MustParse(config.PoolLinkPlanID)
 
-// IsWarmupOnly reports the Warmup plan in force; a Stripe subscription to any other plan outranks a Warmup grant.
-func (s *Subscription) IsWarmupOnly() bool {
-	if s == nil || !s.HasPaidSubscription() || s.EffectivePlanID() != WarmupPlanID {
-		return false
-	}
-	return !(s.StripeSubscriptionID != nil && s.Status.IsActive() && s.PlanID != WarmupPlanID)
+// IsWarmupPlan reports a plan that buys warming only: the Warmup plan and the Partnership plan.
+func IsWarmupPlan(planID uuid.UUID) bool {
+	return planID == WarmupPlanID || planID == PartnershipPlanID
 }
 
-// HasProductPlan reports a paid plan that includes sending, the inbox, AI and integrations: every one but the Warmup plan.
+// IsWarmupOnly reports a warming-only plan in force; a Stripe subscription to any other plan outranks a warming-only grant.
+func (s *Subscription) IsWarmupOnly() bool {
+	if s == nil || !s.HasPaidSubscription() || !IsWarmupPlan(s.EffectivePlanID()) {
+		return false
+	}
+	return !(s.StripeSubscriptionID != nil && s.Status.IsActive() && !IsWarmupPlan(s.PlanID))
+}
+
+// HasProductPlan reports a paid plan that includes sending, the inbox, AI and integrations: every one but the warming-only plans.
 func (s *Subscription) HasProductPlan() bool {
 	return s != nil && s.HasPaidSubscription() && !s.IsWarmupOnly()
 }

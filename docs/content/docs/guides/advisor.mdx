@@ -37,11 +37,14 @@ Apply the fix. **Done** offers **Undo** where the change can be reverted.
 
 ## Good to know
 
-- Detection is explicit rules with explicit thresholds, not AI, so it works with no AI configured and never spends AI credits.
+- Core detection uses explicit rules and thresholds, works with no AI configured, and never spends AI credits. Optional TypeSafe copy reviews are automated judgments.
 - A check stays quiet until it has enough data, for example `100` sends in 30 days for complaint rate.
 - Nothing is applied until you have seen the **What changes** screen, and the change runs with your permissions.
 - Autopilot, under **Settings > Workspace**, is off by default and only takes bounded fixes that can be undone.
 - **Snooze** hides a finding for a week or a month. **Stop suggesting this** dismisses it until the problem clears and recurs.
+- Applied fixes leave the suggestions list immediately. Campaign, step and mailbox changes trigger a background recheck; findings that no longer apply disappear when it finishes. Saved copy is reviewed again if it changed, using cached judgments for unchanged content. If the review service is unavailable, its existing findings stay until a successful review.
+
+Follow-up spacing advice applies only after the campaign's first email. A zero-day wait on the first email is valid: it can send when the campaign's schedule and sending limits allow. The first email still receives content checks. With TypeSafe configured, a separate copy check can flag wording that reads as bulk marketing; that is a judgment about the message, not a recommendation to delay it or proof that it will land in spam.
 
 <Fold>
 
@@ -75,7 +78,7 @@ If one check fires on many things, they collapse into a single card ("19 mailbox
 
 ## How findings are made
 
-**Detection is not AI.** Every check is an explicit rule with an explicit threshold run over your own data, so the same numbers always produce the same result. AI only rewrites the explanation to read more naturally; it cannot create a finding, change its severity, or change what a fix does. The Advisor therefore works fully on a self-hosted install with no AI configured and never spends AI credits. The wording is just plainer.
+Core checks use explicit rules and thresholds over your workspace data. Optional TypeSafe copy reviews supply model judgments to the copy checks described below. A separate AI narrator rewrites explanations; it cannot create a finding, change its severity, or change what a fix does. Self-hosts with no AI configured still receive the core checks, and Advisor evaluations never spend AI credits.
 
 ### Sample floors
 
@@ -121,7 +124,9 @@ The advisor's placement sample covers today and the preceding six UTC dates, mat
 
 **Copy** (conservative, and drafts are skipped): a merge variable that will not resolve, shipping a literal `{{token}}`; two or more bulk-mail phrases (one is never flagged); over `200` words; a subject over `60` characters; more than two links in a first touch; a shouting subject.
 
-Two more copy findings run only when the operator has configured TypeSafe (`TYPESAFE_API_KEY`), a calibrated reader model rather than a language model: a step that **reads as bulk mail** to its recipient, or makes a claim a spam filter objects to (guaranteed results, free money, a prize, pressure to act now); and a step with **no clear ask**, either asking for nothing or for several things. Each step's subject and body are sent to TypeSafe for this, once per version of the copy; the verdict is cached and an unchanged step is never sent again. At most `40` steps are judged per evaluation, and the rest wait for the next run.
+Two more copy findings run only when the operator has configured TypeSafe (`TYPESAFE_API_KEY`), a calibrated reader model: an optional **wording review**, and a step with **no clear ask**, either asking for nothing or for several things. The wording review is low severity. Tone advice requires confident agreement that the copy sounds promotional and lacks relevance to the reader or their role. A business offer, a reusable template or a merge variable alone is not enough. Explicit guarantees, free-money or prize promises, and artificial urgency are checked separately. These are model assessments, not measurements of spam placement or reply likelihood. Dismiss a review that does not fit your message.
+
+Each step's subject and body are sent to TypeSafe for this, once per version of the copy and review policy. Verdicts are cached; saving unchanged content reuses its judgment. A policy update rechecks existing copy. At most `40` steps are judged per evaluation, and the rest wait for the next run.
 
 **List quality**: shared inboxes (`info@`, `sales@`) above `15%`; consumer domains above `40%` of a B2B list; suppressed contacts above `10%`; missing first names above `10%` when copy personalizes on them; unsubscribed contacts still enrolled.
 

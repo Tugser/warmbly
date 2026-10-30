@@ -280,3 +280,62 @@ func TestRolloutStateIsSafeForOlderReaders(t *testing.T) {
 		t.Fatalf("older readers must still see From, got %q", old.Tag)
 	}
 }
+
+func TestRolloutRestartWindowKeepsHealthGates(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		version    string
+		elapsed    time.Duration
+		seenAgo    time.Duration
+		failed     bool
+		wantHalted bool
+	}{
+		{name: "inactive old process during restart", version: "v1.4.0-kafka", elapsed: time.Minute},
+		{name: "restart at deadline", version: "v1.4.0-kafka", elapsed: 5 * time.Minute},
+		{name: "restart beyond deadline", version: "v1.4.0-kafka", elapsed: 5*time.Minute + time.Second, wantHalted: true},
+		{name: "target process stops during bake", version: "v1.5.0-kafka", elapsed: time.Minute, wantHalted: true},
+		{name: "host rollback during restart", version: "v1.4.0-kafka", elapsed: time.Minute, failed: true, wantHalted: true},
+		{name: "stale before admission", version: "v1.4.0-kafka", elapsed: time.Minute, seenAgo: time.Hour, wantHalted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRolloutFixture(t, 1, 0)
+			ctx := context.Background()
+			_, err := f.svc.StartRollout(ctx, "v1.5.0", nil, models.FleetRolloutPolicy{DeadlineSeconds: 300})
+			if err != nil {
+				t.Fatal(err)
+			}
+			n := &f.nodes.nodes[0]
+			n.Version = tc.version
+			n.Active = false
+			seen := f.now.Add(-tc.seenAgo)
+			n.LastSeenAt = &seen
+			if tc.failed {
+				n.UpdateFailed = "v1.5.0-kafka"
+			}
+			f.advanceTime(tc.elapsed)
+			st, err := f.svc.AdvanceRollout(ctx, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if halted := st.Rollout.Stage == models.FleetRolloutHalted; halted != tc.wantHalted {
+				t.Fatalf("halted=%t, want %t: %+v", halted, tc.wantHalted, st.Rollout)
+			}
+			if tc.wantHalted {
+				return
+			}
+			n.Active = true
+			f.advanceTime(time.Second)
+			f.converge(st.Rollout.Admitted, "v1.5.0-kafka", time.Second)
+			st, err = f.svc.AdvanceRollout(ctx, false)
+			if err != nil || st.Rollout.Stage != models.FleetRolloutCanary {
+				t.Fatalf("a returned node still needs to bake: state=%+v err=%v", st, err)
+			}
+			f.advanceTime(31 * time.Minute)
+			f.converge(st.Rollout.Admitted, "v1.5.0-kafka", 31*time.Minute)
+			st, err = f.svc.AdvanceRollout(ctx, false)
+			if err != nil || st.Rollout != nil || st.Tag != "v1.5.0" {
+				t.Fatalf("a returned and baked node should finish: state=%+v err=%v", st, err)
+			}
+		})
+	}
+}

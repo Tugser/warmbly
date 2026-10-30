@@ -12,7 +12,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/warmbly/warmbly/internal/config"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
@@ -122,12 +121,15 @@ func sendAuthority(ctx context.Context, tx pgx.Tx, task, mailbox, org, worker uu
 	var lane string
 	var allowed bool
 	err := tx.QueryRow(ctx, `SELECT t.task_type, ea.status='active' AND ea.organization_id=$3 AND ea.provider::text=$5
-	 AND ea.worker_id=$4 AND o.risk_state<>'suspended'
+	 AND o.risk_state<>'suspended'
 	 AND (NOT ea.send_recovery_hold OR ($6 AND ea.send_recovery_reason='unknown' AND ea.send_recovery_task_id=t.id))
 	 AND (ea.send_cooldown_until IS NULL OR ea.send_cooldown_until<=NOW())
-	 AND EXISTS(SELECT 1 FROM fleet_nodes n WHERE n.id=$4 AND n.warmup_send_protocol>=2 AND n.active AND n.last_seen_at>NOW()-INTERVAL '10 minutes')
-	 AND (t.task_type NOT IN ('warmup','placement') OR ea.test_mode IS NULL OR ea.test_mode='legacy' OR ea.test_mode='diagnostic' AND ea.test_send_enabled)
+	 AND (($4<>`+nilUUIDSQL+` AND ea.worker_id=$4 AND NOT `+instanceExecutedSQL("ea.id")+`
+	  AND EXISTS(SELECT 1 FROM fleet_nodes n WHERE n.id=$4 AND n.warmup_send_protocol>=2 AND n.active AND n.last_seen_at>NOW()-INTERVAL '10 minutes'))
+	  OR ($4=`+nilUUIDSQL+` AND t.task_type='warmup' AND `+selfExecutionLiveSQL("ea.id")+`))
+	 AND (t.task_type NOT IN ('warmup','placement','cloud_warmup') OR ea.test_mode IS NULL OR ea.test_mode='legacy' OR ea.test_mode='diagnostic' AND ea.test_send_enabled)
 	 AND t.send_result_applied_at IS NULL AND ((NOT $6 AND t.status='active') OR ($6 AND t.status='completed'))
+	 AND t.campaign_send_isolated_at IS NULL
 	 FROM tasks t JOIN email_accounts ea ON ea.id=t.email_account_id JOIN organizations o ON o.id=ea.organization_id
 	 WHERE t.id=$1 AND ea.id=$2`, task, mailbox, org, worker, provider, ownReservation).Scan(&lane, &allowed)
 	if err != nil {
@@ -181,8 +183,13 @@ func (r *taskRepository) ReserveOutbound(ctx context.Context, in OutboundReserva
 	if err != nil {
 		return uuid.Nil, err
 	}
-	if lane != "warmup" && lane != "campaign" && lane != "email" && lane != "placement" {
+	if lane != "warmup" && lane != "campaign" && lane != "email" && lane != "placement" && lane != TaskTypeCloudWarmup {
 		return uuid.Nil, ErrSendAdmissionDenied
+	}
+	if lane == TaskTypeCloudWarmup {
+		if err = checkCloudSendCommand(ctx, tx, in.TaskID, in.MailboxID); err != nil {
+			return uuid.Nil, err
+		}
 	}
 	if err = checkSendRecipients(ctx, tx, in.TaskID, in.OrganizationID, lane, recipients); err != nil {
 		return uuid.Nil, err
@@ -215,7 +222,7 @@ func (r *taskRepository) ReserveOutbound(ctx context.Context, in OutboundReserva
 	var reservedAttemptRecipients, reservedAttemptsToday int
 	err = tx.QueryRow(ctx, `SELECT COALESCE(SUM(GREATEST(1,cardinality(send_recipients))) FILTER(WHERE COALESCE(send_reserved_at,completed_at)>NOW()-INTERVAL '24 hours'),0),
 	 COUNT(*) FILTER(WHERE COALESCE(send_business_day,(completed_at AT TIME ZONE $3)::date)=(NOW() AT TIME ZONE $3)::date)
-	 FROM tasks t WHERE email_account_id=$1 AND id<>$2 AND task_type IN('campaign','warmup','placement')
+	 FROM tasks t WHERE email_account_id=$1 AND id<>$2 AND task_type IN('campaign','warmup','placement','cloud_warmup')
 	 AND ((send_reserved_at IS NOT NULL AND send_released_at IS NULL) OR (send_reserved_at IS NULL AND status='completed' AND completed_at IS NOT NULL
 	 AND (task_type<>'campaign' OR EXISTS(SELECT 1 FROM campaign_tasks ct WHERE ct.task_id=t.id AND ct.sequence_id IS NOT NULL))))
 	 AND NOT EXISTS(SELECT 1 FROM outbound_attempts a WHERE a.nonce=t.send_executor_nonce)`, in.MailboxID, in.TaskID, timezone).Scan(&reservedAttemptRecipients, &reservedAttemptsToday)
@@ -224,8 +231,8 @@ func (r *taskRepository) ReserveOutbound(ctx context.Context, in OutboundReserva
 	}
 	occurrences := attemptedRecipients + reservedAttemptRecipients
 	var dayTotal, dayCold, dayDiagnostic int
-	err = tx.QueryRow(ctx, `SELECT COUNT(*),COUNT(*) FILTER(WHERE task_type='campaign'),COUNT(*) FILTER(WHERE task_type IN ('warmup','placement')) FROM tasks t
-	 WHERE email_account_id=$1 AND id<>$2 AND task_type IN ('campaign','warmup','placement')
+	err = tx.QueryRow(ctx, `SELECT COUNT(*),COUNT(*) FILTER(WHERE task_type='campaign'),COUNT(*) FILTER(WHERE task_type IN ('warmup','placement','cloud_warmup')) FROM tasks t
+	 WHERE email_account_id=$1 AND id<>$2 AND task_type IN ('campaign','warmup','placement','cloud_warmup')
 	 AND COALESCE(send_business_day,(completed_at AT TIME ZONE $3)::date)=(NOW() AT TIME ZONE $3)::date
 	 AND ((send_reserved_at IS NOT NULL AND send_released_at IS NULL) OR (send_reserved_at IS NULL AND status='completed' AND completed_at IS NOT NULL
 	 AND (task_type<>'campaign' OR EXISTS(SELECT 1 FROM campaign_tasks ct WHERE ct.task_id=t.id AND ct.sequence_id IS NOT NULL))))`, in.MailboxID, in.TaskID, timezone).Scan(&dayTotal, &dayCold, &dayDiagnostic)
@@ -241,7 +248,7 @@ func (r *taskRepository) ReserveOutbound(ctx context.Context, in OutboundReserva
 	}
 	// Manual (unibox) mail is a conversation, not outreach: it spends none of
 	// these allocations and was held to its own fair use above.
-	if lane != "email" && (max(dayTotal, attemptedToday+reservedAttemptsToday) >= sharedCap || occurrences+len(recipients) > rollingCap || lane == "campaign" && dayCold >= campaignCap || (lane == "warmup" || lane == "placement") && dayDiagnostic >= warmupCap) {
+	if lane != "email" && (max(dayTotal, attemptedToday+reservedAttemptsToday) >= sharedCap || occurrences+len(recipients) > rollingCap || lane == "campaign" && dayCold >= campaignCap || (lane == "warmup" || lane == "placement" || lane == TaskTypeCloudWarmup) && dayDiagnostic >= warmupCap) {
 		return uuid.Nil, ErrSendAdmissionDenied
 	}
 	if lane == "campaign" {
@@ -265,7 +272,7 @@ func (r *taskRepository) ReserveOutbound(ctx context.Context, in OutboundReserva
 		nonce = *warmupNonce
 	}
 	_, err = tx.Exec(ctx, `UPDATE tasks SET send_reserved_at=NOW(),send_business_day=(NOW() AT TIME ZONE $2)::date,send_recipients=$3,
-	 send_released_at=NULL,send_executor_nonce=$4,send_executor_worker=$5,send_executor_started_at=NULL,send_executor_result=NULL,
+	 send_released_at=NULL,send_executor_nonce=$4,send_executor_worker=NULLIF($5::uuid,`+nilUUIDSQL+`),send_executor_started_at=NULL,send_executor_result=NULL,
 	 send_result_state='unknown',status='completed',completed_at=CASE WHEN $6 THEN COALESCE(completed_at,NOW()) ELSE NOW() END WHERE id=$1`, in.TaskID, timezone, recipients, nonce, in.WorkerID, lane == "warmup")
 	if err != nil {
 		return uuid.Nil, err
@@ -379,7 +386,7 @@ func checkMailboxSendingPlan(ctx context.Context, tx pgx.Tx, task, mailbox uuid.
 	 AND (p.lunch_start_minute IS NULL OR EXTRACT(EPOCH FROM (NOW() AT TIME ZONE p.timezone)::time)/60<p.lunch_start_minute
 	 OR EXTRACT(EPOCH FROM (NOW() AT TIME ZONE p.timezone)::time)/60>=p.lunch_end_minute)
 	 AND (SELECT COUNT(*)<p.daily_limit AND COUNT(*) FILTER(WHERE t.completed_at>=date_trunc('hour',NOW() AT TIME ZONE p.timezone) AT TIME ZONE p.timezone)<p.hourly_limit
-	 FROM tasks t WHERE t.email_account_id=ea.id AND t.id<>$2 AND t.task_type IN ('campaign','placement') AND t.status='completed'
+	 FROM tasks t WHERE t.email_account_id=ea.id AND t.id<>$2 AND t.task_type IN ('campaign','placement') AND `+taskConsumesSendBudget+`
 	 AND (t.completed_at AT TIME ZONE p.timezone)::date=p.plan_date AND `+taskDispatchedEmail+`))
 	 FROM email_accounts ea JOIN organizations o ON o.id=ea.organization_id
 	 LEFT JOIN email_account_behavior b ON b.email_account_id=ea.id
@@ -406,6 +413,7 @@ func checkCampaignReservation(ctx context.Context, tx pgx.Tx, task uuid.UUID) er
 	err := tx.QueryRow(ctx, `SELECT c.status='active' AND (c.end_date IS NULL OR c.end_date>=NOW())
 	 AND NOT recipient_suppressed(c.organization_id,contact.email) AND contact.subscribed IS DISTINCT FROM false
 	 AND NOT EXISTS(SELECT 1 FROM campaign_leads h WHERE h.campaign_id=c.id AND h.contact_id=ct.contact_id AND h.paused_at IS NOT NULL AND (h.paused_until IS NULL OR h.paused_until>NOW()))
+	 AND NOT EXISTS(SELECT 1 FROM campaign_leads recovery WHERE recovery.campaign_id=c.id AND recovery.contact_id=ct.contact_id AND recovery.send_outcome_pending_at IS NOT NULL)
 	 AND c.organization_id=ea.organization_id AND contact.organization_id=c.organization_id
 	 AND EXISTS(SELECT 1 FROM campaign_contact_progress p WHERE p.campaign_id=c.id AND p.contact_id=ct.contact_id AND p.sequence_id=ct.sequence_id AND p.dispatch_task_id=t.id),
 	 c.daily_limit<=0 OR (SELECT COUNT(*) FROM tasks t JOIN campaign_tasks sent ON sent.task_id=t.id
@@ -431,7 +439,7 @@ func (r *taskRepository) InspectOutbound(ctx context.Context, task, mailbox, wor
 	var raw []byte
 	var org *uuid.UUID
 	var recipients []string
-	err := r.db.QueryRow(ctx, `SELECT t.send_executor_nonce,t.send_executor_started_at,t.send_executor_result,t.send_released_at IS NOT NULL,t.status='cancelled',ea.organization_id,t.send_recipients FROM tasks t JOIN email_accounts ea ON ea.id=t.email_account_id WHERE t.id=$1 AND t.email_account_id=$2 AND (t.send_executor_nonce IS NULL OR t.send_executor_worker=$3)`, task, mailbox, worker).Scan(&nonce, &started, &raw, &released, &cancelled, &org, &recipients)
+	err := r.db.QueryRow(ctx, `SELECT t.send_executor_nonce,t.send_executor_started_at,t.send_executor_result,t.send_released_at IS NOT NULL,t.status='cancelled' OR t.campaign_send_isolated_at IS NOT NULL,ea.organization_id,t.send_recipients FROM tasks t JOIN email_accounts ea ON ea.id=t.email_account_id WHERE t.id=$1 AND t.email_account_id=$2 AND (t.send_executor_nonce IS NULL OR t.send_executor_worker=$3)`, task, mailbox, worker).Scan(&nonce, &started, &raw, &released, &cancelled, &org, &recipients)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return &WarmupDispatchState{State: "denied"}, nil
 	}
@@ -495,6 +503,9 @@ func (r *taskRepository) BeginOutbound(ctx context.Context, task, mailbox, worke
 	if err == nil && lane == "campaign" {
 		err = checkMailboxSendingPlan(ctx, tx, task, mailbox)
 	}
+	if err == nil && lane == TaskTypeCloudWarmup {
+		err = checkCloudSendCommand(ctx, tx, task, mailbox)
+	}
 	if err != nil {
 		if !errors.Is(err, ErrSendAdmissionDenied) {
 			return nil, err
@@ -554,22 +565,36 @@ func (r *taskRepository) FinishOutbound(ctx context.Context, task, mailbox, work
 	if err != nil {
 		return err
 	}
-	tag, err := r.db.Exec(ctx, `UPDATE tasks SET send_executor_result=$4 WHERE id=$1 AND email_account_id=$2 AND send_executor_worker=$3 AND send_executor_started_at IS NOT NULL AND send_executor_result IS NULL`, task, mailbox, worker, raw)
+	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() > 0 {
-		return nil
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,268))`, task.String()); err != nil {
+		return err
 	}
-	state, err := r.InspectOutbound(ctx, task, mailbox, worker)
+	var previous []byte
+	err = tx.QueryRow(ctx, `SELECT send_executor_result FROM tasks WHERE id=$1 AND email_account_id=$2 AND send_executor_worker=$3 AND send_executor_started_at IS NOT NULL FOR UPDATE`, task, mailbox, worker).Scan(&previous)
 	if err != nil {
 		return err
 	}
-	previous, _ := json.Marshal(state.Result)
-	if state.State != "finished" || string(previous) != string(raw) {
-		return errors.New("conflicting or unstarted dispatch result")
+	if len(previous) > 0 {
+		var recorded models.SendEmailResult
+		if json.Unmarshal(previous, &recorded) != nil || recorded.TaskID != task {
+			return errors.New("invalid stored dispatch result")
+		}
+		canonical, _ := json.Marshal(recorded)
+		if string(canonical) == string(raw) {
+			return nil
+		}
+		if resultState(recorded) != "unknown" || resultState(result) == "unknown" {
+			return errors.New("conflicting dispatch result")
+		}
 	}
-	return nil
+	if _, err = tx.Exec(ctx, `UPDATE tasks SET send_executor_result=$2 WHERE id=$1`, task, raw); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *taskRepository) CancelOutbound(ctx context.Context, task, mailbox, worker, nonce uuid.UUID) error {
@@ -648,20 +673,36 @@ func checkWarmupRecipientReservation(ctx context.Context, tx pgx.Tx, task, sende
 	if !receiving {
 		return ErrSendAdmissionDenied
 	}
-	share := 100
-	if pool != "premium" {
-		share = config.WarmupFreeInboundSharePercent
-	}
 	var allowed bool
-	err := tx.QueryRow(ctx, `SELECT GREATEST(
-	 (SELECT COUNT(*) FROM warmup_received wr WHERE wr.email_account_id=ea.id AND wr.created_at >= date_trunc('day',NOW() AT TIME ZONE COALESCE(NULLIF(ea.timezone,''),NULLIF(o.timezone,''),'UTC')) AT TIME ZONE COALESCE(NULLIF(ea.timezone,''),NULLIF(o.timezone,''),'UTC')),
-	 (SELECT COUNT(*) FROM warmup_tokens wt WHERE wt.recipient_account_id=ea.id AND wt.created_at >= date_trunc('day',NOW() AT TIME ZONE COALESCE(NULLIF(ea.timezone,''),NULLIF(o.timezone,''),'UTC')) AT TIME ZONE COALESCE(NULLIF(ea.timezone,''),NULLIF(o.timezone,''),'UTC')))
-	 <= LEAST(GREATEST((((SELECT COUNT(*) FROM warmup_tokens wt WHERE wt.sender_account_id=ea.id AND wt.sent_message_id<>'' AND wt.created_at>=NOW()-INTERVAL '7 days')+6)/7)*`+inboundDailyMultipleSQL+`,`+inboundDailyFloorSQL+`),`+inboundDailyCeilingSQL+`)*$2/100
-	 FROM email_accounts ea JOIN organizations o ON o.id=ea.organization_id WHERE ea.id=$1`, recipient, share).Scan(&allowed)
+	// The send's own token is already counted, so it needs no extra room.
+	err := tx.QueryRow(ctx, warmupInboxRoomSQL, recipient, inboundSharePercent(pool), 0).Scan(&allowed)
 	if err != nil {
 		return err
 	}
 	if !allowed {
+		return ErrSendAdmissionDenied
+	}
+	return nil
+}
+
+// checkCloudSendCommand admits a cloud_warmup send only on the live Cloud
+// command that created it, for a mailbox this instance executes.
+func checkCloudSendCommand(ctx context.Context, tx pgx.Tx, task, mailbox uuid.UUID) error {
+	var a cloudCommandAdmission
+	var executor *string
+	err := tx.QueryRow(ctx, `SELECT c.executor,k.kind,k.state,k.admit_until FROM cloud_link_commands k
+	 LEFT JOIN cloud_link_mailboxes c ON c.email_account_id=k.email_account_id AND c.instance_id=k.instance_id
+	 WHERE k.task_id=$1 AND k.email_account_id=$2`, task, mailbox).Scan(&executor, &a.Kind, &a.State, &a.AdmitUntil)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrSendAdmissionDenied
+	}
+	if err != nil {
+		return err
+	}
+	if executor != nil {
+		a.Linked, a.Executor = true, models.PoolLinkExecutor(*executor)
+	}
+	if !cloudSendAdmitted(a, time.Now()) {
 		return ErrSendAdmissionDenied
 	}
 	return nil

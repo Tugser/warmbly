@@ -13,6 +13,7 @@ import { DashboardImage } from "@/components/ui/dashboard-image";
 // validation. Read data: /analytics/accounts/:id and /analytics/warmup?email_id=.
 
 import React, { useMemo, useState } from "react";
+import { signatureToPlain } from "@/lib/email/signaturePlain";
 import useBrowseState from "@/hooks/useBrowseState";
 import { mailboxTab, type MailboxTab } from "@/lib/browse-accounts-analytics";
 import { diagnosticSendingAllowed } from "@/lib/diagnosticParticipation";
@@ -1350,7 +1351,7 @@ function WarmupTab({ form, update, status, mailbox, canWarmup = true, warmup }: 
             {/* Ban banner + appeal — only when the mailbox is blocked from the pool */}
             <WarmupBanBanner emailId={mailbox.id} />
 
-            <CloudWarmupCard mailboxId={mailbox.id} email={mailbox.email} provider={mailbox.provider} />
+            <CloudWarmupCard mailboxId={mailbox.id} email={mailbox.email} provider={mailbox.provider} status={mailbox.status} />
 
             {/* Lifecycle control */}
             {!inCloud && (
@@ -2341,6 +2342,11 @@ function SettingsTab({ form, update, mailbox, onDisconnected }: { form: Inbox; u
         [timezones, workspaceZone, form.timezone],
     );
     const mirrorTarget = mailbox.provider === "gmail" ? "Gmail" : mailbox.provider === "outlook" ? "Outlook" : "the mailbox";
+    // Whether the plain version follows the HTML is the editor's business;
+    // signature_sync is whether the signature is added to sends at all.
+    const [plainFollowsHtml, setPlainFollowsHtml] = useState(
+        () => !form.signature_plain.trim() || signatureToPlain(form.signature_html) === form.signature_plain.trim(),
+    );
     return (
         <div className="divide-y divide-slate-200/60">
             <div className="px-5 py-5 space-y-4">
@@ -2428,6 +2434,22 @@ function SettingsTab({ form, update, mailbox, onDisconnected }: { form: Inbox; u
 
             <div className="px-5 py-5 space-y-2">
                 <Eyebrow>Signature</Eyebrow>
+                <div className="flex items-start justify-between gap-3 pb-1">
+                    <div className="min-w-0">
+                        <div className="text-[12.5px] font-medium text-slate-900">Add to every email this mailbox sends</div>
+                        <div className="text-[11px] text-slate-400">
+                            Campaign steps, replies and new emails get this signature under the body, so it never has to be
+                            typed into the copy.
+                        </div>
+                    </div>
+                    <div className="shrink-0">
+                        <Toggle
+                            value={form.signature_sync}
+                            onChange={(v) => update({ signature_sync: v })}
+                            ariaLabel="Add the signature to every email this mailbox sends"
+                        />
+                    </div>
+                </div>
                 <div className="overflow-x-auto">
                     <EmailEditor
                         id="inbox-signature"
@@ -2435,8 +2457,8 @@ function SettingsTab({ form, update, mailbox, onDisconnected }: { form: Inbox; u
                         setHtmlText={(v) => update({ signature_html: v })}
                         plainText={form.signature_plain}
                         setPlainText={(v) => update({ signature_plain: v })}
-                        sync={form.signature_sync}
-                        setSync={(v) => update({ signature_sync: v })}
+                        sync={plainFollowsHtml}
+                        setSync={setPlainFollowsHtml}
                         code={form.signature_code}
                         setCode={(v) => update({ signature_code: v })}
                     />

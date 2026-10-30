@@ -78,6 +78,7 @@ import { uniboxSearchQuery } from "./lib/api/hooks/app/unibox/useUniboxSearch";
 import { webhookDropsQuery, webhooksListQuery } from "./lib/api/hooks/app/webhooks/useWebhooks";
 import { trialStatusQuery } from "./lib/api/hooks/app/subscription/useTrialStatus";
 import { appliedDiscountsQuery } from "./lib/api/hooks/app/subscription/useAppliedDiscounts";
+import { planOffersQuery } from "./lib/api/hooks/app/subscription/usePlanOffers";
 
 // Declaring `params` here would become every route's inferred params; the router passes it anyway.
 export interface PageLoaderContext {
@@ -394,6 +395,7 @@ export const billingLoader = pageLoader((qc, { params }) => {
         qc.prefetchQuery(organizationLimitsQuery),
         qc.prefetchQuery(usageOverviewQuery("month")),
         qc.prefetchQuery(appliedDiscountsQuery()),
+        qc.prefetchQuery(planOffersQuery),
         can("MANAGE_API_KEYS") && qc.prefetchQuery(apiKeyUsageSummaryQuery),
     ];
 });

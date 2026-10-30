@@ -188,9 +188,9 @@ func ehloName(user string) string {
 
 // noSupportedAuthDetail names the sign-in methods the server offered when none is one Warmbly speaks.
 func noSupportedAuthDetail(c *smtp.Client) string {
-	detail := "the server offers no sign-in method Warmbly supports (Warmbly signs in with LOGIN, PLAIN or CRAM-MD5)"
+	detail := "the server offers no sign-in method allowed by this instance (use LOGIN or PLAIN over TLS)"
 	if _, offered := c.Extension("AUTH"); offered != "" {
-		detail = "the server offers no sign-in method Warmbly supports: it offers " + probeDetail(errors.New(offered)) + ", and Warmbly signs in with LOGIN, PLAIN or CRAM-MD5"
+		detail = "the server offers no sign-in method allowed by this instance: it offers " + probeDetail(errors.New(offered)) + "; use LOGIN or PLAIN over TLS"
 	}
 	return detail + ". Use the provider's documented SMTP submission host, which usually offers one of them"
 }

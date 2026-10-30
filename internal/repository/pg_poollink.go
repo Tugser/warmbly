@@ -297,13 +297,13 @@ var ErrPoolLinkInstanceRevoked = errors.New("pool link instance revoked")
 // EnrollMailbox share-locks the live instance row, so it commits before a concurrent revoke or is refused after it.
 func (r *poolLinkRepository) EnrollMailbox(ctx context.Context, m *models.PoolLinkMailbox) error {
 	query := `
-		INSERT INTO pool_link_mailboxes (instance_id, remote_id, email_account_id, managed)
-		SELECT i.id, $2, $3, $4 FROM pool_link_instances i
+		INSERT INTO pool_link_mailboxes (instance_id, remote_id, email_account_id, managed, executor)
+		SELECT i.id, $2, $3, $4, $5 FROM pool_link_instances i
 		 WHERE i.id = $1 AND i.revoked_at IS NULL
 		   FOR SHARE
 		RETURNING enrolled_at
 	`
-	err := r.db.QueryRow(ctx, query, m.InstanceID, m.RemoteID, m.EmailAccountID, m.Managed).Scan(&m.EnrolledAt)
+	err := r.db.QueryRow(ctx, query, m.InstanceID, m.RemoteID, m.EmailAccountID, m.Managed, string(m.Executor.OrCloud())).Scan(&m.EnrolledAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrPoolLinkInstanceRevoked
 	}
@@ -324,7 +324,7 @@ func (r *poolLinkRepository) RetainMailbox(ctx context.Context, instanceID, remo
 
 func scanPoolLinkMailbox(row pgx.Row) (*models.PoolLinkMailbox, error) {
 	var m models.PoolLinkMailbox
-	if err := row.Scan(&m.InstanceID, &m.RemoteID, &m.EmailAccountID, &m.EnrolledAt, &m.Managed, &m.LastTokenAt); err != nil {
+	if err := row.Scan(&m.InstanceID, &m.RemoteID, &m.EmailAccountID, &m.EnrolledAt, &m.Managed, &m.LastTokenAt, &m.Executor); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
@@ -334,7 +334,7 @@ func scanPoolLinkMailbox(row pgx.Row) (*models.PoolLinkMailbox, error) {
 }
 
 func (r *poolLinkRepository) GetMailboxByRemote(ctx context.Context, instanceID, remoteID uuid.UUID) (*models.PoolLinkMailbox, error) {
-	query := `SELECT instance_id, remote_id, email_account_id, enrolled_at, managed, last_token_at FROM pool_link_mailboxes WHERE instance_id = $1 AND remote_id = $2`
+	query := `SELECT instance_id, remote_id, email_account_id, enrolled_at, managed, last_token_at, executor FROM pool_link_mailboxes WHERE instance_id = $1 AND remote_id = $2`
 	m, err := scanPoolLinkMailbox(r.db.QueryRow(ctx, query, instanceID, remoteID))
 	if err != nil {
 		db.CaptureError(err, query, nil, "queryrow")
@@ -344,7 +344,7 @@ func (r *poolLinkRepository) GetMailboxByRemote(ctx context.Context, instanceID,
 }
 
 func (r *poolLinkRepository) GetMailboxByAccount(ctx context.Context, accountID uuid.UUID) (*models.PoolLinkMailbox, error) {
-	query := `SELECT instance_id, remote_id, email_account_id, enrolled_at, managed, last_token_at FROM pool_link_mailboxes WHERE email_account_id = $1`
+	query := `SELECT instance_id, remote_id, email_account_id, enrolled_at, managed, last_token_at, executor FROM pool_link_mailboxes WHERE email_account_id = $1`
 	m, err := scanPoolLinkMailbox(r.db.QueryRow(ctx, query, accountID))
 	if err != nil {
 		db.CaptureError(err, query, []any{accountID}, "queryrow")
@@ -354,7 +354,7 @@ func (r *poolLinkRepository) GetMailboxByAccount(ctx context.Context, accountID 
 }
 
 func (r *poolLinkRepository) ListMailboxes(ctx context.Context, instanceID uuid.UUID) ([]models.PoolLinkMailbox, error) {
-	query := `SELECT instance_id, remote_id, email_account_id, enrolled_at, managed, last_token_at FROM pool_link_mailboxes WHERE instance_id = $1 ORDER BY enrolled_at`
+	query := `SELECT instance_id, remote_id, email_account_id, enrolled_at, managed, last_token_at, executor FROM pool_link_mailboxes WHERE instance_id = $1 ORDER BY enrolled_at`
 	rows, err := r.db.Query(ctx, query, instanceID)
 	if err != nil {
 		db.CaptureError(err, query, []any{instanceID}, "query")
@@ -364,7 +364,7 @@ func (r *poolLinkRepository) ListMailboxes(ctx context.Context, instanceID uuid.
 	out := []models.PoolLinkMailbox{}
 	for rows.Next() {
 		var m models.PoolLinkMailbox
-		if err := rows.Scan(&m.InstanceID, &m.RemoteID, &m.EmailAccountID, &m.EnrolledAt, &m.Managed, &m.LastTokenAt); err != nil {
+		if err := rows.Scan(&m.InstanceID, &m.RemoteID, &m.EmailAccountID, &m.EnrolledAt, &m.Managed, &m.LastTokenAt, &m.Executor); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -378,7 +378,8 @@ func (r *poolLinkRepository) ListStanding(ctx context.Context, instanceID uuid.U
 	// Neither is healthy: no hold is in force, and the instance must not keep one.
 	query := `
 		SELECT m.remote_id, COALESCE(s.health_state, 'healthy'), s.pool_type, s.last_health_reason,
-		       COALESCE(s.last_health_score, 0), s.blocked_until, s.last_health_evaluated_at
+		       COALESCE(s.last_health_score, 0), s.blocked_until, s.last_health_evaluated_at,
+		       m.executor, ` + selfExecPausedSQL("m") + `
 		  FROM pool_link_mailboxes m
 		  LEFT JOIN LATERAL (
 		        SELECT st.* FROM (
@@ -416,7 +417,7 @@ func (r *poolLinkRepository) ListStanding(ctx context.Context, instanceID uuid.U
 		var st models.PoolLinkMailboxStanding
 		var h models.WarmupHealthInfo
 		var poolType, reason *string
-		if err := rows.Scan(&st.RemoteID, &h.State, &poolType, &reason, &h.Score, &h.BlockedUntil, &h.EvaluatedAt); err != nil {
+		if err := rows.Scan(&st.RemoteID, &h.State, &poolType, &reason, &h.Score, &h.BlockedUntil, &h.EvaluatedAt, &st.Executor, &st.Paused); err != nil {
 			return nil, err
 		}
 		if poolType != nil {

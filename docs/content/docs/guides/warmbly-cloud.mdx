@@ -3,7 +3,7 @@ title: Warmbly Cloud for self-hosted instances
 description: "Warm the mailboxes on your own Warmbly instance in the hosted warmup pool, while campaigns, contacts and inbox stay on your server."
 ---
 
-Linking a self-hosted instance to Warmbly Cloud lets its mailboxes warm in the hosted pool, instead of only against the few other mailboxes on your server. Campaigns, contacts, the unibox, tracking and every stored message stay on your server. The cloud does hold the credential of each SMTP/IMAP mailbox you enroll, the sign-in of any Google or Microsoft mailbox connected through it, and any redirect you choose to serve from it.
+Linking a self-hosted instance to Warmbly Cloud lets its mailboxes warm in the hosted pool, instead of only against the few other mailboxes on your server. Campaigns, contacts, the unibox, tracking and every stored message stay on your server. By default the cloud holds the credential of each SMTP/IMAP mailbox you enroll, the sign-in of any Google or Microsoft mailbox connected through it, and any redirect you choose to serve from it. A workspace Warmbly has approved can instead [keep each mailbox's credential on your server](#keep-credentials-on-your-server), so the cloud only learns the mailbox's address and its warmup traffic.
 
 ## Link a workspace
 
@@ -167,6 +167,57 @@ Mailboxes connected with **SMTP/IMAP** (including Google Workspace and Microsoft
 The cloud connects to your mail server over the internet, so both SMTP and IMAP need TLS or STARTTLS. A mailbox set to security `none`, which only works for a mail server on your instance's own machine, is refused at enrollment with `pool_link_cleartext_mailbox`.
 
 A Google or Microsoft mailbox that was signed in with your instance's own OAuth app cannot be enrolled, because that grant can only be refreshed by the app that issued it. Remove it and add it again through Warmbly Cloud to warm it there.
+
+</Fold>
+
+<Fold>
+
+## Keep credentials on your server
+
+A mailbox can warm in the hosted pool without its password or sign-in ever leaving your server. Warmbly Cloud plans the mailbox's warmup as it does for any pool member, and your instance carries out every step with its own workers.
+
+### Who can turn it on
+
+It is a separate permission on the linked Warmbly Cloud workspace, granted by Warmbly's operators and not included in any plan. Ask Warmbly support to enable it. Once granted, **Settings > Warmbly Cloud** offers a choice for each mailbox you can enroll: **This server** or **Cloud**. **Keep all on this server** moves every enrolled mailbox that can be moved at once. Enrolling and switching need the same manage mailboxes permission as any enrollment, and the API takes the same choice as `{"executor": "instance"}` or `{"executor": "cloud"}` on `POST /cloud-link/mailboxes/:id/enroll`. An empty body keeps an enrolled mailbox's current choice.
+
+A mailbox already warming with its credential on Cloud can switch: Cloud deletes its stored credential and keeps the mailbox's ID, settings, history and standing. Switching back hands the current credential to Cloud again. A mailbox signed in through Warmbly Cloud, or one associated with an app-password copy on Cloud, has its credential there by design and cannot switch (`cloud_link_self_execution_managed`). Without the permission the choice is refused with `cloud_link_self_execution_not_granted`, and a Cloud too old to offer it refuses with `cloud_link_self_execution_unavailable`.
+
+### What Warmbly Cloud receives
+
+- the mailbox's address, name and provider, as with any enrollment, and no credential of any kind
+- warmup mail that arrives in the mailbox: the sender, subject, Message-ID, warmup token, the folder it landed in and its system flags, under an opaque handle your instance issues. Your instance reports only mail it has already recognised as warmup through the existing token and delivery checks. Nothing else in the mailbox is reported, and no message body leaves your server
+- later changes to a reported warmup message: removed, moved to spam, or read, unread, starred or unstarred by someone at the mailbox. A change caused by an action Cloud asked for is not reported back as the owner's
+- the result of every command: sent with the Message-ID the provider used, failed with an error code, refused with a reason, or expired
+
+### How the warmup runs on your server
+
+The consumer asks Warmbly Cloud for due commands every 30 seconds and keeps each one in your database, sealed with the workspace's own key. A command is run at most once, whatever happens to the network or the consumer.
+
+- **Sends** go through the same send admission as every warmup send on your instance: the mailbox must be active and on a live worker, its daily warmup limit, shared limit and test mode apply, a send to a recipient on the workspace's suppression list is answered refused, and a send waiting on another send or a full window is retried until its deadline. A reservation the worker never began is given back when its command expires, so it never holds the mailbox's campaign or unibox sends. The message goes out exactly as Cloud rendered it, plain text from the mailbox's own address and name
+- **Engagement** (filing out of the inbox, rescuing from spam, marking read, important or starred, and checking where a removed message went) runs on your worker as the same actions local warmup uses, addressed by the handle your instance issued. Without a handle Cloud can only name the mailbox's own sent copy of a warmup message this instance sent for it. Each action carries the command it runs under, and your worker accepts it only for that command, until its deadline or its answer, whichever comes first. An action is reported done only once the worker has accepted it. Local warmup stays stopped for the mailbox either way
+- your instance keeps received warmup mail and the mailbox's own sent copies out of your unibox, as it does for any enrolled mailbox, and leaves the filing to Cloud's commands
+
+A command that reaches its deadline before it runs is answered expired and never run. Results and reports wait in a local outbox and are retried with backoff until Cloud takes them, so a Cloud outage delays reporting without losing it. Warmup mail that arrives while Cloud cannot be reached waits in the pending verification queue and is reported once Cloud answers. **Settings > Warmbly Cloud** shows **credential stays on this server** next to each such mailbox and a count of commands not run in the last day.
+
+### How Warmbly Cloud checks what your server reports
+
+Without the credential Cloud cannot look into the mailbox, so it holds your instance's reports to evidence it can verify:
+
+- **Arrivals are recipient-bound.** Cloud counts an arrival only when it carries a warmup token minted for that exact mailbox as recipient, or, when the provider stripped the header, the same sender address and Message-ID proof Cloud applies to its own mailboxes. The sender must be the partner that sent it, the Message-ID must match the one that partner's send recorded, and the arrival time cannot precede the send or lie in the future. A repeated report counts once
+- **Sends are proven by the receiver.** A send from a mailbox on your server counts as delivered only when the partner that received it records the arrival. A mailbox whose reported sends never arrive anywhere is dropped from the pool by the same reachability rule every pool member is held to
+- **Placement is cross-checked.** A folder cannot be proven without the credential, so Cloud compares the spam rate each mailbox reports against the rate Cloud itself observed for the same senders at mailboxes of the same provider family it runs directly, over 14 days, once there are enough reports and observations on both sides. A mailbox whose reports diverge goes on probation, and one that diverges further is marked untrusted: its placement reports stop counting toward any other sender's placement, Warmbly's operators are told, and its arrivals still count for reachability. It returns to trusted when its reports agree again
+- **Engagement must be answered.** Cloud accepts an answer only for a command it issued to that connection, and builds the result from its own record of the command, never from identifiers in the report. Every command is answered once; a different second answer is refused. A server that stops asking for commands for five minutes is treated as offline: Cloud stops planning mail through its mailboxes until it returns, and commands it never answers expire and resolve as failures
+- **The permission can be withdrawn.** When the permission is revoked or expires, Cloud leases no further commands, refuses new enrollments with the choice, and pauses warmup in both directions for the mailboxes that keep their credential on your server until it is granted again. Their standing on your instance shows the pause
+
+### Versions and rollback
+
+It needs a Warmbly Cloud that advertises the command protocol (`self_execution.protocol` 1) and an instance with migration `000330`. Your instance never calls the command routes on an older Cloud, and existing enrollments are unchanged: every mailbox keeps its credential on Cloud until you choose otherwise. Run the backend, consumer and workers on the same release: the consumer runs the commands, and a worker from an earlier release carries no command with an action, so the backend does not admit it and the action is reported as not run.
+
+Once any mailbox keeps its credential on your server, keep Warmbly Cloud at or above the release that introduced the command protocol. An earlier Cloud release does not know that such a mailbox has no credential and would try to run it on Cloud's own workers. Switch every such mailbox back to Cloud before rolling Cloud below that release.
+
+Rolling the instance back to an earlier release stops the commands, so mailboxes set to keep their credential stop warming until you upgrade again or switch them to Cloud. An earlier release does not know the choice, so changing such a mailbox's SMTP or IMAP settings while on it sends the new credential with its update. Cloud refuses that update (`pool_link_executor_conflict`) and does not store the credential; only an explicit switch to Cloud hands a credential over. The down migration refuses to run while any mailbox keeps its credential on your server; switch them to Cloud or remove them from the pool first.
+
+Your instance keeps the handle of each reported warmup message until Cloud has had it deleted, until the mailbox stops keeping its credential here, or past the longest warmup retention Cloud can set. Commands, unsent results and these handles belong to the connection and are [not included in a workspace export](/guides/workspace-export-import/).
 
 </Fold>
 

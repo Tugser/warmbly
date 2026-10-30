@@ -16,6 +16,7 @@ import (
 )
 
 func (s *JobsService) HandleFlagsAdd(ctx context.Context, e *models.JobEventFlags) error {
+	s.observeCloudFlags(ctx, e, true)
 	// Tampering check first: verified warmup mail is NOT in the unibox, so we
 	// detect it via the warmup_received record. A spam label names no actor on
 	// any provider: on mail that arrived in spam it is the filter's own, and
@@ -140,6 +141,16 @@ func (s *JobsService) HandleFlagsAdd(ctx context.Context, e *models.JobEventFlag
 	return nil
 }
 
+// observeCloudFlags queues a flag change on reported Cloud warmup mail for Cloud.
+func (s *JobsService) observeCloudFlags(ctx context.Context, e *models.JobEventFlags, added bool) {
+	if s.CloudExec == nil || e == nil {
+		return
+	}
+	if err := s.CloudExec.ObserveFlags(ctx, e.EmailID, e.ID, e.Flags, added); err != nil {
+		log.Warn().Err(err).Str("email_id", e.EmailID.String()).Msg("cloud warmup flag change not queued for Cloud")
+	}
+}
+
 func warmupTokenFromFlags(flags []string) string {
 	// Try current header name first, then legacy "X-Warmbly-Token" so messages
 	// sent before the header rename continue to verify until they age out.
@@ -155,6 +166,7 @@ func warmupTokenFromFlags(flags []string) string {
 }
 
 func (s *JobsService) HandleFlagsRemove(ctx context.Context, e *models.JobEventFlags) error {
+	s.observeCloudFlags(ctx, e, false)
 	email, err := s.emailForSyncUpdate(ctx, e.UserID, e.EmailID, e.ID, func(message *models.EmailMessageStoreData) {
 		message.Flags = slices.DeleteFunc(message.Flags, func(flag string) bool { return slices.Contains(e.Flags, flag) })
 		if models.SeenFromFlags(e.Flags) {

@@ -67,12 +67,6 @@ export default function AdvisorStrip({
 
     const groups = useMemo(() => {
         const list = [...(data ?? [])].sort((a, b) => {
-            // Applied cards stay visible until the next evaluation confirms
-            // them, so "Fix" gives immediate, undoable feedback rather than a
-            // card that just disappears. They sort last.
-            if ((a.status === "applied") !== (b.status === "applied")) {
-                return a.status === "applied" ? 1 : -1;
-            }
             const rank = SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity];
             return rank !== 0 ? rank : b.impact - a.impact;
         });
@@ -84,12 +78,11 @@ export default function AdvisorStrip({
         return groupFindings(list).slice(0, limit);
     }, [data, limit, entityId]);
 
-    if (groups.length === 0) return null;
-
     const heading = title ?? "Suggestions";
 
     return (
         <>
+            {groups.length > 0 ? (
             <section className={className} aria-label="Advisor suggestions">
                 {heading ? (
                     <div className="mb-1.5 flex items-center gap-1.5">
@@ -164,6 +157,7 @@ export default function AdvisorStrip({
                 ) : null}
                 </AnimatePresence>
             </section>
+            ) : null}
 
             <AnimatePresence>
                 {fixing ? (

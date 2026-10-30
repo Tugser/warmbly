@@ -2,9 +2,11 @@ package repository
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/infrastructure/db"
 	"github.com/warmbly/warmbly/internal/models"
 )
@@ -92,6 +94,13 @@ func (r *campaignLogRepository) GetLogs(ctx context.Context, campaignID uuid.UUI
 		}
 		logs = append(logs, l)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if err := r.normalizeLoadingRetries(ctx, campaignID, logs); err != nil {
+		return nil, err
+	}
 
 	var nextCursor *string
 	hasMore := len(logs) > limit
@@ -108,6 +117,66 @@ func (r *campaignLogRepository) GetLogs(ctx context.Context, campaignID uuid.UUI
 			HasMore:    hasMore,
 		},
 	}, nil
+}
+
+// normalizeLoadingRetries requires a confirmed marker or same-campaign preparation evidence.
+func (r *campaignLogRepository) normalizeLoadingRetries(ctx context.Context, campaignID uuid.UUID, logs []models.CampaignLog) error {
+	candidates := make(map[int]uuid.UUID)
+	confirmed := make(map[int]bool)
+	var taskIDs []uuid.UUID
+	for i := range logs {
+		l := &logs[i]
+		reason, _ := l.Metadata["error"].(string)
+		if l.EventType != "email_failed" || l.Metadata["will_retry"] != true || !strings.HasPrefix(reason, models.MailboxNotLoadedPrefix) {
+			continue
+		}
+		if l.Metadata["mailbox_loading_retry"] == true && l.Metadata["code"] == models.MailboxLoadingCode {
+			confirmed[i] = true
+			continue
+		}
+		if l.Metadata["code"] != string(errx.MailErrorCodeServerUnreachable) {
+			continue
+		}
+		rawID, _ := l.Metadata["task_id"].(string)
+		if id, err := uuid.Parse(rawID); err == nil && id != uuid.Nil {
+			candidates[i] = id
+			taskIDs = append(taskIDs, id)
+		}
+	}
+	proven := make(map[uuid.UUID]bool)
+	if len(taskIDs) > 0 {
+		rows, err := r.DB.Query(ctx, `SELECT ct.task_id FROM campaign_tasks ct JOIN tasks t ON t.id=ct.task_id
+			WHERE ct.campaign_id=$1 AND ct.task_id=ANY($2) AND t.task_type='campaign'
+			AND t.send_result_state='failed' AND t.send_result_applied_at IS NOT NULL
+			AND t.send_result_evidence->>'protocol'='internal'
+			AND t.send_result_evidence->>'stage'='prepare'
+			AND t.send_result_evidence->>'disposition'='retry'`, campaignID, taskIDs)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			proven[id] = true
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+	}
+	for i, id := range candidates {
+		if proven[id] {
+			confirmed[i] = true
+		}
+	}
+	for i := range confirmed {
+		logs[i].EventType = "email_deferred"
+		logs[i].Metadata["level"] = "info"
+		logs[i].Message = "Sending was delayed while the mailbox reconnected. An automatic retry was scheduled."
+	}
+	return nil
 }
 
 func (r *campaignLogRepository) CreateLogOnce(ctx context.Context, entry *CampaignLogEntry, key, value string, since time.Time) (bool, error) {

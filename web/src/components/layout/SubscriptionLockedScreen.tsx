@@ -18,7 +18,9 @@ export default function SubscriptionLockedScreen({ feature }: { feature: string 
     const isOwner = useAppStore((s) => s.currentOrganization?.role === "owner");
     const upgradeDialog = useUpgradeDialog();
     // The Warmup plan pays for warming only, so it meets the same locks.
-    const warmupOnly = useFeatureAccess().warmupOnly;
+    const access = useFeatureAccess();
+    const warmupOnly = access.warmupOnly;
+    const warmupLabel = getPlan(access.plan).label;
     const starter = getPlan("starter");
     const openPlans = () =>
         upgradeDialog.open({
@@ -46,14 +48,14 @@ export default function SubscriptionLockedScreen({ feature }: { feature: string 
             >
                 <div className="px-7 pt-8 pb-6 md:px-10 md:pt-10 text-center">
                     <span className="inline-flex items-center gap-1.5 h-6 px-2.5 rounded-full bg-sky-50 text-sky-700 text-[11px] font-medium">
-                        <SparklesIcon className="w-3 h-3" /> {warmupOnly ? "Warmup plan" : "Free workspace"}
+                        <SparklesIcon className="w-3 h-3" /> {warmupOnly ? `${warmupLabel} plan` : "Free workspace"}
                     </span>
                     <h1 className="mt-4 text-[26px] md:text-[34px] font-semibold tracking-[-0.03em] leading-[1.08] text-slate-900">
                         {feature} unlocks with a plan.
                     </h1>
                     <p className="mt-3 text-[14px] text-slate-500 leading-relaxed max-w-xl mx-auto">
                         {warmupOnly
-                            ? "Your Warmup plan covers warming your mailboxes. Sending needs a plan that includes it, and every one of those keeps the premium pool."
+                            ? `Your ${warmupLabel} plan covers warming your mailboxes. Sending needs a plan that includes it, and every one of those keeps the premium pool.`
                             : "Your workspace is free forever for warming mailboxes. Pick a plan when you are ready to send from it."}
                     </p>
                 </div>

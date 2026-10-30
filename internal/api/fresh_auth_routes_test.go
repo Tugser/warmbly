@@ -19,6 +19,7 @@ func TestRoutesThatNeedAFreshConfirmation(t *testing.T) {
 		"subscriptions POST /portal":                  false,
 		"subscriptions POST /cancel":                  false,
 		"subscriptions POST /change-plan":             false,
+		"subscriptions POST /offers/:planId/checkout": false,
 		"subscriptions POST /credits/checkout":        false,
 		"subscriptions PATCH /credits/settings":       false,
 		"poolLink POST /checkout":                     false,

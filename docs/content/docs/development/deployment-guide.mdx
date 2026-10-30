@@ -828,6 +828,8 @@ One thing to know if you are running a fork: GHCR creates each package private a
 
 Every app service in `docker-compose.yml` carries both an `image:` and a `build:` key, so the same file serves both paths. `docker compose pull && docker compose up -d` runs the published images and compiles nothing; `docker compose up --build` still builds this checkout. Pin a release with `WARMBLY_TAG=v1.4.2` in `.env`, or point `WARMBLY_IMAGE_PREFIX` at your own registry.
 
+For a staged update, use `warmblyctl fleet rollout start vX.Y.Z`. An admitted node may stop its old process and return on the target within the rollout deadline. Placement keeps the stopped process inactive throughout. A node that reports a host rollback, misses the deadline, or stops after reporting the target halts the rollout. Every admitted node must report the target with continuous uptime for the full bake before the next wave or completion. The persisted rollout format and worker protocol remain compatible with the previous release; deploy the backend first so it applies these restart rules.
+
 To move a fleet onto a new release, set the target once with `warmblyctl fleet version vX.Y.Z`. Nothing is pushed: each node asks what it should be running on its next heartbeat and its own update timer pulls and restarts it. Control-plane migrations are forward-only, so prefer rolling forward over rolling back.
 
 ## Upgrading and backups

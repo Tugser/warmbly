@@ -14,8 +14,8 @@
 package handler
 
 import (
+	"context"
 	"errors"
-	"net/http"
 	"strings"
 	"unicode/utf8"
 
@@ -146,41 +146,22 @@ func (h *Handler) GenerateEdit(c *gin.Context) {
 	}
 
 	voice := h.orgVoice(c.Request.Context(), *orgID, req.Tone)
-	result, gerr := h.AIProvider.Complete(c.Request.Context(), generation.CompletionRequest{
+	completion := generation.CompletionRequest{
 		System:    generation.BuildEditRules(voice),
 		Prompt:    buildEditPrompt(req),
 		Model:     model,
 		MaxTokens: editMaxTokens,
-	})
-	if gerr != nil {
-		if !local {
-			if bal, rerr := h.CreditService.Grant(reqCtx, *orgID, creditsPerEdit, "writing_edit_refund"); rerr == nil {
-				remaining = bal
+	}
+	h.deliverWriting(c, writingCall{
+		orgID: *orgID, reqCtx: reqCtx, local: local, remaining: remaining,
+		cost: creditsPerEdit, ledger: "writing_edit", idemKey: idemKey,
+		model: model, voice: voice, source: req.Text, tidy: stripEditFences,
+		generate: func(ctx context.Context, onDelta func(string)) (*generation.WritingResult, error) {
+			if s, ok := h.AIProvider.(generation.StreamCompleter); ok && onDelta != nil {
+				return s.CompleteStream(ctx, completion, onDelta)
 			}
-		}
-		if errors.Is(gerr, generation.ErrNotConfigured) {
-			errx.JSON(c, errx.New(errx.ServiceUnavailable, "AI writing assistant is not configured."))
-			return
-		}
-		errx.JSON(c, errx.New(errx.ServiceUnavailable, "The writing assistant is temporarily unavailable. Your credit was not charged."))
-		return
-	}
-
-	charged := 0
-	if !local {
-		charged = creditsPerEdit
-		if extra, serr := h.CreditService.SettleUsage(reqCtx, *orgID, creditsPerEdit, result.Model, result.TokensUsed, "writing_edit", settleKey(idemKey)); serr == nil && extra > 0 {
-			remaining -= extra
-			charged += extra
-		}
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"text":              stripEditFences(result.Text),
-		"credits_remaining": remaining,
-		"credits_charged":   charged,
-		"tokens_used":       result.TokensUsed,
-		"model":             result.Model,
+			return h.AIProvider.Complete(ctx, completion)
+		},
 	})
 }
 

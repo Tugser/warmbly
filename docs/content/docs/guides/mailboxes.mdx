@@ -151,7 +151,9 @@ The same holds for a server that answers but refuses what Warmbly asked. The dra
 
 With two-factor authentication on, generate an app password in your provider's security settings and use that.
 
-Warmbly signs in with whichever method your server offers, preferring LOGIN, then PLAIN, and using CRAM-MD5 only when the server offers neither. Every one of them is sent over the established TLS connection, never before it: a server that offers to sign in without encryption is refused with an error that says so and asks for the server's SSL/TLS port (usually 465) or a port that offers STARTTLS (usually 587), except a relay on the worker's own machine with the **None** mode. A server that offers none of the three methods is refused with the methods it does offer, so you can tell whether another host or port is needed. Servers that accept only one of these, which includes Microsoft 365 relays and most appliance relays, work without any setting to change.
+Warmbly signs in using LOGIN or PLAIN over an established TLS connection, preferring LOGIN when both are offered. Hosted production requires one of these password methods or a supported OAuth connection. Self-hosted and development instances also support CRAM-MD5 when the server offers neither LOGIN nor PLAIN. A server with no supported method is refused with the methods it offers, so you can check whether another submission host or port is needed.
+
+Password authentication requires encryption: use the server's SSL/TLS port (usually 465) or a port that offers STARTTLS (usually 587). The **None** mode is available only for a relay on the worker's own machine on a self-hosted instance.
 
 ### Servers with their own certificate
 
@@ -379,9 +381,28 @@ The same tab sets the **display name**, **reply-to** (empty uses the mailbox add
 
 The HTML signature is placed in a block of its own one line below the body, so it arrives without the stack of blank lines above it that Apple Mail and Outlook used to show. Put any extra spacing you want inside the signature itself. On a body laid out in HTML it goes inside the container the email was built in, so it lines up with the copy it signs off rather than sitting under it at the left edge of the window (the same placement as the [opt-out line](/guides/unsubscribe/#where-it-appears)). The plain-text signature follows the body after a single blank line.
 
-The signature editor has four views. **HTML** is the visual surface with bold, italic, underline, links and images. The `</>` button next to it swaps that for the raw markup, which is sent exactly as written, so a table-based signature from another tool can be pasted in whole. **Preview** renders it the way a mail client will, in its own frame. **Plain** holds the plain-text version, generated from the HTML while **Sync** is on.
+The signature editor has four views. **HTML** is the visual surface with bold, italic, underline, links and images. The `</>` button next to it swaps that for the raw markup, which is sent exactly as written, so a table-based signature from another tool can be pasted in whole. **Preview** renders it the way a mail client will, in its own frame. **Plain** holds the plain-text version, generated from the HTML while **Sync** is on; turn Sync off to write it separately.
+
+**Add to every email this mailbox sends**, above the editor, is what decides whether the signature goes out at all. It is on by default and covers campaign steps, replies and new emails alike. Turn it off to keep a signature stored without adding it to mail.
 
 A signature carrying a `<style>` block, a whole HTML document, or an event handler is always edited as markup and the visual toggle is greyed out. The visual surface works by putting the markup into the page, and a signature is workspace data your teammates also see, so that markup is never given a live element to run in. Preview is how you look at it. Any `<style>` block in a signature is inlined onto the elements it matches when the email sends, the same as a campaign body.
+
+### One signature on many mailboxes
+
+To give several mailboxes the same signature, tick their rows on the Accounts page and press **Signature** in the selection bar. You write the signature once, in the same editor, using the [sender fields](/guides/expressions/#sender-fields-emails) a campaign email uses, and each mailbox gets its own values:
+
+| Field | Filled in with |
+|---|---|
+| `{{.Sender.FirstName}}` | The first word of the mailbox's display name |
+| `{{.Sender.LastName}}` | Everything after the first word of the display name |
+| `{{.Sender.Name}}` | The whole display name |
+| `{{.Sender.Email}}` | The From address: the send-as alias when one is set, otherwise the mailbox address |
+
+The values are the ones a campaign email would render for that mailbox, so a mailbox with no display name gets empty name fields. The preview flags those mailboxes, and shows the finished signature for one selected mailbox at a time; switch between them with the picker or the arrows.
+
+The fields are filled in when you press **Apply**, and each mailbox stores its finished signature, not the template. A signature is added to mail as it is stored, so contact fields such as `{{.FirstName}}`, other sender fields and spintax are not filled in inside one; the editor points out any it finds. Changing a mailbox's display name later does not change its signature; apply it again, or edit that mailbox's signature on its own.
+
+**Add signature to sends**, on by default, applies to every selected mailbox. Apply replaces the signature on each selected mailbox, and asks first when any of them already has one. A mailbox that could not be saved is listed with the reason, and **Retry** tries just those again.
 
 ### A shared reply inbox
 
@@ -511,11 +532,11 @@ A mailbox marked as a [placement seed inbox](/guides/placement-tests/#your-own-s
 
 A mailbox can be switched off when you want it to stop without losing its settings, its history, or its place in the fleet. Use **Switch off** on its row's **More** menu, the **Mailbox on** switch on its **Settings** tab, or the selection bar for several at once. Over the API it is `PATCH /emails/{id}` with `status` set to `inactive`, and `active` turns it back on.
 
-Off stops the mailbox on this instance: campaign sending, local warmup and syncing stop, while settings and history remain. Warmbly Cloud warmup has its own lifecycle and can continue while the local mailbox is Off. Manage it in the mailbox's **Warmup** tab or **Settings > Warmbly Cloud**. The list's Status column describes the local mailbox; its Warmup column uses the source that owns warmup. To stop cold sending while keeping local warmup running, use [Hold from campaigns](#holding-a-mailbox-yourself) instead.
+Off stops the mailbox on this instance: campaign sending, local warmup and syncing stop, while settings and history remain. Warmup executed by Warmbly Cloud can continue while the local mailbox is Off. If Cloud plans warmup but this server executes it, turning the local mailbox off stops those commands too. Manage Cloud warmup in the mailbox's **Warmup** tab or **Settings > Warmbly Cloud**. The list's Status column describes the local mailbox; its Warmup column uses the source that owns warmup. To stop cold sending while keeping local warmup running, use [Hold from campaigns](#holding-a-mailbox-yourself) instead.
 
 A switched-off mailbox is turned back on the same ways: **Switch back on** on the row's **More** menu or its warmup menu, the **Switch back on** button at the top of its Overview tab, the **Mailbox on** switch, or **Switch on** in the selection bar. Local warmup that was set to run starts again unless Cloud owns warmup. To bring a mailbox back for warmup only, turn on **Hold from campaigns** on its Overview tab before switching it on, so campaigns cannot pick it in between. A mailbox whose provider access was revoked shows **Reconnect** rather than **Off**, and is turned back on by reconnecting it.
 
-Switching it off takes effect immediately: the machine syncing it is told to drop it, so it stops importing mail and stops being picked for campaign sends and warmup within seconds rather than at that machine's next restart. Warmup pool membership is dropped, and any warmup chain it had winds down on its next step. A campaign email already handed over is answered as a failure and the step is retried later on a mailbox that is still active, so nobody receives it twice and no lead is stranded.
+Switching it off takes effect immediately: the machine syncing it is told to drop it, so it stops importing mail and stops being picked for campaign sends and local warmup within seconds rather than at that machine's next restart. Local warmup pool membership is dropped, and any local warmup chain winds down on its next step. Cloud warmup follows the execution rules above. A campaign email already handed over is answered as a failure and the step is retried later on a mailbox that is still active, so nobody receives it twice and no lead is stranded.
 
 Leads mid-sequence on that mailbox move to another one in their campaign as they reach their next step, rather than going silent waiting for it. Each campaign's activity log records the change. See [senders and rotation](/guides/campaigns/) for how a lead's mailbox is chosen and when it changes.
 
@@ -617,13 +638,15 @@ This is not the same as the risk band that decides which sending worker and IP h
 
 ## Health
 
+Each Cloud mailbox uses its own current health report. A missing report shows **Unavailable** for that mailbox while other mailboxes keep their reported readings. Summary counts remain unavailable until every listed mailbox has a current status.
+
 The Accounts list groups mailboxes as **Healthy** (sending normally), **Warming** (ramping through warmup), or **Needs attention** (paused, failing, or not sending). Each row shows the mailbox with how it connects and its tags, a **Status** that says what it is doing (**Sending**, **Warming**, **Active** when it does both, **Resting**, or **Idle**, and **Error**, **Off** or **Reconnect** when something stops it), campaign emails sent today against its cap, warmup sent today against the ramp target, the inbox rate, and the health score. Hover a status for the reason, and click any column header to sort. A drop in health between refreshes notifies you rather than waiting to be noticed.
 
 Repeated reports of the same error code count once toward the health score, at their highest unresolved severity, rather than making one problem look like several. The drawer groups identical reports while keeping different error details and sending versus sync failures separate. Connection titles name Gmail, Microsoft Outlook or the mail server. **Reported** shows the stored report time: connection and temporary provider-limit observations refresh it, while other error categories may retain their original report time. It is not proof of an ongoing outage.
 
 A later completed sync automatically clears earlier temporary sync errors. A provider-confirmed send clears earlier temporary sending errors, including provider throttling and quota warnings. Recovered reports no longer appear under **Needs attention** or reduce the health score. Older reports that do not identify which operation failed clear once both sending and sync have succeeded after the report; existing reports with that evidence are cleared on upgrade too. A newer failure remains visible, and simply waiting or completing a queued task does not count as recovery. Recoverable connection failures retry automatically while the mailbox is on; a connection warning alone is not a reason to reconnect. Authentication, credential and policy errors retain their own instructions, and a switched-off mailbox must be switched back on before it can retry.
 
-A send safety hold is different from a retryable connection failure. If Warmbly cannot confirm whether the provider accepted a message, sending pauses to avoid retrying a message that might already have been sent. The mailbox is shown as needing attention even without a separate connection warning, and its health details explain the hold. A successful inbox sync does not confirm a send. Campaign and other non-warmup sends still require provider-confirmed resolution. See [send safety](/development/send-safety/).
+A send safety hold is different from a retryable connection failure. If Warmbly cannot confirm whether the provider accepted a message, sending pauses to avoid retrying a message that might already have been sent. The mailbox is shown as needing attention even without a separate connection warning, and its health details explain the hold. A successful inbox sync does not confirm a send. On instances with automatic campaign recovery enabled, for an authorized campaign send Warmbly isolates the uncertain email after ten minutes. The mailbox resumes sending to other contacts, and the affected contact waits for confirmation. A late confirmed result updates that contact automatically. No customer action is needed. Legacy sends without durable execution authorization and other non-warmup sends require provider-confirmed resolution. See [send safety](/development/send-safety/).
 
 Warmup scheduling automatically retires abandoned preparation tasks after ten minutes only when they have no generated message ID, verification token, reservation, dispatch or execution evidence. The normal scheduler can then continue with a new task. Tasks that might have sent a message remain protected; they are not retried just because they are old.
 

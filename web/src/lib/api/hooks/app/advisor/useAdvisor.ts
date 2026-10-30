@@ -44,12 +44,14 @@ export function useAdvisorSummary(enabled = true) {
     });
 }
 
-export const advisorFindingsQuery = (query: AdvisorFindingsQuery = {}) =>
-    queryOptions<AdvisorFinding[]>({
-        queryKey: [...ADVISOR_KEY, "findings", query],
-        queryFn: () => getAdvisorFindings(query),
+export const advisorFindingsQuery = (query: AdvisorFindingsQuery = {}) => {
+    const filter: AdvisorFindingsQuery = { ...query, status: query.status ?? ["open"] };
+    return queryOptions<AdvisorFinding[]>({
+        queryKey: [...ADVISOR_KEY, "findings", filter],
+        queryFn: () => getAdvisorFindings(filter),
         staleTime: 60_000,
     });
+};
 
 export function useAdvisorFindings(query: AdvisorFindingsQuery = {}, enabled = true) {
     const restricted = useAccessRestricted();

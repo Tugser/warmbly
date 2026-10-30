@@ -550,6 +550,7 @@ jobs:
     with:
       tag: ${{ github.ref_name }}
       mode: deploy
+      fleet: true
     secrets: inherit
 
   pages-targets:

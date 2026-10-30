@@ -181,6 +181,25 @@ describe("Cloud warmup values", () => {
         expect(orderedEmails()).toHaveLength(3);
     });
 
+    it("isolates a missing Cloud health report to its mailbox while keeping summary counts unavailable", async () => {
+        statusState.data = rows.map(measuredStatus);
+        statusState.cloudConnected = true;
+        statusState.cloudRows = [
+            { id: rows[0].id, enrolled: true, cloud: { sent_today: 3, settings: { base: 10 }, warmup: { enabled: true, target_volume: 10 } } },
+            { id: rows[1].id, enrolled: true, cloud: { sent_today: 7, settings: { base: 10 }, health: { state: "healthy" }, warmup: { enabled: true, target_volume: 10 } } },
+        ] as CloudLinkMailboxRow[];
+        await renderPage();
+
+        const rowFor = (email: string) => screen.getAllByRole("row").find((row) => row.textContent?.includes(email))!;
+        expect(within(rowFor(rows[0].email)).getAllByText("Unavailable").length).toBeGreaterThan(0);
+        expect(within(rowFor(rows[0].email)).queryByText("Healthy 100")).not.toBeInTheDocument();
+        expect(within(rowFor(rows[1].email)).getByText("Healthy 100")).toBeInTheDocument();
+        expect(within(rowFor(rows[1].email)).getAllByTitle(/7 of 10 warmup emails sent today/).length).toBeGreaterThan(0);
+        expect(within(rowFor(rows[2].email)).getByText("Healthy 100")).toBeInTheDocument();
+        const healthy = screen.getAllByText("Healthy", { selector: "span" })[0].parentElement?.parentElement;
+        expect(healthy).toHaveTextContent("Unavailable");
+    });
+
     it.each([false, true])("uses Resume for a Cloud warmup that is off, and disables lifecycle actions without a report (%s)", async (missing) => {
         statusState.data = rows.map(measuredStatus);
         statusState.cloudConnected = true;
@@ -189,6 +208,24 @@ describe("Cloud warmup values", () => {
         fireEvent.click(within(screen.getAllByRole("row")[1]).getByRole("button", { name: "Warmup actions" }));
         if (missing) expect(screen.getByRole("menuitem", { name: "Cloud warmup status unavailable" })).toBeDisabled();
         else expect(screen.getByRole("menuitem", { name: "Resume in Warmbly Cloud" })).toBeEnabled();
+    });
+
+    it.each([false, true])("keeps the Cloud action available for a locally disabled instance executor (paused: %s)", async (paused) => {
+        const originalStatus = rows[0].status;
+        rows[0].status = "inactive";
+        try {
+            statusState.data = rows.map(measuredStatus);
+            statusState.cloudConnected = true;
+            statusState.cloudRows = [{ id: rows[0].id, enrolled: true, executor: "instance", cloud: {
+                sent_today: 5, health: { state: "healthy" }, settings: { base: 10 }, warmup: { enabled: true, paused },
+            } } as CloudLinkMailboxRow];
+            await renderPage();
+            const row = screen.getAllByRole("row").find((element) => element.textContent?.includes(rows[0].email))!;
+            fireEvent.click(within(row).getByRole("button", { name: "Warmup actions" }));
+            expect(screen.getByRole("menuitem", { name: paused ? "Resume in Warmbly Cloud" : "Pause in Warmbly Cloud" })).toBeEnabled();
+        } finally {
+            rows[0].status = originalStatus;
+        }
     });
 
     it("refreshes Cloud reports after a partially successful bulk pause without a socket", async () => {

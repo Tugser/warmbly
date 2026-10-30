@@ -70,6 +70,14 @@ describe("existing Cloud connections", () => {
         await waitFor(() => expect(fixture.enroll).toHaveBeenCalledWith("mailbox"));
     });
 
+    it("enrolls with the server executor when the Cloud grant offers it", async () => {
+        fixture.status.info = { self_execution: { protocol: 1, granted: true } } as CloudLinkStatus["info"];
+        draw();
+        expect(screen.getByRole("group", { name: "Where the credential lives" })).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("switch"));
+        await waitFor(() => expect(fixture.enroll).toHaveBeenCalledWith({ id: "mailbox", executor: "instance" }));
+    });
+
     it("still prevents enrollment of an unsupported local OAuth mailbox", () => {
         fixture.rows[0].provider = "gmail";
         draw();

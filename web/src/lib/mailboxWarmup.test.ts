@@ -13,6 +13,12 @@ describe("warmup source and lifecycle", () => {
         const local = { ...mailbox, warmup, warmup_paused_at: new Date(), test_mode: "off" as const, status: "inactive" };
         expect(resolve({ cloud: report }, local)).toMatchObject({ source: "cloud", activity: "active", sentToday: 5, info: { current_volume: 5, target_volume: 12 } });
     });
+    it("does not count a switched-off instance executor as warming even if Cloud reports an active lifecycle", () => {
+        const local = { ...mailbox, status: "inactive" };
+        expect(resolve({ executor: "instance", cloud: report }, local)).toMatchObject({ source: "cloud", activity: "inactive", cloudActivity: "active", sentToday: 5 });
+        expect(resolve({ executor: "instance", cloud: { ...report, warmup: { ...report.warmup!, paused: true } } }, local)).toMatchObject({ activity: "inactive", cloudActivity: "paused" });
+        expect(resolve({ executor: "cloud", cloud: report }, local).activity).toBe("active");
+    });
     it.each([
         ["paused", { ...report, warmup: { ...report.warmup!, paused: true } }],
         ["off", { ...report, warmup: null }],

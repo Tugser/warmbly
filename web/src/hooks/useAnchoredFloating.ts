@@ -26,10 +26,12 @@ export interface AnchoredFloatingOptions {
     /** Match the reference element's width (for full-width menus). */
     sameWidth?: boolean;
     padding?: number;
+    /** Re-place every frame, for an anchor that moves as content grows. */
+    follow?: boolean;
 }
 
 export function useAnchoredFloating(open: boolean, opts: AnchoredFloatingOptions = {}) {
-    const { placement = "bottom-start", gap = 6, maxHeight = false, sameWidth = false, padding = 8 } = opts;
+    const { placement = "bottom-start", gap = 6, maxHeight = false, sameWidth = false, padding = 8, follow = false } = opts;
     const [reference, setReference] = React.useState<ReferenceElement | null>(null);
     const [floating, setFloating] = React.useState<HTMLElement | null>(null);
     // Hidden until the first position is computed, so it never flashes at 0,0.
@@ -72,9 +74,9 @@ export function useAnchoredFloating(open: boolean, opts: AnchoredFloatingOptions
                 });
             });
         };
-        const cleanup = autoUpdate(reference, floating, update);
+        const cleanup = autoUpdate(reference, floating, update, { animationFrame: follow });
         return cleanup;
-    }, [open, reference, floating, placement, gap, maxHeight, sameWidth, padding]);
+    }, [open, reference, floating, placement, gap, maxHeight, sameWidth, padding, follow]);
 
     return { setReference, setFloating, floatingStyle: style };
 }

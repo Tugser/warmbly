@@ -11,6 +11,8 @@ import (
 // TemplateSender is an explicit allowlist: never embed the mailbox model or its methods.
 type TemplateSender struct {
 	Name           string
+	FirstName      string
+	LastName       string
 	Email          string
 	MailboxEmail   string
 	SendAsEmail    string
@@ -68,8 +70,11 @@ func templateContext(account *models.Email, unsubscribeURL string) TemplateConte
 	if account == nil {
 		return context
 	}
+	first, last := splitSenderName(account.Name)
 	context.Sender = TemplateSender{
 		Name:                     strings.TrimSpace(account.Name),
+		FirstName:                first,
+		LastName:                 last,
 		Email:                    account.SendFrom(),
 		MailboxEmail:             account.Email,
 		SendAsEmail:              strings.TrimSpace(account.SendAsEmail),
@@ -121,6 +126,15 @@ func templateContext(account *models.Email, unsubscribeURL string) TemplateConte
 		UpdatedAt:                templateTime(&account.UpdatedAt),
 	}
 	return context
+}
+
+// splitSenderName returns the first word of name and the remaining words joined by single spaces.
+func splitSenderName(name string) (first, last string) {
+	words := strings.Fields(name)
+	if len(words) == 0 {
+		return "", ""
+	}
+	return words[0], strings.Join(words[1:], " ")
 }
 
 func templateTime(value *time.Time) string {

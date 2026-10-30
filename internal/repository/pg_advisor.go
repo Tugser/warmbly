@@ -281,7 +281,7 @@ type AdvisorFindingFilter struct {
 	Category   models.AdvisorCategory
 	EntityType string
 	EntityID   *uuid.UUID
-	// Statuses defaults to open + snoozed when empty.
+	// Statuses defaults to open + applied when empty.
 	Statuses []models.AdvisorStatus
 	Limit    int
 }

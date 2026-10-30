@@ -58,6 +58,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/passkey"
 	"github.com/warmbly/warmbly/internal/app/pipedrive"
 	"github.com/warmbly/warmbly/internal/app/placement"
+	"github.com/warmbly/warmbly/internal/app/planoffer"
 	"github.com/warmbly/warmbly/internal/app/poollink"
 	"github.com/warmbly/warmbly/internal/app/ratelimit"
 	"github.com/warmbly/warmbly/internal/app/referral"
@@ -167,6 +168,8 @@ type Handler struct {
 	StripeService       stripe.StripeService
 	DiscountService     discount.DiscountService
 	ReferralService     referral.Service
+	// PlanOfferService holds private plan offers and credential-free Cloud warmup grants. Nil-safe.
+	PlanOfferService planoffer.Service
 
 	// Trial & feature gates
 	TrialService            trial.TrialService

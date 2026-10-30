@@ -190,6 +190,7 @@ func (s *fakeServer) decode(b64 string) {
 // the client sent AUTH PLAIN blind, the server refused, and the refusal was
 // reported to the mailbox's owner as a wrong password.
 func TestNegotiateAuthPrefersWhatTheServerAdvertises(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "self_hosted")
 	for _, tc := range []struct {
 		advertised string
 		wantCmd    string

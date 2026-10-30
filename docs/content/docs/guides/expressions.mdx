@@ -90,13 +90,15 @@ You can reach me at {{.Sender.Email}}.
 
 Values come from the **mailbox actually sending that message**, including campaign sender rotation and A/B variants. Campaign test emails, placement tests and server previews use their selected mailbox. The campaign preview's **From** line uses the same identity. A local sample preview uses example data, not a live mailbox.
 
+`{{.Sender.FirstName}}` is the first word of the mailbox display name and `{{.Sender.LastName}}` is every word after it, so `Jamie van der Berg` gives `Jamie` and `van der Berg`. Both are empty when the mailbox has no display name.
+
 `{{.Sender.Email}}` is the recipient-visible From address, including a configured send-as alias. `{{.Sender.MailboxEmail}}` is the underlying connected mailbox address. `{{.Sender.ReplyTo}}` is the explicit Reply-To header; it is empty when replies simply go to the sender.
 
 Every field is case-sensitive. Prefix each name below with `.Sender.`, for example `{{.Sender.Provider}}`:
 
 | Details | Fields |
 | --- | --- |
-| Identity | `Name`, `Email`, `MailboxEmail`, `SendAsEmail`, `ReplyTo`, `AvatarURL` |
+| Identity | `Name`, `FirstName`, `LastName`, `Email`, `MailboxEmail`, `SendAsEmail`, `ReplyTo`, `AvatarURL` |
 | Signature | `SignaturePlain`, `SignatureHTML`, `SignatureSync`, `SignatureCode` |
 | Connection | `Provider`, `Status`, `MailHost`, `AuthMethod`, `Vendor` |
 | Sending settings | `Timezone`, `CampaignLimit`, `MinWaitTime`, `SaveToSent`, `RelayFolderMoves`, `Tags` |

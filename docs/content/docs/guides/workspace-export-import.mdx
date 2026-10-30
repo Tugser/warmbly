@@ -96,6 +96,8 @@ Inbox, send history, delivery events, and logs are the ones that grow without li
 
 The pending warmup-filing queue stays on its source instance. The destination resyncs mail and files recognized warmup messages using its own workers and the mailbox's placement setting.
 
+Campaign contacts waiting for an uncertain send retain that protection with **Campaigns**, even when you omit **Send history**. Imported uncertain commands cannot execute again. Without their send history, those contacts stay protected because the destination cannot confirm the original outcome. Manual resume does not remove this protection.
+
 Warmup statistics travel as history. Source-only per-task charge and refund markers reset on import so settling an old task cannot refund another send's destination statistics. Existing destination charge dates and older completed-day counters are protected on overwrite; preserving older counts does not create charge or refund proof. Whole-instance database backups retain these markers.
 
 Mailbox transport-error reports travel as history, retaining every report ID, observation timestamp, task reference and recorded resolution. Their operation and observation provenance reset to unknown, including overwrite imports and older archives without those fields. Imported and legacy historical reports do not share the uniqueness rule for new, locally observed reports and are not automatically cleared by a successful sync or send. Unknown history means recovery is unverified, not that a provider is still failing.
@@ -174,7 +176,7 @@ Anyone in the archive without an account on the destination has their rows reass
 
 ### What deliberately does not import
 
-Cloud connections and mailbox enrollments never travel, including workspace-scoped connections and retained legacy links. Connect the destination workspace separately to its own Cloud workspace. Cloud-served redirects arrive served locally with their source connection association cleared.
+Cloud connections and mailbox enrollments never travel, including workspace-scoped connections and retained legacy links. That covers whether a mailbox keeps its credential on this server, the warmup commands Cloud leased to this instance and the results still owed to it. Connect the destination workspace separately to its own Cloud workspace. Cloud-served redirects arrive served locally with their source connection association cleared.
 
 For a Google Workspace mailbox adopted from Cloud, the domain grant and Cloud warmup history remain on Cloud. Local campaigns, imported messages and local history travel with their selected archive groups. The local mirror has no mailbox credential to export, including when adoption replaced an app-password connection. An archive carries neither Cloud access tokens nor authority to use its domain grant.
 
@@ -186,6 +188,7 @@ Some things belong to an instance rather than to a workspace, so they are not ap
 |--------------|-----|
 | Billing history | Subscription, credits, and referral balances belong to the platform that was paid. The destination issues its own |
 | Plan limit overrides | A capacity grant is a decision by one platform's operators, not a property the workspace carries |
+| Plan offers and credential-free Cloud warmup permission | Both are granted by one platform's operators. The destination's operators decide their own, and the archive does not carry them at all |
 | Worker assignment | The destination places mailboxes on its own workers |
 | Mailbox sync checkpoints | Replaying a checkpoint would make the destination skip everything that arrived between export and import, so it re-syncs from scratch |
 | Reply processing checkpoints | Claims that prevent a synchronized inbox message from being handled twice belong to the source process. They reset so the destination can safely classify its imported inbox state |
@@ -193,6 +196,7 @@ Some things belong to an instance rather than to a workspace, so they are not ap
 | Raw warmup receipt provenance | `warmup_received` observations, first-folder/auth header provenance and provider thread handles are source-instance evidence and are explicitly excluded. Aggregated warmup placement history travels, but raw receipt provenance does not |
 | Warmup dispatch and continuation authority | Parent task/receipt/message handles, lineage authority, queue revisions, worker IDs, dispatch nonces and native result state reset. Imported historical diagnostic metadata and tokens do not authorize automatic continuation on the destination |
 | Provider-attempt history | Immutable attempted timestamps and recipient counts travel in the sending group, retaining restrictive daily/rolling evidence after a capacity refund. Historical attempt nonces never authorize a new executor command |
+| Warmup content reservations | Shared conversation plans and their per-mailbox reuse reservations belong to the source instance and do not travel. Imported mailboxes use the destination’s approved pool |
 | Warmup pool membership | Pools are shared across every workspace on an instance, so membership is re-earned rather than asserted by a file |
 | Domain authentication timings | The verdict travels (public DNS reads the same anywhere), but the destination re-checks before it can stop any sending, so a mailbox is never blocked on an observation the new instance never made |
 | Risk and review status | A workspace's abuse posture is one platform's verdict about a tenant on its own infrastructure, reached from evidence the destination never saw. An archive can neither carry a restriction nor clear one |
@@ -248,7 +252,7 @@ Pending mailbox arrivals and their delivery queue are instance-local. Provider m
 
 The Test workspace classification is instance-local. Importing an archive does not classify the destination as Test or grant a managed Test plan or testing credits.
 
-A few things belong to the instance rather than the workspace and are left out on purpose: the instance's link to Warmbly Cloud and which mailboxes it enrolled in the hosted pool ([Warmbly Cloud](/guides/warmbly-cloud/)), linked self-hosted instances on a cloud workspace, Google Workspace and Microsoft 365 admin grants, live sessions, in-flight OAuth handshakes and the organization's wrapped data key. Reconnect to Warmbly Cloud and make each admin grant again after the move.
+A few things belong to the instance rather than the workspace and are left out on purpose: the instance's link to Warmbly Cloud and which mailboxes it enrolled in the hosted pool ([Warmbly Cloud](/guides/warmbly-cloud/)), linked self-hosted instances on a cloud workspace (with the warmup commands queued for them, the warmup mail they reported and how far their placement reports were trusted), Google Workspace and Microsoft 365 admin grants, live sessions, in-flight OAuth handshakes and the organization's wrapped data key. Reconnect to Warmbly Cloud and make each admin grant again after the move.
 
 [Mailbox imports](/guides/mailbox-import/) do not travel either, finished or running: an import is work the source instance is doing, and its rows hold credentials in flight. The mailboxes an import connected are ordinary mailboxes and move with the Workspace group, and the saved column mappings come too, so the same file maps itself on the destination. Let a running import finish before exporting: rows it has not connected yet are not in the archive.
 

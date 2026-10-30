@@ -203,12 +203,26 @@ func (r *warmupRepository) partnerTodays(ctx context.Context, ids []uuid.UUID, e
 }
 
 // partnerInboundCap is how much one inbox may receive from the pool in a day,
-// scaled to the share the sender's tier may fill. send_admission.go holds the
+// scaled to the share the sender's tier may fill. warmupInboxRoomSQL holds the
 // same rule in SQL.
 func partnerInboundCap(sentWeek, sharePercent int) int {
 	daily := ((sentWeek + 6) / 7) * config.WarmupInboundDailyMultiple
 	daily = min(max(daily, config.WarmupInboundDailyFloor), config.WarmupInboundDailyCeiling)
 	return daily * sharePercent / 100
+}
+
+// warmupInboxRoomSQL is true while recipient $1 can take $3 more warmup messages today at sender share $2, on the recipient's local day.
+var warmupInboxRoomSQL = `SELECT GREATEST(
+	 (SELECT COUNT(*) FROM warmup_received wr WHERE wr.email_account_id=ea.id AND wr.created_at >= date_trunc('day',NOW() AT TIME ZONE COALESCE(NULLIF(ea.timezone,''),NULLIF(o.timezone,''),'UTC')) AT TIME ZONE COALESCE(NULLIF(ea.timezone,''),NULLIF(o.timezone,''),'UTC')),
+	 (SELECT COUNT(*) FROM warmup_tokens wt WHERE wt.recipient_account_id=ea.id AND wt.created_at >= date_trunc('day',NOW() AT TIME ZONE COALESCE(NULLIF(ea.timezone,''),NULLIF(o.timezone,''),'UTC')) AT TIME ZONE COALESCE(NULLIF(ea.timezone,''),NULLIF(o.timezone,''),'UTC')))
+	 + $3::int <= LEAST(GREATEST((((SELECT COUNT(*) FROM warmup_tokens wt WHERE wt.sender_account_id=ea.id AND wt.sent_message_id<>'' AND wt.created_at>=NOW()-INTERVAL '7 days')+6)/7)*` + inboundDailyMultipleSQL + `,` + inboundDailyFloorSQL + `),` + inboundDailyCeilingSQL + `)*$2/100
+	 FROM email_accounts ea JOIN organizations o ON o.id=ea.organization_id WHERE ea.id=$1`
+
+// WarmupInboxHasRoom reports whether recipient can take one more warmup message today from a poolType sender, by the rule the send reservation enforces.
+func (r *warmupRepository) WarmupInboxHasRoom(ctx context.Context, recipient uuid.UUID, poolType string) (bool, error) {
+	var room bool
+	err := resultDB(ctx, r.db).QueryRow(ctx, warmupInboxRoomSQL, recipient, inboundSharePercent(poolType), 1).Scan(&room)
+	return room, err
 }
 
 // inboundSharePercent: a paying sender may fill all of an inbox's daily cap; a

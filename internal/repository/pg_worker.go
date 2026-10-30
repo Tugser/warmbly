@@ -25,6 +25,9 @@ const WorkerLivenessWindow = "10 minutes"
 
 var ErrWorkerAssignmentChanged = errors.New("email account worker assignment changed")
 
+// ErrMailboxInstanceExecuted refuses a worker for a mailbox a linked instance executes.
+var ErrMailboxInstanceExecuted = errors.New("email account is executed by a linked instance")
+
 // EmailAccountWorkerInfo contains worker info for an email account
 type EmailAccountWorkerInfo struct {
 	EmailAccountID uuid.UUID
@@ -439,8 +442,12 @@ func (r *workerRepository) MoveEmailAccountWorker(
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var current *uuid.UUID
-	if err := tx.QueryRow(ctx, `SELECT worker_id FROM email_accounts WHERE id = $1 FOR UPDATE`, emailAccountID).Scan(&current); err != nil {
+	var executed bool
+	if err := tx.QueryRow(ctx, `SELECT worker_id, `+instanceExecutedSQL("email_accounts.id")+` FROM email_accounts WHERE id = $1 FOR UPDATE`, emailAccountID).Scan(&current, &executed); err != nil {
 		return err
+	}
+	if executed {
+		return fmt.Errorf("%w: %s", ErrMailboxInstanceExecuted, emailAccountID)
 	}
 	if (current == nil) != (from == nil) || (current != nil && from != nil && *current != *from) {
 		return fmt.Errorf("%w for mailbox %s", ErrWorkerAssignmentChanged, emailAccountID)
@@ -494,13 +501,17 @@ func (r *workerRepository) MoveEmailAccountWorker(
 		 WHERE id = $1`, to, weight); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `
+	cmd, err := tx.Exec(ctx, `
 		UPDATE email_accounts
 		   SET worker_id = $1,
 		       worker_assigned_at = NOW(),
 		       updated_at = NOW()
-		 WHERE id = $2`, to, emailAccountID); err != nil {
+		 WHERE id = $2 AND NOT `+instanceExecutedSQL("email_accounts.id"), to, emailAccountID)
+	if err != nil {
 		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return fmt.Errorf("%w: %s", ErrMailboxInstanceExecuted, emailAccountID)
 	}
 
 	return tx.Commit(ctx)

@@ -188,6 +188,16 @@ func (s *emailService) LoadAccountOntoWorker(ctx context.Context, accountID uuid
 	if acc.Status != "active" {
 		return nil
 	}
+	// A mailbox a linked instance executes has no credential here and never goes to a worker.
+	if probe, ok := s.emailRepository.(interface {
+		InstanceExecuted(context.Context, uuid.UUID) (bool, error)
+	}); ok {
+		if executed, err := probe.InstanceExecuted(ctx, acc.ID); err != nil {
+			return err
+		} else if executed {
+			return nil
+		}
+	}
 	// A delegated mailbox without its grant (it arrived in an archive, or the grant
 	// went) has nothing to sign in with; it waits inactive until the domain is
 	// connected again, which relinks and reactivates it.

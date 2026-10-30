@@ -66,8 +66,8 @@ var (
 		"A bulk marketing email",
 	}
 	personalizationLevels = []string{
-		"Written for this specific reader",
-		"Could be sent to anyone",
+		"Relevant to this reader or their role",
+		"An indiscriminate promotion",
 	}
 )
 
@@ -80,11 +80,10 @@ var askOptions = map[string]string{
 // Questions is the entire question set, built once for one call.
 func Questions() map[string]typesafe.Question {
 	return map[string]typesafe.Question{
-		qReadsAs:         typesafe.Score("How does this email read to the person receiving it?", readsAsLevels),
-		qPersonalization: typesafe.Score("Is this email written for one specific reader, or could it be sent to anyone?", personalizationLevels),
+		qReadsAs:         typesafe.Score("How does this email read to the person receiving it? Judge the wording, not the fact that it is cold outreach. A relevant business offer or a short reusable template is not by itself bulk marketing. Treat merge variables as filled in for the recipient.", readsAsLevels),
+		qPersonalization: typesafe.Score("Is this email relevant to a specific reader or role, or is it an indiscriminate promotion? Role or company relevance counts; a name alone does not. Treat merge variables as filled in for the recipient.", personalizationLevels),
 		qAsk:             typesafe.Choice("What does this email ask the reader to do?", askOptions),
-		qSpamClaim: typesafe.Noul("The message makes a claim a spam filter would object to: " +
-			"guaranteed results, free money, prizes, or pressure to act now."),
+		qSpamClaim:       typesafe.Noul("The message explicitly promises guaranteed results, free money or a prize, or pressures the recipient with urgency. An ordinary business offer, a reported past result, or a polite request for a reply does not qualify. Do not infer spam placement."),
 	}
 }
 
@@ -102,10 +101,9 @@ type Verdict struct {
 	InputTokens int     `json:"input_tokens"`
 }
 
-// ReadsAsBulk is the Advisor's bulk-mail test: confidently past the bulk
-// threshold, or carrying a claim a filter would object to whatever the tone.
+// Tone and lack of relevance must agree; an explicit promotional claim is independent.
 func (v Verdict) ReadsAsBulk() bool {
-	return (v.ReadsAs >= BulkAt && v.Confidence >= ConfFloor) || v.SpamClaim >= SpamClaimAt
+	return (v.ReadsAs >= BulkAt && v.Personalization >= BulkAt && v.Confidence >= ConfFloor) || v.SpamClaim >= SpamClaimAt
 }
 
 // LacksClearAsk reports copy that asks for nothing or for several things, when
@@ -181,7 +179,7 @@ func Text(body string) string {
 
 // cacheVersion is bumped whenever a question, rubric or threshold changes, so
 // unchanged copy is not served a verdict from the previous policy.
-const cacheVersion = "copyjudge-v1"
+const cacheVersion = "copyjudge-v2"
 
 // ContentHash identifies one piece of copy for caching. Trimmed, not
 // normalized further: a rewrite is a new judgment, a stray trailing newline is

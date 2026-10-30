@@ -224,7 +224,7 @@ func (h *Handler) AgentMessage(c *gin.Context) {
 		req.MessageID = uuid.NewString()
 	}
 
-	emit := sseEmitter(c)
+	emit := sseEmitter[aiagent.StreamEvent](c)
 	if serr := h.AIAgentService.RunMessage(c.Request.Context(), inv, sessionID, req.MessageID, req.Text, req.Page, req.Resource, emit); serr != nil {
 		emit(aiagent.StreamEvent{Type: "error", Code: string(codeIdentifier(serr)), Message: serr.Message})
 	}
@@ -265,7 +265,7 @@ func (h *Handler) AgentApprove(c *gin.Context) {
 		return
 	}
 
-	emit := sseEmitter(c)
+	emit := sseEmitter[aiagent.StreamEvent](c)
 	if serr := h.AIAgentService.Resume(c.Request.Context(), inv, sessionID, req.ToolCallID, req.Decision, emit); serr != nil {
 		emit(aiagent.StreamEvent{Type: "error", Code: string(codeIdentifier(serr)), Message: serr.Message})
 	}
@@ -310,7 +310,7 @@ func (h *Handler) RevokeAIToolPolicy(c *gin.Context) {
 
 // sseEmitter prepares the response for Server-Sent Events and returns a
 // flush-per-event emitter. Safe to call once per request.
-func sseEmitter(c *gin.Context) func(aiagent.StreamEvent) {
+func sseEmitter[T any](c *gin.Context) func(T) {
 	h := c.Writer.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache, no-store")
@@ -321,7 +321,7 @@ func sseEmitter(c *gin.Context) func(aiagent.StreamEvent) {
 	if flusher != nil {
 		flusher.Flush()
 	}
-	return func(ev aiagent.StreamEvent) {
+	return func(ev T) {
 		b, err := json.Marshal(ev)
 		if err != nil {
 			return

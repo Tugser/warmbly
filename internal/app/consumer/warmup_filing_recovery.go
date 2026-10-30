@@ -38,7 +38,8 @@ func (s *JobsService) retryWarmupFilings(ctx context.Context) error {
 			}
 			continue
 		}
-		if account == nil || account.WorkerID == nil {
+		workerID, routable := s.warmupActionWorker(ctx, account)
+		if !routable {
 			continue
 		}
 		action.Placement, action.TargetFolder = account.WarmupFiling()
@@ -51,7 +52,7 @@ func (s *JobsService) retryWarmupFilings(ctx context.Context) error {
 			failures = append(failures, s.WarmupRecoveryRepo.CompleteFiling(ctx, action.EmailID, id))
 			continue
 		}
-		if err := s.Publisher.PublishWarmupAction(ctx, *account.WorkerID, &action); err != nil {
+		if err := s.Publisher.PublishWarmupAction(ctx, workerID, &action); err != nil {
 			failures = append(failures, err)
 		}
 	}

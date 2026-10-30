@@ -38,6 +38,7 @@ With no subscription yet, finish in Stripe Checkout. An existing subscription sw
 - Only the workspace owner can change the plan.
 - Cancelling keeps the plan active until the end of the paid period, and the workspace keeps its mailboxes, warmup and settings.
 - A workspace that only warms can take the Warmup plan: $15 a month, or $144 a year.
+- Some plans, like the Partnership plan, are private and can be bought only once Warmbly has [offered them](#plans-offered-to-a-workspace) to your workspace.
 
 <Fold>
 
@@ -77,6 +78,12 @@ It is not a self-hosting plan; it is the plan for warmup on its own. Everything 
 
 It has no card in the plans grid. The ways in are the **Upgrade** button on the **Mailboxes** page, the **Only need warmup?** row on the billing overview of a free workspace, and the **Premium** button on a linked instance's **Settings > Warmbly Cloud** page. Each opens the same dialog: pick monthly or yearly, then checkout. Once active the header badge reads **Warmup**, and the overview shows it like any other plan, with the same cancel and resume controls. Its usage section shows the one limit it has, mailboxes, which reads unlimited.
 
+### The Partnership plan
+
+The Partnership plan is the Warmup plan for partners: the same premium warmup pool, the same reputation protection and no mailbox cap, at $90 a month. Like the Warmup plan it warms only, so sending, the inbox, AI and integrations stay locked and the server refuses them the same way.
+
+It is not for sale to everyone. A workspace can buy it only after Warmbly has [offered it](#plans-offered-to-a-workspace), and it then appears on that workspace's billing overview. Once active the header badge reads **Partnership**.
+
 </Fold>
 
 <Fold>
@@ -107,7 +114,7 @@ Only the workspace owner can change the plan. Other members see the same compari
 
 - The plan card shows the plan, its status, the price (per year on a yearly subscription), and the renewal or end date. Change plan opens the same chooser the locked features use.
 - Cancel plan schedules the cancellation for the end of the paid period. The plan stays fully active until then, and Resume clears it with one click. Nothing is lost either way: the workspace returns to the free tier and keeps its mailboxes, warmup and settings.
-- Usage and limits shows live counts against the limits the server actually enforces, for mailboxes, sends today (the cap the sender applies, or unlimited on a plan without one), contacts, campaigns, team members, attachment storage, sends this period, and API calls. A meter turns amber past 70% and red past 90%. A meter with no cap means that limit is unmetered on your plan. A workspace that does not send (free, or on the Warmup plan) sees only the mailbox meter, because none of the others applies to it. The mailbox meter says where its number comes from (fair use, an approved request, or the free allowance), and the storage meter says so when a plan change left the workspace over its quota: existing attachments keep sending, and new uploads wait until you are back under.
+- Usage and limits shows live counts against the limits the server actually enforces, for mailboxes, sends today (the cap the sender applies, or unlimited on a plan without one), contacts, campaigns, team members, attachment storage, sends this period, and API calls. A meter turns amber past 70% and red past 90%. A meter with no cap means that limit is unmetered on your plan. A workspace that does not send (free, or on the Warmup or Partnership plan) sees only the mailbox meter, because none of the others applies to it. The mailbox meter says where its number comes from (fair use, an approved request, or the free allowance), and the storage meter says so when a plan change left the workspace over its quota: existing attachments keep sending, and new uploads wait until you are back under.
 - Banners appear only when something needs a decision: a failed payment, a scheduled cancellation, or a trial about to end.
 
 Need a single limit raised without moving plan? Request an increase from **Settings > Limits**, linked from the usage section, or straight from the connect dialog when it is mailboxes you need. An operator reviews it and the approved limit takes effect on the workspace, including the daily send allowance the sender enforces. The page shows how much of each limit the workspace uses, and a limit your plan leaves unlimited (mailboxes, on a plan whose daily sends are uncapped) is not offered, because there is nothing to raise. A workspace that does not send can only ask for more mailboxes.
@@ -139,6 +146,23 @@ Operators grant one from the admin panel on the workspace, under **Plan**. The o
 A grant is held beside the plan a workspace pays for, never on top of it, so a paying workspace that is granted a different plan goes back to the one it pays for when the grant ends. Revoking returns the workspace to whatever it actually pays for, which for most is the free plan.
 
 One thing a grant does not do: monthly AI credits are granted when an invoice is paid, and a granted plan raises no invoice, so a managed workspace does not receive a recurring credit allowance. Top up its balance directly if it needs credits.
+
+</Fold>
+
+<Fold>
+
+## Plans offered to a workspace
+
+Some plans are private: they are not in the plans grid and the checkout refuses them, unless Warmbly has offered that plan to your workspace. The Partnership plan is one. The Warmup plan is private too, but it has its own checkout and needs no offer.
+
+When an offer is open, the billing overview shows a row for it under the plan card, with its name and price. Opening it shows what the plan includes and, if it has a yearly price, a monthly or yearly choice:
+
+- **No subscription yet.** The button opens Stripe Checkout for that plan. When you come back the plan applies as soon as Stripe confirms the payment.
+- **Already have a Stripe subscription.** The button switches that subscription to the offered plan in place, prorated, instead of opening a second one.
+
+Only the workspace owner sees the billing page, and starting the checkout needs a recent sign-in, like every other billing change. An offer can carry an end date; after it, the row disappears and starting a checkout for that plan is refused again. A Stripe checkout page already opened from the offer stays usable until it lapses: at most 24 hours after it was opened, and never later than the offer's end date, except that Stripe keeps every checkout page open for at least 30 minutes. Withdrawing an offer has the same effect: no new checkout starts, and a page already open can still be completed until it lapses. A plan you already bought stays active when its offer ends or is withdrawn, because the offer only decides who may start a checkout. If the plan has no price set yet, the row says it cannot be bought here yet.
+
+An offer is a decision by Warmbly's operators on this instance, so it does not travel in a [workspace export](/guides/workspace-export-import/).
 
 </Fold>
 

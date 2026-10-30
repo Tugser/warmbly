@@ -128,30 +128,155 @@ function isDefaultColour(value: string): boolean {
     return DEFAULT_TEXT_COLOURS.has(value.replace(/\s+/g, "").toLowerCase());
 }
 
+// Named colours light enough to vanish on a white page, plus the two that mean
+// "no colour at all". Any other name is a choice and is kept.
+const NAMED_RGB: Record<string, [number, number, number]> = {
+    white: [255, 255, 255], snow: [255, 250, 250], ivory: [255, 255, 240], whitesmoke: [245, 245, 245],
+    ghostwhite: [248, 248, 255], azure: [240, 255, 255], mintcream: [245, 255, 250], honeydew: [240, 255, 240],
+    aliceblue: [240, 248, 255], seashell: [255, 245, 238], floralwhite: [255, 250, 240], linen: [250, 240, 230],
+    oldlace: [253, 245, 230], lavenderblush: [255, 240, 245], beige: [245, 245, 220], cornsilk: [255, 248, 220],
+    lightyellow: [255, 255, 224], lightcyan: [224, 255, 255], gainsboro: [220, 220, 220],
+    lightgray: [211, 211, 211], lightgrey: [211, 211, 211], silver: [192, 192, 192],
+    black: [0, 0, 0],
+};
+
+// parseColour reads a CSS colour into [r, g, b, alpha], or null when it is a
+// form we do not judge (an unlisted name, a variable, currentColor).
+export function parseColour(value: string): [number, number, number, number] | null {
+    const v = value.trim().toLowerCase().replace(/\s*!important$/, "");
+    if (v === "transparent") return [0, 0, 0, 0];
+    if (NAMED_RGB[v]) return [...NAMED_RGB[v], 1];
+    const hex = /^#([0-9a-f]{3,8})$/.exec(v)?.[1];
+    if (hex) {
+        const full = hex.length <= 4 ? [...hex].map((c) => c + c).join("") : hex;
+        if (full.length !== 6 && full.length !== 8) return null;
+        const n = (i: number) => parseInt(full.slice(i, i + 2), 16);
+        return [n(0), n(2), n(4), full.length === 8 ? n(6) / 255 : 1];
+    }
+    const fn = /^(rgba?|hsla?)\((.*)\)$/.exec(v);
+    if (!fn) return null;
+    const parts = fn[2].split(/[\s,/]+/).filter(Boolean);
+    if (parts.length < 3) return null;
+    const alpha = parts[3] === undefined ? 1 : parts[3].endsWith("%") ? parseFloat(parts[3]) / 100 : parseFloat(parts[3]);
+    if (fn[1].startsWith("rgb")) {
+        const ch = (p: string) => (p.endsWith("%") ? (parseFloat(p) * 255) / 100 : parseFloat(p));
+        const rgb = parts.slice(0, 3).map(ch);
+        return rgb.some(Number.isNaN) || Number.isNaN(alpha) ? null : [rgb[0], rgb[1], rgb[2], alpha];
+    }
+    const h = parseFloat(parts[0]);
+    const s = parseFloat(parts[1]) / 100;
+    const l = parseFloat(parts[2]) / 100;
+    if ([h, s, l, alpha].some(Number.isNaN)) return null;
+    const k = (n: number) => (n + h / 30) % 12;
+    const a = s * Math.min(l, 1 - l);
+    const f = (n: number) => 255 * (l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1)));
+    return [f(0), f(8), f(4), alpha];
+}
+
+// luminance is WCAG relative luminance, with any transparency laid over white.
+function luminance([r, g, b, a]: [number, number, number, number]): number {
+    const lin = (c: number) => {
+        const s = (a * c + (1 - a) * 255) / 255;
+        return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+// A text colour that cannot be read on the white page a cold email is written
+// and mostly read on: the near-white body text of a dark-themed site or of
+// Gmail's dark mode, which pasted as invisible lines. Contrast under 2.5:1.
+export function isUnreadableTextColour(value: string): boolean {
+    const c = parseColour(value);
+    return !!c && 1.05 / (luminance(c) + 0.05) < 2.5;
+}
+
+// A background that is page chrome rather than a highlight: transparent, or
+// dark enough that body text would not read on it (under 4.5:1 for slate-800).
+export function isPageBackground(value: string): boolean {
+    const c = parseColour(value);
+    if (!c) return false;
+    return c[3] === 0 || (luminance(c) + 0.05) / 0.072 < 4.5;
+}
+
 // keptInlineStyle reduces an element's style attribute to the declarations
 // above, or "" when nothing in it was a choice.
+// The declarations of a style attribute, split on the semicolons between
+// them and not on one inside url(...) or a quoted value.
+function splitDeclarations(style: string): string[] {
+    const out: string[] = [];
+    let depth = 0;
+    let quote = "";
+    let start = 0;
+    for (let i = 0; i < style.length; i++) {
+        const ch = style[i];
+        if (quote) {
+            if (ch === "\\") i++;
+            else if (ch === quote) quote = "";
+        } else if (ch === '"' || ch === "'") quote = ch;
+        else if (ch === "(") depth++;
+        else if (ch === ")") depth = Math.max(0, depth - 1);
+        else if (ch === ";" && depth === 0) {
+            out.push(style.slice(start, i));
+            start = i + 1;
+        }
+    }
+    out.push(style.slice(start));
+    return out;
+}
+
 function keptInlineStyle(el: Element): string {
     const kept = new Map<string, string>();
-    for (const decl of (el.getAttribute("style") ?? "").split(";")) {
+    for (const decl of splitDeclarations(el.getAttribute("style") ?? "")) {
         const at = decl.indexOf(":");
         if (at < 0) continue;
         const prop = KEEP_SPAN_STYLES[decl.slice(0, at).trim().toLowerCase()];
         const value = decl.slice(at + 1).trim();
         if (!prop || !value) continue;
-        if (prop === "color" && isDefaultColour(value)) continue;
+        if (prop === "color" && (isDefaultColour(value) || isUnreadableTextColour(value))) continue;
         // The background shorthand is only a highlight when it is nothing but
         // a colour. Word and Outlook paste "background: yellow none repeat
         // scroll 0% 0%", and copying that whole value into the longhand writes
         // a declaration every client drops, losing the highlight entirely.
-        if (prop === "background-color" && !isColourValue(value)) continue;
+        if (prop === "background-color" && (!isColourValue(value) || isPageBackground(value))) continue;
         kept.set(prop, value);
     }
     // <font color> says the same thing in the older spelling.
     const fontColour = (el.getAttribute("color") ?? "").trim();
-    if (fontColour && !kept.has("color") && !isDefaultColour(fontColour)) {
+    if (fontColour && !kept.has("color") && !isDefaultColour(fontColour) && !isUnreadableTextColour(fontColour)) {
         kept.set("color", fontColour);
     }
     return [...kept].map(([prop, value]) => `${prop}: ${value}`).join("; ");
+}
+
+// Text blocks whose typography is the copied page's, not the author's. A table
+// cell is left alone: in a pasted layout its font is part of the design.
+const TEXT_BLOCKS = new Set(["P", "DIV", "H1", "H2", "H3", "H4", "H5", "H6", "LI", "UL", "OL", "BLOCKQUOTE"]);
+
+// What a browser writes onto a copied block from the page's computed style.
+// Kept, it pins the site's font and size into every inbox the email reaches.
+const PAGE_TYPOGRAPHY = /^(font-family|font-size|font-style|font-weight|font-variant.*|font-feature-settings|font-kerning|line-height|letter-spacing|word-spacing|text-indent|text-transform|white-space|orphans|widows|caret-color|text-decoration-(thickness|style|color)|-webkit-.*)$/;
+
+// cleanBlockStyle reduces a block's style attribute the way keptInlineStyle
+// does a span's: no colour that would vanish on white, no dark page
+// background, and on a text block none of the page's typography.
+function cleanBlockStyle(el: Element) {
+    const style = el.getAttribute("style");
+    if (style === null) return;
+    const textBlock = TEXT_BLOCKS.has(el.tagName);
+    const kept: string[] = [];
+    for (const decl of splitDeclarations(style)) {
+        const at = decl.indexOf(":");
+        if (at < 0) continue;
+        const prop = decl.slice(0, at).trim().toLowerCase();
+        const value = decl.slice(at + 1).trim();
+        if (!prop || !value) continue;
+        if (prop === "color" && (isDefaultColour(value) || isUnreadableTextColour(value))) continue;
+        if ((prop === "background-color" || prop === "background") && isColourValue(value) && isPageBackground(value)) continue;
+        if (textBlock && PAGE_TYPOGRAPHY.test(prop)) continue;
+        kept.push(`${prop}: ${value}`);
+    }
+    if (kept.length) el.setAttribute("style", kept.join("; "));
+    else el.removeAttribute("style");
 }
 
 export function normalizePastedHTML(html: string): string {
@@ -204,7 +329,9 @@ export function normalizePastedHTML(html: string): string {
             span.setAttribute("style", style);
             while (el.firstChild) span.appendChild(el.firstChild);
             el.replaceWith(span);
+            continue;
         }
+        cleanBlockStyle(el);
     }
 
     collapseBreakRuns(body);

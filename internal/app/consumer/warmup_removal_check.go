@@ -28,11 +28,12 @@ func (s *JobsService) checkWarmupRemoval(ctx context.Context, userID, accountID 
 		}
 		return fmt.Errorf("warmup removal check: mailbox lookup: %w", xerr)
 	}
-	if account == nil || account.WorkerID == nil {
+	workerID, routable := s.warmupActionWorker(ctx, account)
+	if !routable {
 		log.Info().Str("email_id", accountID.String()).Msg("Warmup removal not checked: mailbox has no worker; nothing charged")
 		return nil
 	}
-	return s.publishRemovalCheck(ctx, *account.WorkerID, userID, accountID, rfcMessageID, false)
+	return s.publishRemovalCheck(ctx, workerID, userID, accountID, rfcMessageID, false)
 }
 
 func (s *JobsService) publishRemovalCheck(ctx context.Context, workerID, userID, accountID uuid.UUID, rfcMessageID string, recheck bool) error {
@@ -52,6 +53,11 @@ func (s *JobsService) publishRemovalCheck(ctx context.Context, workerID, userID,
 // message. A recheck never adds a strike; it confirms or withdraws the one
 // recorded, and withdraws it when retention since removed the message itself.
 func (s *JobsService) HandleWarmupRemovalChecked(ctx context.Context, e *models.JobEventWarmupRemovalChecked) error {
+	if e != nil && s.CloudExec != nil {
+		if err := s.CloudExec.RemovalChecked(ctx, e.EmailID, e.RFCMessageID, e.Outcome); err != nil {
+			return fmt.Errorf("answer cloud removal command: %w", err)
+		}
+	}
 	if s.WarmupService == nil || e == nil || e.RFCMessageID == "" {
 		return nil
 	}

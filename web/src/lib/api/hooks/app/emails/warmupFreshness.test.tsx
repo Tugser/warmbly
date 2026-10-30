@@ -4,15 +4,16 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import useWarmupLifecycle from "./useWarmupLifecycle";
 import useUpdateEmail from "./useUpdateEmail";
-import { useCloudLinkMailboxes } from "../cloudlink/useCloudLink";
+import { useCloudLinkMailboxes, useEnrollCloudLinkMailbox } from "../cloudlink/useCloudLink";
 import BulkWarmupDialog from "@/components/app/emails/BulkWarmupDialog";
 import useSwitchOrganization from "../organizations/useSwitchOrganization";
 
-const fixture = vi.hoisted(() => ({ paused: false, fail: false, partial: false, wait: undefined as Promise<void> | undefined }));
-vi.mock("@/lib/api/client/Request", () => ({ default: async ({ url, method }: { url: string; method: string }) => {
+const fixture = vi.hoisted(() => ({ paused: false, fail: false, partial: false, wait: undefined as Promise<void> | undefined, writes: [] as { url: string; data: unknown }[] }));
+vi.mock("@/lib/api/client/Request", () => ({ default: async ({ url, method, data }: { url: string; method: string; data?: unknown }) => {
     if (url.startsWith("/organization/switch/")) return {};
     if (url === "/cloud-link/mailboxes") return { data: [{ id: "mailbox", enrolled: true, cloud: { warmup: { paused: fixture.paused } } }] };
     if (method === "POST" || method === "PATCH") {
+        fixture.writes.push({ url, data });
         fixture.paused = true;
         await fixture.wait;
         if (fixture.fail || fixture.partial && url.includes("failed")) throw { code: "cloud_unavailable" };
@@ -21,8 +22,21 @@ vi.mock("@/lib/api/client/Request", () => ({ default: async ({ url, method }: { 
     throw new Error(`Unexpected request ${url}`);
 } }));
 
-beforeEach(() => { fixture.paused = fixture.fail = fixture.partial = false; fixture.wait = undefined; });
+beforeEach(() => { fixture.paused = fixture.fail = fixture.partial = false; fixture.wait = undefined; fixture.writes = []; });
 afterEach(() => { cleanup(); focusManager.setFocused(undefined); onlineManager.setOnline(true); });
+
+it.each([false, true])("preserves the selected executor and refreshes reports after enrollment (failure: %s)", async (fail) => {
+    fixture.fail = fail;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(["organizations", "current"], { id: "workspace" });
+    const hook = renderHook(() => ({ report: useCloudLinkMailboxes(), enroll: useEnrollCloudLinkMailbox() }), {
+        wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+    });
+    await waitFor(() => expect(hook.result.current.report.data?.[0].cloud?.warmup?.paused).toBe(false));
+    await act(async () => { await hook.result.current.enroll.mutateAsync({ id: "mailbox", executor: "instance" }).catch(() => {}); });
+    expect(fixture.writes).toContainEqual({ url: "/cloud-link/mailboxes/mailbox/enroll", data: { executor: "instance" } });
+    await waitFor(() => expect(hook.result.current.report.data?.[0].cloud?.warmup?.paused).toBe(true));
+});
 
 it.each([false, true])("refreshes the Cloud report after a generic lifecycle action without a socket (failure: %s)", async (fail) => {
     fixture.fail = fail;

@@ -113,3 +113,27 @@ func noError(t *testing.T) func(bool, *errx.Error) bool {
 		return ok
 	}
 }
+
+// The Partnership plan carries the Warmup plan's entitlements, bought or granted.
+func TestPartnershipPlanWarmsLikeTheWarmupPlan(t *testing.T) {
+	ctx := context.Background()
+	org := uuid.New()
+	g := &featureGateService{subRepo: stubSubs{sub: paidSub(models.PartnershipPlanID)}, planRepo: stubPlans{}}
+	must := noError(t)
+
+	if !must(g.HasPremiumWarmup(ctx, org)) {
+		t.Error("the Partnership plan must warm in the premium pool")
+	}
+	if !must(g.CanAddInbox(ctx, org, models.FreeWorkspaceMailboxLimit+50)) {
+		t.Error("the Partnership plan must not cap mailboxes")
+	}
+	if must(g.CanSendCampaignEmail(ctx, org)) || must(g.IsPaidOrganization(ctx, org)) {
+		t.Error("the Partnership plan must not unlock sending")
+	}
+
+	granted := time.Now().Add(-time.Hour)
+	sub := &models.Subscription{PlanID: uuid.New(), ManagedAt: &granted, ManagedPlanID: &models.PartnershipPlanID}
+	if !sub.IsWarmupOnly() || sub.HasProductPlan() {
+		t.Errorf("granted Partnership plan: warmupOnly=%v product=%v, want true false", sub.IsWarmupOnly(), sub.HasProductPlan())
+	}
+}

@@ -964,6 +964,46 @@ export interface AdminPlan {
     price?: number | string | null;
 }
 
+/** A private plan an operator lets one workspace buy. */
+export interface PlanOffer {
+    organization_id: string;
+    plan_id: string;
+    granted_by?: string | null;
+    reason: string;
+    granted_at: string;
+    expires_at?: string | null;
+    plan?: AdminPlan | null;
+    /** Still open: not past expires_at. */
+    active: boolean;
+}
+
+/** An operator's permission for linked instances to warm without handing over credentials. */
+export interface SelfExecutionGrant {
+    organization_id: string;
+    granted_by?: string | null;
+    reason: string;
+    granted_at: string;
+    expires_at?: string | null;
+}
+
+export interface SelfExecutionStatus {
+    grant: SelfExecutionGrant | null;
+    active: boolean;
+}
+
+export type ReporterTrustState = "trusted" | "probation" | "untrusted";
+
+/** How far Cloud trusts one credential-free mailbox's placement reports. */
+export interface SelfExecutedMailbox {
+    email_account_id: string;
+    email: string;
+    trust_state: ReporterTrustState;
+    reported_samples: number;
+    divergence?: number | null;
+    evaluated_at?: string | null;
+    last_leased_at?: string | null;
+}
+
 /** An account excused from the emailed login code. */
 export interface LoginCodeExemption {
     user_id: string;
