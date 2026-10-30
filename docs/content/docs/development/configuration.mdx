@@ -1074,6 +1074,12 @@ Changing them is audited, and every value is validated and clamped server side o
 
 ## See also
 
+Hosted AWS deployment automation accepts `DEPLOY_FLEET_BAKE_SECONDS` (300 through
+3600, default 300) in its deployment client. The workflow supplies it from
+`fleet_bake_seconds` or the `AWS_FLEET_BAKE_SECONDS` GitHub repository variable.
+It controls healthy uptime per stage for future worker rollouts, not application
+startup or existing self-host settings. See [AWS deployment](/development/aws-fargate/).
+
 - [Install](/development/install/) for the one-command install that writes all of this for you
 - [Data control](/development/data-control/) for where each store lives and what each retention window governs
 - [First run](/development/first-run/) for claiming a fresh instance
