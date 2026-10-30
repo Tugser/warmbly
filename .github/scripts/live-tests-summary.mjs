@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 
 export function summarizeLiveTests(input, outcome) {
   const tests = new Map();
+  const subtests = new Map();
   const failedPackages = new Set();
   for (const line of input.split("\n")) {
     let event;
@@ -15,14 +16,16 @@ export function summarizeLiveTests(input, outcome) {
     if (event.Action === "fail" && typeof event.Package === "string" && !event.Test) {
       failedPackages.add(event.Package);
     }
-    if (typeof event.Test !== "string" || !event.Test.startsWith("TestLive") || event.Test.includes("/")) continue;
+    if (typeof event.Test !== "string" || !event.Test.startsWith("TestLive")) continue;
     if (!["pass", "fail", "skip"].includes(event.Action)) continue;
-    tests.set(`${event.Package}/${event.Test}`, event.Action);
+    const results = event.Test.includes("/") ? subtests : tests;
+    results.set(`${event.Package}/${event.Test}`, event.Action);
   }
   const names = (action) => [...tests].filter(([, result]) => result === action).map(([name]) => name).sort();
   const passed = names("pass");
   const failed = names("fail");
   const skipped = names("skip");
+  const skippedSubtests = [...subtests].filter(([, result]) => result === "skip").map(([name]) => name).sort();
   const list = (heading, entries) => [
     `### ${heading}`,
     "",
@@ -31,7 +34,7 @@ export function summarizeLiveTests(input, outcome) {
     "",
   ];
   return {
-    needsAttention: outcome !== "success" || tests.size === 0 || failed.length > 0 || skipped.length > 0 || failedPackages.size > 0,
+    needsAttention: outcome !== "success" || tests.size === 0 || failed.length > 0 || skipped.length > 0 || skippedSubtests.length > 0 || failedPackages.size > 0,
     markdown: [
       "## PostgreSQL catch-all (advisory)",
       "",
@@ -46,7 +49,7 @@ export function summarizeLiveTests(input, outcome) {
       ...(tests.size === 0 ? ["No completed TestLive results were recorded. Check setup, compilation and timeouts.", ""] : []),
       ...list("Failed packages (including setup or build failures)", [...failedPackages].sort()),
       ...list("Failed tests", failed),
-      ...list("Skipped tests", skipped),
+      ...list("Skipped tests and subtests", [...skipped, ...skippedSubtests]),
       "Full JSON events and compiler output are retained in the postgres-live-advisory artifact. Subtests are included there; counts above include each top-level test once.",
       "",
     ].join("\n"),

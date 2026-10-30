@@ -36,3 +36,14 @@ test("successful coverage is clean only when completed tests contain no skips", 
   assert.equal(summarizeLiveTests(events({ Action: "pass", Package: "app", Test: "TestLiveOK" }), "success").needsAttention, false);
   assert.equal(summarizeLiveTests(events({ Action: "skip", Package: "app", Test: "TestLiveSkipped" }), "success").needsAttention, true);
 });
+
+test("a skipped subtest is actionable even when its parent passes", () => {
+  const report = summarizeLiveTests(events(
+    { Action: "skip", Package: "app", Test: "TestLiveExample/needs-fixture" },
+    { Action: "pass", Package: "app", Test: "TestLiveExample" },
+  ), "success");
+  assert.equal(report.needsAttention, true);
+  assert.match(report.markdown, /\| Passed \| 1 \|/);
+  assert.match(report.markdown, /\| Skipped \| 0 \|/);
+  assert.match(report.markdown, /`app\/TestLiveExample\/needs-fixture`/);
+});
