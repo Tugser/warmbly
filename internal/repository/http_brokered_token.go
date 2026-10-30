@@ -38,7 +38,7 @@ func NewHTTPBrokeredTokenClient(baseURL, token string) (BrokeredTokenClient, err
 	return &httpBrokeredTokenClient{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		token:   token,
-		client:  &http.Client{Timeout: 25 * time.Second},
+		client:  newControlPlaneClient(25 * time.Second),
 	}, nil
 }
 
