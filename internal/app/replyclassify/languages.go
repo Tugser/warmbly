@@ -26,8 +26,7 @@ type langRules struct {
 	// ooo are away-message subject prefixes, in their own spelling.
 	ooo []string
 	// cues introduce a return date; inclusive ones name the last day away.
-	// Only the base set carries them: nothing passes languages to the
-	// return-date reader.
+	// Written accent-folded, as the return-date reader sees the text.
 	cues, inclusive []string
 	months          map[int][]string
 	// bounce are non-delivery subject prefixes, lower case.
@@ -218,14 +217,23 @@ var languageRules = map[string]langRules{
 		quote:      []quoteMarker{nordicAttribution, {re: headerBlock(`från`, `skickat|datum`)}},
 		separators: []string{`ursprungligt meddelande`, `vidarebefordrat meddelande`},
 		ooo:        []string{"frånvaro"},
+		cues:       []string{`tillbaka den`, `tillbaka igen den`, `tillbaka pa kontoret den`, `ater pa kontoret den`, `ater den`, `nas igen den`, `till och med`},
+		inclusive:  []string{"till och med"},
+		months:     map[int][]string{5: {"maj"}, 8: {"augusti"}},
 	},
 	"da": {
 		quote:      []quoteMarker{nordicAttribution, {re: headerBlock(`fra`, `sendt|dato`)}},
 		separators: []string{`oprindelig meddelelse`, `videresendt meddelelse`},
+		cues:       []string{`tilbage den`, `tilbage igen den`, `tilbage pa kontoret den`, `traeffes igen den`, `til og med`},
+		inclusive:  []string{"til og med"},
+		months:     map[int][]string{3: {"marts"}, 5: {"maj"}},
 	},
 	"nb": {
 		quote:      []quoteMarker{nordicAttribution, {re: headerBlock(`fra`, `sendt|dato`)}},
 		separators: []string{`opprinnelig melding`, `videresendt melding`},
+		cues:       []string{`tilbake den`, `tilbake igjen den`, `tilbake pa kontoret den`, `tilgjengelig igjen den`, `til og med`},
+		inclusive:  []string{"til og med"},
+		months:     map[int][]string{12: {"desember"}},
 	},
 	"fi": {
 		quote: []quoteMarker{
@@ -234,6 +242,13 @@ var languageRules = map[string]langRules{
 		},
 		separators: []string{`alkuperäinen viesti`, `välitetty viesti`},
 		ooo:        []string{"automaattinen vastaus", "poissa toimistolta"},
+		cues:       []string{`palaan`, `olen takaisin`, `takaisin toimistolla`, `tavoitettavissa jaelleen`},
+		months: map[int][]string{
+			1: {"tammikuuta", "tammikuu"}, 2: {"helmikuuta", "helmikuu"}, 3: {"maaliskuuta", "maaliskuu"},
+			4: {"huhtikuuta", "huhtikuu"}, 5: {"toukokuuta", "toukokuu"}, 6: {"kesaekuuta", "kesaekuu"},
+			7: {"heinaekuuta", "heinaekuu"}, 8: {"elokuuta", "elokuu"}, 9: {"syyskuuta", "syyskuu"},
+			10: {"lokakuuta", "lokakuu"}, 11: {"marraskuuta", "marraskuu"}, 12: {"joulukuuta", "joulukuu"},
+		},
 	},
 	"pl": {
 		quote: []quoteMarker{
@@ -243,6 +258,13 @@ var languageRules = map[string]langRules{
 		},
 		separators: []string{`oryginalna wiadomość`, `wiadomość oryginalna`, `wiadomość przekazana`},
 		ooo:        []string{"odpowiedź automatyczna", "poza biurem"},
+		cues:       []string{`wracam`, `wroce`, `bede z powrotem`, `z powrotem w biurze`, `do dnia`},
+		months: map[int][]string{
+			1: {"stycznia", "styczen"}, 2: {"lutego", "luty"}, 3: {"marca", "marzec"}, 4: {"kwietnia", "kwiecien"},
+			5: {"maja", "maj"}, 6: {"czerwca", "czerwiec"}, 7: {"lipca", "lipiec"}, 8: {"sierpnia", "sierpien"},
+			9: {"wrzesnia", "wrzesien"}, 10: {"pazdziernika", "pazdziernik"}, 11: {"listopada", "listopad"},
+			12: {"grudnia", "grudzien"},
+		},
 	},
 	"cs": {
 		quote: []quoteMarker{
@@ -251,6 +273,12 @@ var languageRules = map[string]langRules{
 		},
 		separators: []string{`původní zpráva`, `přeposlaná zpráva`},
 		ooo:        []string{"automatická odpověď", "mimo kancelář"},
+		cues:       []string{`budu zpet`, `zpet v kancelari`, `vracim se`, `opet k zastizeni`},
+		months: map[int][]string{
+			1: {"ledna", "leden"}, 2: {"unora", "unor"}, 3: {"brezna", "brezen"}, 4: {"dubna", "duben"},
+			5: {"kvetna", "kveten"}, 6: {"cervna", "cerven"}, 7: {"cervence", "cervenec"}, 8: {"srpna", "srpen"},
+			9: {"zari"}, 10: {"rijna", "rijen"}, 11: {"listopadu", "listopad"}, 12: {"prosince", "prosinec"},
+		},
 	},
 	"ro": {
 		quote:      []quoteMarker{{re: attribution(`pe`, `a scris\s*:`)}, {re: headerBlock(`de la`, `trimis|data`)}},
