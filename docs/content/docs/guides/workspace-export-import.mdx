@@ -96,6 +96,8 @@ Inbox, send history, delivery events, and logs are the ones that grow without li
 
 The pending warmup-filing queue stays on its source instance. The destination resyncs mail and files recognized warmup messages using its own workers and the mailbox's placement setting.
 
+Campaign contacts waiting for an uncertain send retain that protection with **Campaigns**, even when you omit **Send history**. Imported uncertain commands cannot execute again. Without their send history, those contacts stay protected because the destination cannot confirm the original outcome. Manual resume does not remove this protection.
+
 Warmup statistics travel as history. Source-only per-task charge and refund markers reset on import so settling an old task cannot refund another send's destination statistics. Existing destination charge dates and older completed-day counters are protected on overwrite; preserving older counts does not create charge or refund proof. Whole-instance database backups retain these markers.
 
 Mailbox transport-error reports travel as history, retaining every report ID, observation timestamp, task reference and recorded resolution. Their operation and observation provenance reset to unknown, including overwrite imports and older archives without those fields. Imported and legacy historical reports do not share the uniqueness rule for new, locally observed reports and are not automatically cleared by a successful sync or send. Unknown history means recovery is unverified, not that a provider is still failing.
@@ -194,6 +196,7 @@ Some things belong to an instance rather than to a workspace, so they are not ap
 | Raw warmup receipt provenance | `warmup_received` observations, first-folder/auth header provenance and provider thread handles are source-instance evidence and are explicitly excluded. Aggregated warmup placement history travels, but raw receipt provenance does not |
 | Warmup dispatch and continuation authority | Parent task/receipt/message handles, lineage authority, queue revisions, worker IDs, dispatch nonces and native result state reset. Imported historical diagnostic metadata and tokens do not authorize automatic continuation on the destination |
 | Provider-attempt history | Immutable attempted timestamps and recipient counts travel in the sending group, retaining restrictive daily/rolling evidence after a capacity refund. Historical attempt nonces never authorize a new executor command |
+| Warmup content reservations | Shared conversation plans and their per-mailbox reuse reservations belong to the source instance and do not travel. Imported mailboxes use the destination’s approved pool |
 | Warmup pool membership | Pools are shared across every workspace on an instance, so membership is re-earned rather than asserted by a file |
 | Domain authentication timings | The verdict travels (public DNS reads the same anywhere), but the destination re-checks before it can stop any sending, so a mailbox is never blocked on an observation the new instance never made |
 | Risk and review status | A workspace's abuse posture is one platform's verdict about a tenant on its own infrastructure, reached from evidence the destination never saw. An archive can neither carry a restriction nor clear one |

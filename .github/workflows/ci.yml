@@ -417,6 +417,32 @@ jobs:
             grep -q "^--- PASS: $test " monitoring-clock.log
           done
 
+      - name: Approved warmup content and queued source regressions (PostgreSQL)
+        if: matrix.suite == 'live-2'
+        env:
+          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
+        run: |
+          set -euo pipefail
+          go test -race -v ./internal/repository -run '^TestLiveContentPool' -count=1 | tee content-pool.log
+          go test -race -v ./internal/tasks -run '^TestLiveWarmupDispatchRechecksOpeningSourceAndExactRecipient$' -count=1 | tee -a content-pool.log
+          if grep -q -- '--- SKIP:' content-pool.log; then
+            echo "Warmup content and queued source regressions must execute without skips"
+            exit 1
+          fi
+          for test in TestLiveContentPoolRejectsDuplicateBatchContentUnderConcurrency \
+            TestLiveContentPoolRetryReservesOnceAndReplenishesForExposedMailboxes \
+            TestLiveContentPoolPreservesPlansForFutureDistinctMailboxes \
+            TestLiveContentPoolConcurrentPairsAlwaysReceiveContent \
+            TestLiveContentPoolPrefersLessUsedEligiblePlans \
+            TestLiveContentPoolPrefersWhatNeitherMailboxSawRecently \
+            TestLiveContentPoolExhaustedPairRepeatsTheLeastRecentlySeen \
+            TestLiveContentPoolTokenCleanupKeepsExposure \
+            TestLiveContentPoolStaticRowsOnlyFromTheCurrentLibrary \
+            TestLiveContentPoolDemandCountsPlansRatherThanReplies \
+            TestLiveWarmupDispatchRechecksOpeningSourceAndExactRecipient; do
+            grep -q "^--- PASS: $test " content-pool.log
+          done
+
       - name: Warmup generic execution authority regressions (PostgreSQL)
         if: matrix.suite == 'live-2'
         env:
@@ -431,7 +457,8 @@ jobs:
             TestLiveWarmupGenericCancellationPreservesOtherHolds \
             TestLiveWarmupGenericStartAndLateResult \
             TestLiveWarmupGenericStartAfterCompatibleOverwrite \
-            TestLiveWarmupGenericCannotRepeatStartedWarmupClaim; do
+            TestLiveWarmupGenericCannotRepeatStartedWarmupClaim \
+            TestLiveWarmupGenericDeniesHistoricalDiagnosticContent; do
             grep -q "^--- PASS: $test " warmup-generic-execution.log
           done
 
