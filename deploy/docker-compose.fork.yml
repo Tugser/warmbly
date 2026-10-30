@@ -113,7 +113,7 @@ services:
   backend:
     image: warmbly-fork/backend:local
     build:
-      context: ..
+      context: .
       dockerfile: deploy/docker/backend.Dockerfile
     restart: unless-stopped
     stop_grace_period: 60s
@@ -142,7 +142,7 @@ services:
   consumer:
     image: warmbly-fork/consumer:local
     build:
-      context: ..
+      context: .
       dockerfile: deploy/docker/consumer.Dockerfile
     restart: unless-stopped
     stop_grace_period: 60s
@@ -158,7 +158,7 @@ services:
   worker:
     image: warmbly-fork/worker:local
     build:
-      context: ..
+      context: .
       dockerfile: deploy/docker/worker.Dockerfile
     restart: unless-stopped
     stop_grace_period: 60s
@@ -183,7 +183,7 @@ services:
   tracking:
     image: warmbly-fork/tracking:local
     build:
-      context: ../tracking
+      context: ./tracking
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
@@ -206,7 +206,7 @@ services:
   realtime:
     image: warmbly-fork/realtime:local
     build:
-      context: ..
+      context: .
       dockerfile: deploy/docker/realtime.Dockerfile
     restart: unless-stopped
     environment:
@@ -230,7 +230,7 @@ services:
   forms:
     image: warmbly-fork/forms:local
     build:
-      context: ..
+      context: .
       dockerfile: deploy/docker/forms.Dockerfile
     restart: unless-stopped
     environment:
@@ -249,7 +249,7 @@ services:
   web:
     image: warmbly-fork/web:local
     build:
-      context: ../web
+      context: ./web
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
@@ -266,7 +266,7 @@ services:
   admin:
     image: warmbly-fork/admin:local
     build:
-      context: ../admin
+      context: ./admin
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
