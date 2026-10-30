@@ -1063,6 +1063,7 @@ var Tables = []Table{
 // with the reason. Kept as data so the docs page and the coverage test both
 // read from one list instead of restating it.
 var ExcludedTables = map[string]string{
+	"website_domains":                  "A website's proof is a TXT value bound to the source workspace, so it proves nothing for the destination. The destination shows its own TXT value on each redirect and form that points at the website, and serves them once it is published.",
 	"warmup_conversation_mailboxes":    "Instance-local content reuse reservations against the shared warmup conversation library. Destination mailboxes build their own content history; full instance backups retain these reservations.",
 	"email_account_transport_recovery": "Source-instance sync and provider-confirmed-send recovery clocks cannot authorize destination recovery. Full instance database backups retain them.",
 	"sync_arrival_outbox":              "Encrypted, org-key-owned arrival delivery queue bound to this instance's provider handles and body storage. Pending maps are excluded too so destination sync retries them; no queue secrets or blob references travel. Full instance backups retain queue, org keys and bodies together.",

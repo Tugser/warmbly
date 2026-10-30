@@ -264,6 +264,8 @@ A [community directory](/guides/integrations/#community-apps) listing does not t
 
 [Slack](/guides/slack/) account links, the record of which Slack thread belongs to which assistant conversation, and which Slack thread mirrors which inbox conversation in the [inbox channel](/guides/slack/#inbox-in-slack) do not travel. They name the Slack install on the source instance, so members link again after Slack is reconnected on the destination, and inbox conversations start new Slack threads there. The assistant conversations themselves move with the Assistant group.
 
+[Confirmed websites](/guides/sending-domains/#confirm-your-website) do not travel. The `TXT` record that confirms one is bound to the source workspace, so it proves nothing on the destination. Redirects and form redirects to the website arrive kept but not used, and the destination shows its own record to publish next to each one.
+
 Reply and forward drafts kept in your browser are also excluded. Finish or copy them before moving to another instance. See [reply drafts](/guides/unibox/#reply-drafts).
 
 </Fold>
