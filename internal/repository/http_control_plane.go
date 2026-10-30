@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"time"
@@ -30,18 +31,26 @@ type drainingTransport struct {
 }
 
 func (t drainingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	resp, err := t.next.RoundTrip(req)
+	ctx, cancel := context.WithCancel(req.Context())
+	resp, err := t.next.RoundTrip(req.Clone(ctx))
 	if resp != nil && resp.Body != nil {
-		resp.Body = drainingBody{resp.Body}
+		resp.Body = drainingBody{ReadCloser: resp.Body, cancel: cancel}
+	} else {
+		cancel()
 	}
 	return resp, err
 }
 
 type drainingBody struct {
 	io.ReadCloser
+	cancel context.CancelFunc
 }
 
 func (b drainingBody) Close() error {
+	// Cancel a stalled read without spending the request's remaining timeout.
+	timer := time.AfterFunc(100*time.Millisecond, b.cancel)
+	defer timer.Stop()
+	defer b.cancel()
 	_, _ = io.Copy(io.Discard, io.LimitReader(b.ReadCloser, 64<<10))
 	return b.ReadCloser.Close()
 }

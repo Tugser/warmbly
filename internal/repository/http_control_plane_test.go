@@ -76,3 +76,23 @@ func TestControlPlaneClientDrainsUnreadBodies(t *testing.T) {
 		t.Fatalf("10 sequential calls with unread error bodies opened %d connections, want 1", got)
 	}
 }
+
+func TestControlPlaneClientBoundsStalledBodyDrain(t *testing.T) {
+	srv, _ := countingServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	})
+	repo, err := NewHTTPEmailMessageMapRepository(srv.URL, "fixture-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo.(*httpEmailMessageMapRepository).client.Timeout = time.Second
+	started := time.Now()
+	if _, err := repo.Get(context.Background(), uuid.New(), uuid.New(), "<m@example.com>"); err == nil {
+		t.Fatal("want an error for a 500")
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("stalled error body delayed return for %s, want less than 500ms", elapsed)
+	}
+}
