@@ -1975,6 +1975,8 @@ func main() {
 		// Sending domains: tracking host per domain and the bare-domain redirect.
 		sendingDomainService = sendingdomain.NewService(repository.NewDomainRedirectRepository(primaryDB), emailRepostory, nil, domainProver)
 		sendingDomainService.WireAuditor(auditService)
+		// A website the workspace proves with its TXT record becomes one of its own domains too.
+		ownDomains.WireWebsites(repository.NewWebsiteDomainRepository(primaryDB), domainProver, nil)
 		sendingDomainService.WireOwnDomains(ownDomains)
 		sendingDomainService.WireCustomHosts(customHosts)
 		// A linked self-hosted instance can have Warmbly Cloud serve a redirect instead.

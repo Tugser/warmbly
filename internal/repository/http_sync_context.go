@@ -109,7 +109,7 @@ func NewHTTPSyncContextRepository(baseURL, token string) (SyncContextRepository,
 	return &httpSyncContextRepository{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		token:   token,
-		client:  &http.Client{Timeout: 10 * time.Second},
+		client:  newControlPlaneClient(10 * time.Second),
 	}, nil
 }
 

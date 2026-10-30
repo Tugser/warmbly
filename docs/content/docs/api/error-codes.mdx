@@ -357,13 +357,14 @@ A redirect may only send visitors to a page on one of the workspace's own domain
 - a domain the workspace has a mailbox on, other than a shared email provider such as `gmail.com`
 - a verified tracking host of one of its mailboxes
 - the workspace's custom forms domain, once it is verified
+- a website the workspace confirmed by publishing its `_warmbly` `TXT` record on the website's registrable domain. Saving looks for the record before refusing, and `POST /emails/domains/:domain/redirect/website` returns the record to publish. See [confirm your website](/guides/sending-domains/#confirm-your-website)
 
 Hosts are compared in lowercase, without a trailing dot and in their ASCII form, so `bücher.de` and `xn--bcher-kva.de` are the same domain. A subdomain matches its parent (`shop.acme.com` is on `acme.com`), but a name that only starts or ends the same way does not (`acme.com.example.net` and `notacme.com` are not on `acme.com`). An empty value still means no redirect.
 
 ```json
 {
   "error": "Bad Request",
-  "message": "The redirect has to go to a page on one of this workspace's own domains: a domain it has a mailbox on (not a shared provider such as gmail.com), its verified tracking domain, its verified forms domain, or a subdomain of one of them. Use an address on one of those, or connect a mailbox or verify a domain first.",
+  "message": "The redirect has to go to a page on one of this workspace's own domains: a domain it has a mailbox on (not a shared provider such as gmail.com), its verified tracking domain, its verified forms domain, a website it verified with its TXT record, or a subdomain of one of them. Verify the website under Sending domains > Redirect, or use an address on one of those.",
   "code": "redirect_target_not_own_domain",
   "request_id": "4bbbd1b2-8f86-47dd-8a7f-9476501ad20e"
 }

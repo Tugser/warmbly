@@ -680,6 +680,7 @@ func Run(
 				sendingDomains.PUT("/:domain/tracking", h.SetDomainTracking)
 				sendingDomains.PUT("/:domain/redirect", h.SetDomainRedirect)
 				sendingDomains.POST("/:domain/redirect/verify", h.VerifyDomainRedirect)
+				sendingDomains.POST("/:domain/redirect/website", h.VerifyRedirectWebsite)
 				sendingDomains.DELETE("/:domain/redirect", h.DeleteDomainRedirect)
 				sendingDomains.PUT("/:domain/vendor-forwarding", h.SetDomainVendorForwarding)
 				sendingDomains.POST("/:domain/vendor-tracking", h.SetDomainVendorTracking)
