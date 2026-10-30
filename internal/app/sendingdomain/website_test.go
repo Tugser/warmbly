@@ -36,6 +36,13 @@ func (m *memWebsites) Mark(_ context.Context, org uuid.UUID, domain string) erro
 	m.rows[websiteKey(org, domain)] = w
 	return nil
 }
+func (m *memWebsites) Touch(_ context.Context, org uuid.UUID, domain string) error {
+	if w, ok := m.rows[websiteKey(org, domain)]; ok {
+		w.LastCheckedAt = time.Now()
+		m.rows[websiteKey(org, domain)] = w
+	}
+	return nil
+}
 func (m *memWebsites) Drop(_ context.Context, org uuid.UUID, domain string) error {
 	delete(m.rows, websiteKey(org, domain))
 	return nil
@@ -128,6 +135,9 @@ func TestAnUnprovedWebsiteIsHeldWithoutBlamingTheProxy(t *testing.T) {
 	if len(sites.rows) != 1 {
 		t.Fatal("a failed lookup dropped the website")
 	}
+	if due, _ := sites.Due(ctx, time.Now().Add(-6*time.Hour), 50); len(due) != 0 {
+		t.Fatal("a failed lookup left the website at the front of the queue")
+	}
 	sites.age(7 * time.Hour)
 	delete(dns.txt, "_warmbly.frostlogic.se")
 	s.ownDomains().Recheck(ctx)
@@ -154,6 +164,18 @@ func TestAnUnprovedWebsiteIsHeldWithoutBlamingTheProxy(t *testing.T) {
 	dns.txt["_warmbly.frostlogic.se"] = []string{s.proof.Value(org, "frostlogic.se")}
 	if r, _ = s.VerifyRedirect(ctx, org, "acme.io"); r.TargetActive == nil || !*r.TargetActive || r.Reach == nil {
 		t.Fatalf("a re-proved website is not live: %+v", r)
+	}
+}
+
+func TestASharedProviderIsNeverOfferedAsAWebsite(t *testing.T) {
+	s, _, _, _ := newWebsiteTest()
+	ctx := context.Background()
+	org := uuid.New()
+	if _, xerr := s.WebsiteProof(ctx, org, "acme.io", "https://gmail.com"); xerr == nil || xerr.Identifier != owndomain.ErrIDNotOwn {
+		t.Fatalf("a shared provider was offered a record: %v", xerr)
+	}
+	if w := s.website(org, "https://mail.gmail.com/x", false); w != nil {
+		t.Fatalf("a shared provider got a record: %+v", w)
 	}
 }
 

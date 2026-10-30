@@ -180,7 +180,7 @@ type Proof struct {
 // Record is the proof to publish for the destination's website, nil when it has none or websites are not wired.
 func (r *Resolver) Record(orgID uuid.UUID, target string) *Proof {
 	site := Website(TargetHost(target))
-	if r.proof == nil || site == "" {
+	if r.proof == nil || site == "" || mailhost.SharedProvider(site) {
 		return nil
 	}
 	name, value := r.proof.Record(orgID, site)
@@ -190,7 +190,7 @@ func (r *Resolver) Record(orgID uuid.UUID, target string) *Proof {
 // Prove looks for the destination website's TXT proof now and records the website when it is there.
 func (r *Resolver) Prove(ctx context.Context, orgID uuid.UUID, target string) (*Proof, *errx.Error) {
 	p := r.Record(orgID, target)
-	if p == nil || r.websites == nil || mailhost.SharedProvider(p.Domain) {
+	if p == nil || r.websites == nil {
 		return p, nil
 	}
 	present, err := r.published(ctx, orgID, p.Domain)
@@ -235,8 +235,9 @@ func (r *Resolver) Recheck(ctx context.Context) {
 		present, err := r.published(ctx, w.OrganizationID, w.Domain)
 		switch {
 		case err != nil:
-			// A lookup that could not tell keeps the proof; it is asked again next pass.
+			// A lookup that could not tell keeps the proof and moves it to the back of the queue.
 			log.Info().Str("domain", w.Domain).Msg("website proof: lookup failed, kept")
+			_ = r.websites.Touch(ctx, w.OrganizationID, w.Domain)
 		case present:
 			_ = r.websites.Mark(ctx, w.OrganizationID, w.Domain)
 		default:

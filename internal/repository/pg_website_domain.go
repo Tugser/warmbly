@@ -23,6 +23,8 @@ type WebsiteDomainRepository interface {
 	Verified(ctx context.Context, orgID uuid.UUID) ([]string, error)
 	// Mark records a proof seen now, keeping the first verification time.
 	Mark(ctx context.Context, orgID uuid.UUID, domain string) error
+	// Touch records a check that could not tell, without claiming the proof was seen.
+	Touch(ctx context.Context, orgID uuid.UUID, domain string) error
 	// Drop forgets a website whose proof is gone.
 	Drop(ctx context.Context, orgID uuid.UUID, domain string) error
 	// Due are proofs last checked before the cutoff, oldest first.
@@ -58,6 +60,15 @@ func (r *websiteDomainRepository) Verified(ctx context.Context, orgID uuid.UUID)
 func (r *websiteDomainRepository) Mark(ctx context.Context, orgID uuid.UUID, domain string) error {
 	query := `INSERT INTO website_domains (organization_id, domain) VALUES ($1, lower($2))
 		ON CONFLICT (organization_id, domain) DO UPDATE SET last_checked_at = now()`
+	if _, err := r.DB.Exec(ctx, query, orgID, domain); err != nil {
+		db.CaptureError(err, query, nil, "exec")
+		return err
+	}
+	return nil
+}
+
+func (r *websiteDomainRepository) Touch(ctx context.Context, orgID uuid.UUID, domain string) error {
+	query := `UPDATE website_domains SET last_checked_at = now() WHERE organization_id = $1 AND domain = lower($2)`
 	if _, err := r.DB.Exec(ctx, query, orgID, domain); err != nil {
 		db.CaptureError(err, query, nil, "exec")
 		return err
