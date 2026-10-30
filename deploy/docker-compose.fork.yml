@@ -1,0 +1,287 @@
+# Build application images from this repository for a Coolify deployment.
+# Setup: https://docs.warmbly.com/development/coolify/
+x-runtime-env: &runtime-env
+  APP_ENV: prod
+  AWS_CONFIG_ENABLED: "false"
+  DEPLOYMENT_MODE: self_hosted
+  EVENTBUS_PROVIDER: nats
+  NATS_URL: nats://nats:4222
+  CODEC_PROVIDER: json
+  REDIS: redis://redis:6379
+  KMS_PROVIDER: local
+  KMS_LOCAL_MASTER_KEY: ${KMS_LOCAL_MASTER_KEY:?}
+  CREDENTIALS_ENCRYPTION_KEY: ${CREDENTIALS_ENCRYPTION_KEY:?}
+  CREDENTIALS_ENCRYPTION_READ_KEYS: ${CREDENTIALS_ENCRYPTION_READ_KEYS:-}
+  BLOB_PROVIDER: filesystem
+  BLOB_FS_ROOT: /data/blobs
+  TASKS_PROVIDER: local
+  PUBSUB_ENABLED: "false"
+  BILLING_PROVIDER: none
+  CAPTCHA_PROVIDER: none
+  AUTH_SECRET: ${AUTH_SECRET:?}
+  TWOFA_SECRET: ${TWOFA_SECRET:-}
+  TWOFA_READ_SECRETS: ${TWOFA_READ_SECRETS:-}
+  UNSUBSCRIBE_SIGNING_SECRET: ${UNSUBSCRIBE_SIGNING_SECRET:-}
+  UNSUBSCRIBE_SIGNING_READ_SECRETS: ${UNSUBSCRIBE_SIGNING_READ_SECRETS:-}
+  UNSUBSCRIBE_SIGNING_READ_UNTIL: ${UNSUBSCRIBE_SIGNING_READ_UNTIL:-}
+  DOMAIN_PROOF_SECRET: ${DOMAIN_PROOF_SECRET:-}
+  INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?}
+  INTERNAL_API_PREVIOUS_TOKENS: ${INTERNAL_API_PREVIOUS_TOKENS:-}
+  INTERNAL_API_PREVIOUS_UNTIL: ${INTERNAL_API_PREVIOUS_UNTIL:-}
+  NODE_BROKER_TOKEN: ${NODE_BROKER_TOKEN:?}
+  NODE_BROKER_PREVIOUS_TOKENS: ${NODE_BROKER_PREVIOUS_TOKENS:-}
+  NODE_BROKER_PREVIOUS_UNTIL: ${NODE_BROKER_PREVIOUS_UNTIL:-}
+
+x-server-env: &server-env
+  <<: *runtime-env
+  PRIMARY_DB: postgres://warmbly:${POSTGRES_PASSWORD:?}@postgres:5432/warmbly?sslmode=disable
+  APP_URL: ${APP_URL:?}
+  API_PUBLIC_URL: ${API_PUBLIC_URL:?}
+  BLOB_PUBLIC_BASE_URL: ${API_PUBLIC_URL:?}/public
+  CORS_ALLOW_ORIGINS: ${APP_URL:?},${ADMIN_URL:?}
+  TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+  WEBSOCKET_URL: wss://${REALTIME_HOST:?}/socket/websocket
+  TRACKING_DOMAIN: ${TRACKING_DOMAIN:?}
+  FORMS_DOMAIN: ${FORMS_DOMAIN:?}
+  GEODB_PATH: /data/blobs/geo/GeoLite2-City.mmdb
+  MAIL_TRANSPORT: ${MAIL_TRANSPORT:-log}
+  EMAIL_NAME: ${EMAIL_NAME:-Warmbly}
+  EMAIL_ADDRESS: ${EMAIL_ADDRESS:-noreply@example.com}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USERNAME: ${SMTP_USERNAME:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_SECURITY: ${SMTP_SECURITY:-starttls}
+  SMTP_AUTH: ${SMTP_AUTH:-auto}
+  AUTH_LOGIN_CODE: ${AUTH_LOGIN_CODE:-off}
+  REQUIRE_EMAIL_VERIFICATION: ${REQUIRE_EMAIL_VERIFICATION:-false}
+  DISABLE_REGISTRATION: ${DISABLE_REGISTRATION:-invite_only}
+  AI_PROVIDER: ${AI_PROVIDER:-}
+  AI_API_KEY: ${AI_API_KEY:-}
+  AI_MODEL: ${AI_MODEL:-}
+  AI_MODEL_TRIAL: ${AI_MODEL_TRIAL:-}
+  AI_MODEL_PAID: ${AI_MODEL_PAID:-}
+  AI_BASE_URL: ${AI_BASE_URL:-}
+  AI_FREE: ${AI_FREE:-}
+
+x-http-healthcheck: &http-healthcheck
+  interval: 10s
+  timeout: 5s
+  retries: 20
+  start_period: 60s
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: warmbly
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: warmbly
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U warmbly -d warmbly"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  nats:
+    image: nats:2.10-alpine
+    restart: unless-stopped
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8222/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    image: warmbly-fork/backend:local
+    build:
+      context: ..
+      dockerfile: deploy/docker/backend.Dockerfile
+    restart: unless-stopped
+    stop_grace_period: 60s
+    environment:
+      <<: *server-env
+      API_HOST: "0.0.0.0:8080"
+      GIN_MODE: release
+      ENCRYPTED_KEYS_PROVIDER: postgres
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:?}
+      UPDATER_URL: none
+      BOX_GOOGLE_CLIENT_ID: ${BOX_GOOGLE_CLIENT_ID:-}
+      BOX_GOOGLE_CLIENT_SECRET: ${BOX_GOOGLE_CLIENT_SECRET:-}
+      BOX_GOOGLE_OAUTH_CONNECT: ${BOX_GOOGLE_OAUTH_CONNECT:-false}
+      BOX_OUTLOOK_CLIENT_ID: ${BOX_OUTLOOK_CLIENT_ID:-}
+      BOX_OUTLOOK_CLIENT_SECRET: ${BOX_OUTLOOK_CLIENT_SECRET:-}
+    volumes:
+      - blobs:/data/blobs
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      nats: { condition: service_healthy }
+    healthcheck:
+      <<: *http-healthcheck
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/health"]
+
+  consumer:
+    image: warmbly-fork/consumer:local
+    build:
+      context: ..
+      dockerfile: deploy/docker/consumer.Dockerfile
+    restart: unless-stopped
+    stop_grace_period: 60s
+    environment:
+      <<: *server-env
+      ENCRYPTED_KEYS_PROVIDER: postgres
+    volumes:
+      - blobs:/data/blobs
+    depends_on:
+      backend: { condition: service_healthy }
+      nats: { condition: service_healthy }
+
+  worker:
+    image: warmbly-fork/worker:local
+    build:
+      context: ..
+      dockerfile: deploy/docker/worker.Dockerfile
+    restart: unless-stopped
+    stop_grace_period: 60s
+    environment:
+      <<: *runtime-env
+      MAIL_TLS_INSECURE: "false"
+      ENCRYPTED_KEYS_PROVIDER: http
+      ENCRYPTED_KEYS_BACKEND_URL: http://backend:8080
+      ENCRYPTED_KEYS_WORKER_TOKEN: ${NODE_BROKER_TOKEN:?}
+      WORKER_STATE_DIR: /data/state
+      BOX_GOOGLE_CLIENT_ID: ${BOX_GOOGLE_CLIENT_ID:-}
+      BOX_GOOGLE_CLIENT_SECRET: ${BOX_GOOGLE_CLIENT_SECRET:-}
+      BOX_OUTLOOK_CLIENT_ID: ${BOX_OUTLOOK_CLIENT_ID:-}
+      BOX_OUTLOOK_CLIENT_SECRET: ${BOX_OUTLOOK_CLIENT_SECRET:-}
+    volumes:
+      - blobs:/data/blobs
+      - worker_state:/data/state
+    depends_on:
+      backend: { condition: service_healthy }
+      nats: { condition: service_healthy }
+
+  tracking:
+    image: warmbly-fork/tracking:local
+    build:
+      context: ../tracking
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      APP_ENV: prod
+      AWS_CONFIG_ENABLED: "false"
+      TRACKING_HOST: "0.0.0.0"
+      TRACKING_PORT: "3000"
+      EVENTBUS_PROVIDER: nats
+      NATS_URL: nats://nats:4222
+      BACKEND_INTERNAL_URL: http://backend:8080
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?}
+      TRACKING_TRUSTED_PROXIES: ${TRACKING_TRUSTED_PROXIES:-}
+    depends_on:
+      backend: { condition: service_healthy }
+      nats: { condition: service_healthy }
+    healthcheck:
+      <<: *http-healthcheck
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/health"]
+
+  realtime:
+    image: warmbly-fork/realtime:local
+    build:
+      context: ..
+      dockerfile: deploy/docker/realtime.Dockerfile
+    restart: unless-stopped
+    environment:
+      APP_ENV: prod
+      PHX_HOST: ${REALTIME_HOST:?}
+      PORT: "4000"
+      DATABASE_URL: postgres://warmbly:${POSTGRES_PASSWORD:?}@postgres:5432/warmbly?sslmode=disable
+      DATABASE_SSL: "false"
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${AUTH_SECRET:?}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:?}
+      PUBSUB_ENABLED: "false"
+      CHECK_ORIGIN_HOSTS: ${APP_URL:?},${ADMIN_URL:?}
+    depends_on:
+      backend: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      <<: *http-healthcheck
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:4000/health"]
+
+  forms:
+    image: warmbly-fork/forms:local
+    build:
+      context: ..
+      dockerfile: deploy/docker/forms.Dockerfile
+    restart: unless-stopped
+    environment:
+      APP_ENV: prod
+      GIN_MODE: release
+      FORMS_PORT: "8090"
+      BACKEND_INTERNAL_URL: http://backend:8080
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?}
+      TRUSTED_PROXIES: ${FORMS_TRUSTED_PROXIES:-}
+    depends_on:
+      backend: { condition: service_healthy }
+    healthcheck:
+      <<: *http-healthcheck
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8090/health"]
+
+  web:
+    image: warmbly-fork/web:local
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      WARMBLY_API_URL: ${API_PUBLIC_URL:?}
+      WARMBLY_APP_URL: ${APP_URL:?}
+      WARMBLY_GMAIL_OAUTH_CONNECT: ${BOX_GOOGLE_OAUTH_CONNECT:-false}
+      WEBSOCKET_URL: wss://${REALTIME_HOST:?}/socket/websocket
+    depends_on:
+      backend: { condition: service_healthy }
+    healthcheck:
+      <<: *http-healthcheck
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:80/config.js"]
+
+  admin:
+    image: warmbly-fork/admin:local
+    build:
+      context: ../admin
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      WARMBLY_API_URL: ${API_PUBLIC_URL:?}
+      WARMBLY_DASHBOARD_URL: ${APP_URL:?}
+      WARMBLY_ENV_LABEL: production
+    depends_on:
+      backend: { condition: service_healthy }
+    healthcheck:
+      <<: *http-healthcheck
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:80/config.js"]
+
+volumes:
+  postgres_data:
+  redis_data:
+  nats_data:
+  blobs:
+  worker_state:
