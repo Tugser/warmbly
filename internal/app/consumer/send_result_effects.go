@@ -111,4 +111,11 @@ func (s *JobsService) reconcileRecordedSendResults(ctx context.Context) {
 			log.Warn().Err(err).Str("task_id", result.TaskID.String()).Msg("recorded send outcome reconciliation deferred")
 		}
 	}
+	if isolator, ok := s.TaskRepo.(interface {
+		IsolateUnknownCampaignSends(context.Context, time.Time, int) (int, error)
+	}); ok && s.CampaignIsolationEnabled {
+		if _, err := isolator.IsolateUnknownCampaignSends(ctx, time.Now().Add(-10*time.Minute), 200); err != nil {
+			log.Warn().Err(err).Msg("automatic campaign send recovery deferred")
+		}
+	}
 }

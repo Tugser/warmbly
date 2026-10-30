@@ -293,6 +293,12 @@ docker compose -p warmbly logs backend | grep -B2 -A12 "MAIL_TRANSPORT=log"
 The backend refuses to start without `EMAIL_ADDRESS` and `EMAIL_NAME`. The consumer logs a warning and silently disables all notification and digest email, so an instance can look healthy while sending nothing. Set both on every process.
 </Callout>
 
+## Automatic campaign send recovery
+
+| Variable | What it does | Default | Restart needed |
+|---|---|---|---|
+| `CAMPAIGN_SEND_ISOLATION_ENABLED` | Enables automatic isolation of authorized campaign sends with unknown outcomes after ten minutes. Set on backends and consumers only after every control-plane replica and the supported rollback release understand recovery pauses. Keep disabled during the initial compatibility rollout. See [activation and rollback](/development/send-safety/#automatic-campaign-isolation) | `false` | yes |
+
 ## Pre-send verification
 
 Before a campaign sends to an address, the backend can check it: syntax, then `MX`, then an `SMTP` `RCPT` probe against the recipient's mail server. An address that comes back `invalid` is skipped rather than sent to, which turns a would-be hard bounce into a silent drop. The probe runs from the backend, never from a worker, because workers are your sending IPs.
@@ -737,7 +743,7 @@ Salesforce reads `SALESFORCE_OAUTH_CLIENT_ID` and `SALESFORCE_OAUTH_CLIENT_SECRE
 
 | Variable | What it does | Default |
 |---|---|---|
-| `AI_PROVIDER` | `openai`, `openrouter`, `groq`, `ollama`, `anthropic` or `custom`. Omit every AI variable to run with AI off, in which case AI endpoints return a clean `503` | unset |
+| `AI_PROVIDER` | `openai`, `openrouter`, `groq`, `ollama`, `anthropic` or `custom`. Omit every AI variable to run with AI off, in which case AI endpoints return a clean `503` and warmup uses only its built-in conversation library. Warmup batch generation requires `openai` or an unset provider with an OpenAI key | unset |
 | `AI_API_KEY` | Provider key. Not needed for `ollama` | unset |
 | `AI_MODEL`, `AI_MODEL_TRIAL`, `AI_MODEL_PAID` | Model selection, optionally split by plan | provider preset |
 | `AI_BASE_URL` | Required for `custom`. Any OpenAI compatible endpoint | unset |
@@ -745,7 +751,7 @@ Salesforce reads `SALESFORCE_OAUTH_CLIENT_ID` and `SALESFORCE_OAUTH_CLIENT_SECRE
 | `SEARCH_PROVIDER`, `SEARCH_API_URL`, `SEARCH_API_KEY` | Web search for the assistant (`serper` or `searxng`) | unset |
 | `MAILHOST_ISPDB` | `true` lets mailbox server detection ask Mozilla's Thunderbird ISPDB (`autoconfig.thunderbird.net`) about a domain whose MX records and own autoconfig file name no known provider. Only the domain name is sent. See [data control](/development/data-control/#outbound-calls) | `false` on a self-host, `true` on Warmbly Cloud |
 | `MAILVENDOR_SANDBOX_URL` | Development only. Points every inbox vendor client at the [sandbox's mock vendor API](/development/sandbox/#mock-inbox-vendors) (`<url>/inboxkit`, `<url>/mailforge`) instead of the real vendors. Ignored unless `APP_ENV` is `dev` | unset |
-| `TYPESAFE_API_KEY` | TypeSafe API key. Turns on the typed judgments: reply classification, the copy judgment in the Advisor and the editor, warmup content lint, bounce classification, import column mapping and per-form triage. Inbox tagging needs the switch below as well. See [data control](/development/data-control/#typesafe-judgments) for what each one sends | unset |
+| `TYPESAFE_API_KEY` | TypeSafe API key. Turns on the typed judgments: reply classification, the copy judgment in the Advisor and the editor, warmup content review (otherwise performed by OpenAI when its generator is configured), bounce classification, import column mapping and per-form triage. Inbox tagging needs the switch below as well. See [data control](/development/data-control/#typesafe-judgments) for what each one sends | unset |
 | `INBOX_TAGGING_ENABLED` | `true` enables automatic inbox tagging when `TYPESAFE_API_KEY` is also set. Message subject, current body, and the previous outbound body are sent to TypeSafe | `false` |
 
 <Callout type="warn" title="An unset provider still uses a key">
@@ -1029,7 +1035,7 @@ These are the only settings a browser can change, and no environment variable ow
 | `tracking.machine_window_probable_seconds` | integer, 1 to 86400 | `600` | The window used instead of the two above when the tracking service recognised the source as a mail-security network that also renders clicked pages for people, which Proofpoint, Mimecast and Cisco do through browser isolation. Such a match cannot settle whether a person is behind the request, so it widens the window rather than deciding: inside it the event is the delivery-time scan, past it the recipient who got to the mail later. Never applied shorter than the window for the kind of event in hand, so naming a network can only ever catch more scans. Its ceiling reaches a day because how long a vendor takes to detonate a link is the vendor's property, not the instance's |
 | `deliverability.enforce_domain_auth` | boolean | `true` | Whether a sending domain that fails SPF or DMARC stops cold campaign sending and warmup sending from every mailbox on it. Off keeps the check running and still shows the state and the Advisor card, it just never blocks |
 | `deliverability.auth_grace_hours` | integer, 1 to 720 | `72` | How long a domain must stay failing before the gate applies. The clock starts when the background check first sees the failure, so this is also how much warning the owner gets |
-| `warmup_generation` | object | Existing saved provider/model configuration, with generation enabled and bounded control defaults | Effective provider, cadence, stop, daily reservation cap, AI selection share, pools and canonical reply-count controls. See [all supported fields and defaults](/development/warmup-generation/) before editing; do not remove credentials while batches drain |
+| `warmup_generation` | object | Existing saved model and generation policy, with generation enabled and bounded control defaults | Effective model, cadence, stop, daily reservation cap, available-capacity targets and canonical reply-count controls. Provider selection uses `AI_PROVIDER` and `AI_API_KEY` from the AI environment variables above. A mailbox does not see the same conversation again within 30 days in either role while unseen ones remain; optional refresh defaults off to preserve usable stock; legacy AI selection share is retained for rollback. See [all supported fields and defaults](/development/warmup-generation/) before editing; do not remove credentials while batches drain |
 | `placement.tests_per_month_trial` | integer, 1 to 100000 | `3` | How many free [placement tests](/guides/placement-tests/) a workspace on a free trial may run per calendar month on the instance seed panel. Only an instance running with `DEPLOYMENT_MODE=cloud` meters; a self-hosted instance never counts its own tests. Tests on a workspace's own seed inboxes are never counted |
 | `placement.tests_per_month_paid` | integer, 1 to 100000 | `40` | The same free allowance for a workspace on a paid plan. Past it, a test costs `placement.credits_per_test` credits |
 | `placement.seeds_per_test` | integer, 1 to 100 | `20` | The most seed inboxes one test sends to. Every copy is a send from the sending mailbox's daily limit, so this is also how much of that limit one test takes. A test is sized down to what the mailbox has left that day, and refused below five seeds |

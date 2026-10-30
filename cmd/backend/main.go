@@ -796,8 +796,7 @@ func main() {
 
 		// Warmup content bank + offline AI generator. The generator rides OpenAI's
 		// Batch API specifically, so it only runs when the selected provider is
-		// OpenAI itself; otherwise the live send path keeps using the static
-		// library and admin generation returns "not configured".
+		// OpenAI itself; otherwise new threads wait for fresh approved content.
 		var generationClient *generation.GenerationClient
 		if (aiProviderName == "" || aiProviderName == "openai") && aiKey != "" {
 			generationClient = generation.NewClient(aiKey)

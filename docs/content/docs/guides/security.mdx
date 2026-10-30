@@ -160,6 +160,8 @@ Every signed-in device appears under **Sessions** with its device (`Chrome on ma
 
 **Sign out** ends one session; **Sign out other sessions** clears everything except where you are now. Signing out everywhere, changing or resetting your password, and an account ban end every session at once, and close any live connection the dashboard or an API client has open to the realtime service.
 
+Session validation reads the current session from the database on every request. If the database cannot verify the session, the request is refused. Redis availability does not determine whether a revoked session can authenticate.
+
 A session renews itself in the background for up to 180 days from the sign-in that started it; after that you sign in again on that device. Each renewal replaces the credential that keeps it alive. If an old one is ever presented, a copy of it exists somewhere else, so Warmbly ends that session on the spot and you sign in once more on that device.
 
 <Callout type="warn" title="If something looks wrong">

@@ -543,6 +543,7 @@ func main() {
 	}
 
 	jobsService := &jobs.JobsService{
+		CampaignIsolationEnabled:    config.CampaignSendIsolationEnabled(),
 		Bus:                         consumerBus,
 		Codec:                       consumerCodec,
 		UniboxRepository:            uniboxRepo,
