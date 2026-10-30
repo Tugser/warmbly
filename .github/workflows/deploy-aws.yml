@@ -41,6 +41,10 @@ on:
         description: Seconds each service is watched against its alarms after it is stable
         default: "300"
         type: string
+      fleet_bake_seconds:
+        description: Healthy uptime per worker rollout stage (300 through 3600 seconds)
+        default: "300"
+        type: string
       fleet:
         description: Start a canary rollout of the workers and consumers after the services
         default: true
@@ -139,6 +143,7 @@ jobs:
           DEPLOY_MODE: ${{ inputs.mode || 'deploy' }}
           DEPLOY_SERVICES: ${{ inputs.services || 'all' }}
           DEPLOY_BAKE_SECONDS: ${{ inputs.bake_seconds || vars.AWS_DEPLOY_BAKE_SECONDS || '300' }}
+          DEPLOY_FLEET_BAKE_SECONDS: ${{ inputs.fleet_bake_seconds || vars.AWS_FLEET_BAKE_SECONDS || '300' }}
           DEPLOY_FLEET: ${{ inputs.fleet != false }}
           DEPLOY_ALLOW_DROPPED_SECRETS: ${{ inputs.allow_dropped_secrets == true }}
           DEPLOY_IMAGES_JSON: ${{ steps.release.outputs.images }}
