@@ -1,25 +1,26 @@
 #!/bin/sh
-# Generate an ephemeral Compose override with the identity of this checkout.
+# Coolify removes .git before the build; its build env identifies the checkout.
 set -eu
 
-commit=$(git rev-parse --verify HEAD)
-case "$commit" in
-  *[!0-9a-f]*|'') echo 'Invalid Git commit' >&2; exit 1 ;;
-esac
+commit=${SOURCE_COMMIT:-}
+if [ -z "$commit" ] && [ -f /artifacts/build-time.env ]; then
+  commit=$(sed -n "s/^SOURCE_COMMIT=['\"]\{0,1\}\([0-9a-f]\{40\}\)['\"]\{0,1\}$/\1/p" /artifacts/build-time.env | head -n 1)
+fi
+if ! printf '%s\n' "$commit" | grep -Eq '^[0-9a-f]{40}$'; then
+  echo 'Coolify did not provide a valid SOURCE_COMMIT.' >&2
+  exit 1
+fi
 
-# Coolify uses a shallow fork checkout without upstream release tags. Restore
-# history before fetching tags so git describe counts the correct ancestry.
-version=
-if { [ "$(git rev-parse --is-shallow-repository)" = false ] || git fetch -q --unshallow origin; } &&
-   git fetch -q --tags https://github.com/warmbly/warmbly.git; then
-  candidate=$(git describe --tags --match 'v[0-9]*' --abbrev=7 2>/dev/null || true)
+version=$(printf '%.12s' "$commit")
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+if git init -q --bare "$tmp" &&
+   git -C "$tmp" fetch -q --no-tags --filter=blob:none https://github.com/Tugser/warmbly.git "$commit" &&
+   git -C "$tmp" fetch -q --filter=blob:none https://github.com/warmbly/warmbly.git 'refs/tags/v*:refs/tags/v*'; then
+  candidate=$(git -C "$tmp" describe --tags --match 'v[0-9]*' --abbrev=7 "$commit" 2>/dev/null || true)
   if printf '%s\n' "$candidate" | grep -Eq '^v[0-9]+\.[0-9]+(\.[0-9]+)?(-[A-Za-z0-9.-]+)?$'; then
     version=$candidate
   fi
-fi
-if [ -z "$version" ]; then
-  version=$(git rev-parse --short=12 HEAD)
-  echo 'Release tag unavailable; using the source commit as version.' >&2
 fi
 
 printf 'services:\n  backend:\n    build:\n      args:\n        VERSION: "%s"\n        COMMIT: "%s"\n' \
