@@ -54,7 +54,6 @@ import { cn } from "@/lib/utils";
 import { DnsRecordsTable, StatusPill, VendorChip, type RecordRow } from "./parts";
 import { ReachFix, RedirectProgress, ServedByPicker } from "./RedirectServing";
 import { defaultServer, useCloudServing } from "./cloudServing";
-import CloudConnectDialog from "@/components/app/cloud/CloudConnectDialog";
 import {
     OWN_DOMAIN_HINT,
     REDIRECT_NOT_OWN_DOMAIN,
@@ -91,7 +90,7 @@ const TABS: { key: DomainTab; label: string; icon: typeof GlobeIcon }[] = [
     { key: "redirect", label: "Redirect", icon: GlobeIcon },
 ];
 
-const PURPOSE_LABEL: Record<string, string> = { ownership: "Ownership", root: "Root", www: "www" };
+const PURPOSE_LABEL: Record<string, string> = { ownership: "Ownership", root: "Root", www: "www", edge: "Activation" };
 
 const paneVariants = {
     enter: (dir: 1 | -1) => ({ x: dir * 24, opacity: 0 }),
@@ -1024,8 +1023,6 @@ function DnsRedirect({
     const [tried, setTried] = React.useState(false);
     // The record that confirms the typed website is the workspace's, once a save was refused for lack of it.
     const [proof, setProof] = React.useState<RedirectWebsite | null>(null);
-    // "serve" came from a redirect visitors do not reach, so linking moves it; "pick" only selects Cloud.
-    const [connecting, setConnecting] = React.useState<"pick" | "serve" | null>(null);
 
     const url = urlDraft ?? redirect?.target_url ?? "";
     const www = wwwDraft ?? redirect?.include_www ?? true;
@@ -1114,21 +1111,6 @@ function DnsRedirect({
         );
     }
 
-    // Once linked, the dialog's own button is the go-ahead.
-    async function afterLinked() {
-        const why = connecting;
-        setConnecting(null);
-        if (!redirect || why !== "serve") {
-            setServedDraft("cloud");
-            return;
-        }
-        try {
-            await persist(redirect.target_url, redirect.include_www, "cloud");
-        } catch (e) {
-            toast.error(buildError(e as AppError));
-        }
-    }
-
     async function checkNow() {
         if (verify.isPending) return;
         try {
@@ -1180,7 +1162,6 @@ function DnsRedirect({
                             redirect={redirect}
                             cloud={cloud}
                             onServeFromCloud={serveFromCloud}
-                            onConnect={() => setConnecting("serve")}
                             switching={save.isPending}
                         />
                     }
@@ -1239,7 +1220,6 @@ function DnsRedirect({
                         value={server}
                         current={redirect?.served_by}
                         onChange={setServedDraft}
-                        onConnect={() => setConnecting("pick")}
                         cloud={cloud}
                     />
                 )}
@@ -1282,6 +1262,16 @@ function DnsRedirect({
                             ? `These point ${domain.domain} at Warmbly Cloud and replace whatever it serves today. New records can take a few minutes to a few hours to show up.`
                             : `These point ${domain.domain} at this server and replace whatever it serves today. New records can take a few minutes to a few hours to show up.`}
                     </p>
+                    {redirect.records.some((r) => r.purpose === "root" && r.type === "CNAME") && (
+                        <p className="text-[11.5px] text-slate-500 leading-relaxed">
+                            A root CNAME works where your DNS provider flattens it, as Cloudflare does on its own. Elsewhere, add it as an ALIAS or ANAME record. If your provider has neither, use its domain forwarding to send {domain.domain} to your website instead.
+                        </p>
+                    )}
+                    {redirect.records.some((r) => r.purpose === "edge") && (
+                        <p className="text-[11.5px] text-slate-500 leading-relaxed">
+                            The activation record is only needed while it is listed. It goes away once the domain is live.
+                        </p>
+                    )}
                 </div>
             )}
 
@@ -1298,21 +1288,6 @@ function DnsRedirect({
                     </button>
                 </div>
             )}
-
-            <CloudConnectDialog
-                open={connecting !== null}
-                onClose={() => setConnecting(null)}
-                autoStart
-                intro={
-                    <>
-                        Link this instance to a Warmbly Cloud workspace, free to create, and Cloud serves{" "}
-                        <span className="font-medium text-slate-900">{domain.domain}</span>&apos;s redirect and its certificate. Nothing on your
-                        server changes: you only point the domain&apos;s DNS at Cloud. Approve the code below on Warmbly Cloud to finish.
-                    </>
-                }
-                doneLabel={redirect && connecting === "serve" ? `Serve ${domain.domain} from Warmbly Cloud` : "Use Warmbly Cloud"}
-                onDone={() => void afterLinked()}
-            />
         </div>
     );
 }

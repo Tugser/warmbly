@@ -2,6 +2,11 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CloudLinkMailboxRow, CloudLinkStatus } from "@/lib/api/models/app/cloudlink/CloudLink";
 import WarmblyCloudSettingsPage from "./page";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+function draw() {
+    return render(<QueryClientProvider client={new QueryClient()}><WarmblyCloudSettingsPage /></QueryClientProvider>);
+}
 
 const fixture = vi.hoisted(() => ({
     status: {} as CloudLinkStatus,
@@ -26,8 +31,8 @@ vi.mock("@/lib/api/hooks/app/cloudlink/useCloudLink", () => ({
     useUnenrollCloudLinkMailbox: () => ({ mutateAsync: vi.fn() }),
     useCloudLinkMailboxLifecycle: () => ({ mutateAsync: vi.fn() }),
 }));
-vi.mock("./ConnectFlow", () => ({ default: () => <div>Connection setup</div> }));
 vi.mock("./LinkedInstances", () => ({ default: () => null }));
+vi.mock("@tanstack/react-router", () => ({ Navigate: ({ to }: { to: string }) => <div>Redirected to {to}</div> }));
 vi.mock("@/components/app/emails/CloudMailboxPicker", () => ({ default: () => <div>Existing Cloud mailboxes</div> }));
 
 describe("existing Cloud connections", () => {
@@ -54,25 +59,32 @@ describe("existing Cloud connections", () => {
     });
 
     it("shows the normal connection and allows enrollment without a migration", async () => {
-        render(<WarmblyCloudSettingsPage />);
+        draw();
         expect(screen.getByText("Existing Cloud workspace")).toBeInTheDocument();
         expect(screen.getByText("Existing Cloud mailboxes")).toBeInTheDocument();
         expect(screen.queryByText(/legacy/i)).not.toBeInTheDocument();
         expect(screen.queryByText("Connect this workspace")).not.toBeInTheDocument();
-        expect(screen.queryByText("Connection setup")).not.toBeInTheDocument();
         expect(screen.getByRole("switch")).toBeEnabled();
         fireEvent.click(screen.getByRole("switch"));
         await waitFor(() => expect(fixture.enroll).toHaveBeenCalledWith("mailbox"));
     });
 
+    it("enrolls with the server executor when the Cloud grant offers it", async () => {
+        fixture.status.info = { self_execution: { protocol: 1, granted: true } } as CloudLinkStatus["info"];
+        draw();
+        expect(screen.getByRole("group", { name: "Where the credential lives" })).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("switch"));
+        await waitFor(() => expect(fixture.enroll).toHaveBeenCalledWith({ id: "mailbox", executor: "instance" }));
+    });
+
     it("still prevents enrollment of an unsupported local OAuth mailbox", () => {
         fixture.rows[0].provider = "gmail";
-        render(<WarmblyCloudSettingsPage />);
+        draw();
         expect(screen.getByRole("switch")).toBeDisabled();
     });
 
     it("requires confirmation of server-wide disconnect scope", async () => {
-        render(<WarmblyCloudSettingsPage />);
+        draw();
         fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
         expect(fixture.disconnect).not.toHaveBeenCalled();
         expect(fixture.confirm.mock.calls[0][0]).toContain("across all local workspaces");
@@ -82,9 +94,8 @@ describe("existing Cloud connections", () => {
 
     it("keeps both disconnect scopes explicit when connections coexist", async () => {
         fixture.status.link!.organization_id = "local";
-        render(<WarmblyCloudSettingsPage />);
+        draw();
         expect(screen.queryByText(/legacy/i)).not.toBeInTheDocument();
-        expect(screen.queryByText("Connection setup")).not.toBeInTheDocument();
         fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
         expect(fixture.confirm.mock.calls[0][0]).toContain("this workspace");
         await fixture.confirm.mock.calls[0][1]();
@@ -95,11 +106,11 @@ describe("existing Cloud connections", () => {
         expect(fixture.disconnect).toHaveBeenLastCalledWith(true);
     });
 
-    it("only offers connection setup when disconnected", () => {
+    it("has no page for an instance that is not linked, since Cloud links no new instances", () => {
         fixture.status.connected = false;
         fixture.status.legacy_connected = false;
         fixture.status.link = null;
-        render(<WarmblyCloudSettingsPage />);
-        expect(screen.getByText("Connection setup")).toBeInTheDocument();
+        draw();
+        expect(screen.getByText("Redirected to /app/settings/profile")).toBeInTheDocument();
     });
 });

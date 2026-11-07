@@ -9,13 +9,11 @@
 // click-outside handlers treat it as part of the floating layer.
 
 import React from "react";
+import useClickOutside from "@/hooks/useClickOutside";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { SparklesIcon } from "lucide-react";
-import toast from "react-hot-toast/headless";
 import useGenerateEdit from "@/lib/api/hooks/app/generation/useGenerateEdit";
-import type { AppError } from "@/lib/api/client/normalizeError";
-import buildError from "@/lib/helper/buildError";
 import { Kbd } from "@/components/ui/shortcut-tooltip";
 import AIEditPopover, { type AIEditPhase } from "./AIEditPopover";
 import { AI_PILL_CLASS } from "./AIBusyStatus";
@@ -27,6 +25,7 @@ import textareaRangeRect, {
     type RangeRect,
 } from "./textareaRange";
 import useTypewriter from "./useTypewriter";
+import { reportAIError } from "./reportAIError";
 
 interface Selection {
     start: number;
@@ -69,7 +68,7 @@ export default function TextareaAIEdit({
     const [open, setOpen] = React.useState(false);
     const [phase, setPhase] = React.useState<AIEditPhase>("idle");
     const [changed, setChanged] = React.useState(true);
-    const [usage, setUsage] = React.useState<{ charged: number; tokens: number } | null>(null);
+    const [usage, setUsage] = React.useState<{ chargedUsd: number; tokens: number } | null>(null);
 
     const rootRef = React.useRef<HTMLDivElement>(null);
     // The selection being edited, frozen when the popover opens.
@@ -196,23 +195,8 @@ export default function TextareaAIEdit({
         };
     }, [sel, syncRects]);
 
-    // Dismiss when the user clicks anywhere outside the floating layer and
-    // the textarea (like useClickOutside, plus the textarea exception).
-    React.useEffect(() => {
-        if (!open) return;
-        const onDown = (e: MouseEvent | TouchEvent) => {
-            const t = e.target as Node | null;
-            if (rootRef.current?.contains(t)) return;
-            if (textareaRef.current?.contains(t)) return;
-            closeAll();
-        };
-        document.addEventListener("mousedown", onDown, true);
-        document.addEventListener("touchstart", onDown, true);
-        return () => {
-            document.removeEventListener("mousedown", onDown, true);
-            document.removeEventListener("touchstart", onDown, true);
-        };
-    }, [open, closeAll, textareaRef]);
+    // Click-away (the textarea counts as inside) and Escape while open.
+    useClickOutside(open, () => closeAll(), [textareaRef, rootRef]);
 
     // External edits (typing, template insert, discard) while open: bail out
     // rather than rewriting stale ranges.
@@ -221,28 +205,16 @@ export default function TextareaAIEdit({
         if (expectedValue.current !== null && value !== expectedValue.current) closeAll();
     }, [value, open, closeAll]);
 
-    React.useEffect(() => {
-        if (!open) return;
-        const onKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") {
-                e.stopPropagation();
-                closeAll();
-            }
-        };
-        document.addEventListener("keydown", onKey, true);
-        return () => document.removeEventListener("keydown", onKey, true);
-    }, [open, closeAll]);
-
     const applyResult = React.useCallback(
         (
             target: Selection,
             prevValue: string,
             instruction: string,
             text: string,
-            charged: number,
+            chargedUsd: number,
             tokens: number,
         ) => {
-            setUsage({ charged, tokens });
+            setUsage({ chargedUsd, tokens });
             // The server returns its answer trimmed, so the author's own edges
             // go back on before anything is written or compared: what lands in
             // the box IS what "did it change?" is answered from (issue #432).
@@ -311,17 +283,12 @@ export default function TextareaAIEdit({
                             prevValue,
                             instruction,
                             res.text,
-                            res.credits_charged ?? 0,
+                            res.charged_usd ?? 0,
                             res.tokens_used ?? 0,
                         );
                     },
                     onError: (e) => {
-                        const err = e as unknown as AppError;
-                        if (err?.status === 402) {
-                            toast.error("You're out of AI credits. Upgrade or purchase more to keep editing with AI.");
-                        } else {
-                            toast.error(buildError(err));
-                        }
+                        reportAIError(e);
                         setPhase("idle");
                     },
                 },
