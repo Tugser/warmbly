@@ -117,9 +117,12 @@ type Campaign struct {
 	// either way, resolved on read.
 	Timezone          string `json:"timezone"`
 	EffectiveTimezone string `json:"effective_timezone"`
-	Days              uint8  `json:"days"`
-	StartTime         string `json:"start_time"`
-	EndTime           string `json:"end_time"`
+	// TimezoneMode says whose clock the schedule is read on: the campaign's
+	// (campaign) or each lead's own (recipient).
+	TimezoneMode TimezoneMode `json:"timezone_mode"`
+	Days         uint8        `json:"days"`
+	StartTime    string       `json:"start_time"`
+	EndTime      string       `json:"end_time"`
 
 	// ScheduleWindows, when non-empty, is the authoritative per-day sending
 	// schedule (supersedes Days/StartTime/EndTime). Indexed by time.Weekday.
@@ -150,6 +153,11 @@ type Campaign struct {
 	RampCeiling   int        `json:"ramp_ceiling"`
 	RampLevel     int        `json:"ramp_level"`
 	RampLevelDate *time.Time `json:"ramp_level_date,omitempty"`
+
+	// WarmupGraduation holds a mailbox leaving warmup to the reply-earned cold
+	// ceiling in this campaign. Off leaves the mailbox cap, the campaign limit
+	// and the campaign ramp as its only volume limits.
+	WarmupGraduation bool `json:"warmup_graduation"`
 
 	// ESP/provider matching: off | prefer | strict.
 	ESPMatchMode string `json:"esp_match_mode"`
@@ -270,6 +278,13 @@ type CampaignEstimate struct {
 	// StepWaits is each follow-up's wait_after in days, in order. Empty is a
 	// single email.
 	StepWaits []int `json:"step_waits,omitempty"`
+	// The campaign's ramp-up as the wizard has it; unsent fields come from the
+	// saved campaign, else a new campaign's defaults.
+	WarmupGraduation *bool `json:"warmup_graduation,omitempty"`
+	RampEnabled      *bool `json:"ramp_enabled,omitempty"`
+	RampStart        *int  `json:"ramp_start,omitempty"`
+	RampIncrement    *int  `json:"ramp_increment,omitempty"`
+	RampCeiling      *int  `json:"ramp_ceiling,omitempty"`
 	// CampaignID projects a saved campaign, filling anything not sent from it.
 	CampaignID *string `json:"campaign_id,omitempty"`
 }
@@ -346,6 +361,7 @@ const (
 // Bottleneck values of a campaign estimate.
 const (
 	EstimateBottleneckCampaignLimit   = "campaign_limit"
+	EstimateBottleneckCampaignRamp    = "campaign_ramp"
 	EstimateBottleneckGraduation      = "warmup_graduation"
 	EstimateBottleneckSpacing         = "spacing"
 	EstimateBottleneckOtherCampaigns  = "other_campaigns"
@@ -433,12 +449,13 @@ type UpdateCampaign struct {
 
 	// Absent leaves the stored date untouched; an explicit null clears it
 	// ("start now" / "no end date"), matching the validation error's promise.
-	StartDate NullableTime `json:"start_date"`
-	EndDate   NullableTime `json:"end_date"`
-	Timezone  *string      `json:"timezone"`
-	Days      *uint8       `json:"days"`
-	StartTime *string      `json:"start_time"`
-	EndTime   *string      `json:"end_time"`
+	StartDate    NullableTime `json:"start_date"`
+	EndDate      NullableTime `json:"end_date"`
+	Timezone     *string      `json:"timezone"`
+	TimezoneMode *string      `json:"timezone_mode,omitempty"`
+	Days         *uint8       `json:"days"`
+	StartTime    *string      `json:"start_time"`
+	EndTime      *string      `json:"end_time"`
 
 	// Authoritative per-day schedule. When sent, supersedes Days/StartTime/EndTime.
 	ScheduleWindows *ScheduleWindows `json:"schedule_windows,omitempty"`
@@ -460,6 +477,8 @@ type UpdateCampaign struct {
 	RampStart     *int  `json:"ramp_start,omitempty"`
 	RampIncrement *int  `json:"ramp_increment,omitempty"`
 	RampCeiling   *int  `json:"ramp_ceiling,omitempty"`
+
+	WarmupGraduation *bool `json:"warmup_graduation,omitempty"`
 
 	ESPMatchMode       *string `json:"esp_match_mode,omitempty"`
 	MaxNewLeadsPerDay  *int    `json:"max_new_leads_per_day,omitempty"`
@@ -487,7 +506,7 @@ type UpdateCampaign struct {
 // TouchesSchedule reports whether the patch changes anything the campaign's
 // next wakeup time is computed from.
 func (u *UpdateCampaign) TouchesSchedule() bool {
-	return u.StartDate.Set || u.EndDate.Set || u.Timezone != nil || u.Days != nil ||
+	return u.StartDate.Set || u.EndDate.Set || u.Timezone != nil || u.TimezoneMode != nil || u.Days != nil ||
 		u.StartTime != nil || u.EndTime != nil || u.ScheduleWindows != nil ||
 		u.EntryDelayMinutes != nil
 }
@@ -495,7 +514,7 @@ func (u *UpdateCampaign) TouchesSchedule() bool {
 // TouchesPacing reports whether the patch changes how much the campaign may send or from which mailboxes, which a parked wakeup was placed under too.
 func (u *UpdateCampaign) TouchesPacing() bool {
 	return u.DailyLimit != nil || u.EmailTags != nil || u.SenderStrategy != nil || u.RotationMode != nil || u.FollowUpSender != nil ||
-		u.RampEnabled != nil || u.RampStart != nil || u.RampIncrement != nil || u.RampCeiling != nil ||
+		u.RampEnabled != nil || u.RampStart != nil || u.RampIncrement != nil || u.RampCeiling != nil || u.WarmupGraduation != nil ||
 		u.MaxNewLeadsPerDay != nil || u.ESPMatchMode != nil
 }
 
@@ -521,12 +540,13 @@ type CreateCampaign struct {
 	BCC []string `json:"bcc,omitempty"`
 
 	// Schedule
-	StartDate *time.Time `json:"start_date,omitempty"`
-	EndDate   *time.Time `json:"end_date,omitempty"`
-	Timezone  *string    `json:"timezone,omitempty"`
-	Days      *uint8     `json:"days,omitempty"`
-	StartTime *string    `json:"start_time,omitempty"`
-	EndTime   *string    `json:"end_time,omitempty"`
+	StartDate    *time.Time `json:"start_date,omitempty"`
+	EndDate      *time.Time `json:"end_date,omitempty"`
+	Timezone     *string    `json:"timezone,omitempty"`
+	TimezoneMode *string    `json:"timezone_mode,omitempty"`
+	Days         *uint8     `json:"days,omitempty"`
+	StartTime    *string    `json:"start_time,omitempty"`
+	EndTime      *string    `json:"end_time,omitempty"`
 
 	// Authoritative per-day schedule. When sent, supersedes Days/StartTime/EndTime.
 	ScheduleWindows *ScheduleWindows `json:"schedule_windows,omitempty"`
@@ -547,6 +567,8 @@ type CreateCampaign struct {
 	RampStart     *int  `json:"ramp_start,omitempty"`
 	RampIncrement *int  `json:"ramp_increment,omitempty"`
 	RampCeiling   *int  `json:"ramp_ceiling,omitempty"`
+	// WarmupGraduation defaults to true: mailboxes leaving warmup earn volume with replies.
+	WarmupGraduation *bool `json:"warmup_graduation,omitempty"`
 
 	// ESP/provider matching + new-lead throttle + tracking-domain override.
 	ESPMatchMode       *string `json:"esp_match_mode,omitempty"`

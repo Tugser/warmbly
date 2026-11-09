@@ -111,6 +111,7 @@ Campaigns, steps and activity logs are scoped to the selected organization for s
 | GET | `/campaigns/:id/leads/:contactId/cc/suggestions` | `READ_CAMPAIGNS` + `READ_CONTACTS` |
 | GET | `/campaigns/:id/logs` | `READ_CAMPAIGNS` |
 | GET | `/campaigns/:id/send-plan` | `READ_CAMPAIGNS` |
+| GET | `/campaigns/:id/lead-timezones` | `READ_CAMPAIGNS` |
 | GET | `/campaigns/:id/forms` | `READ_CAMPAIGNS` |
 | GET/POST/PATCH/DELETE | `/campaigns/:id/steps[/:sid]` | `READ_CAMPAIGNS` for GET, `WRITE_CAMPAIGNS` otherwise |
 | PATCH | `/campaigns/:id/step-layout` | `WRITE_CAMPAIGNS` |
@@ -180,6 +181,17 @@ The `cc` calls under the same path set the contacts copied on every email to one
 The import pair is two steps over the same file: preview parses it and suggests a column mapping (matching headers to your existing custom fields), commit applies the mapping you chose. Commit takes the stricter `BULK_CONTACTS` scope because one call writes up to 50,000 rows. A mapping problem, an unusable custom-field name or no `email` column, is a `400` on the whole request; see [contacts](/api/reference/contacts/).
 
 AI contact research is charged to the workspace balance for the tokens and web searches it uses (a run that finds nothing is still charged for its searching) and only saves cited findings. See the [AI contact research](/guides/ai-contact-research/) guide. The batch endpoint accepts up to 500 contact ids and drains in the background.
+
+### Meetings
+
+| Method | Path | API Permission |
+|--------|------|----------------|
+| GET | `/meetings` | `READ_CONTACTS` |
+| GET | `/meetings/summary` | `READ_CONTACTS` |
+| POST | `/meetings` | `WRITE_CONTACTS` |
+| DELETE | `/meetings/:id` | `WRITE_CONTACTS` |
+
+Meetings follow the contact scopes and the **View contacts** and **Manage contacts** member permissions, and are scoped to the workspace of the caller.
 
 ### Lead finder
 

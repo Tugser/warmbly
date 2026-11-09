@@ -40,6 +40,7 @@ struct CampaignSettingsPage: View {
             }
         }
         .listStyle(.insetGrouped)
+        .readableMargins()
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -169,19 +170,24 @@ struct CampaignSettingsPage: View {
     private var rampSection: some View {
         Section {
             toggleRow(
+                "Wait for replies", subtitle: "Mailboxes leaving warmup start at 5/day", icon: "arrowshape.turn.up.left.fill", tone: .orange,
+                value: campaign.warmupGraduation ?? true,
+                body: { CampaignUpdateBody(warmupGraduation: $0) }, mutate: { $0.warmupGraduation = $1 }
+            )
+            toggleRow(
                 "Gradual ramp-up", subtitle: "Raise the daily send slowly over time", icon: "chart.line.uptrend.xyaxis", tone: .orange,
                 value: campaign.rampEnabled ?? false,
                 body: { CampaignUpdateBody(rampEnabled: $0) }, mutate: { $0.rampEnabled = $1 }
             )
             if campaign.rampEnabled == true {
                 stepperRow(
-                    "Start", subtitle: "emails/day on day one", icon: "1.circle.fill", tone: .orange,
-                    value: campaign.rampStart ?? 10, range: 1...100,
+                    "Start", subtitle: "emails/day on day one, up to the ceiling", icon: "1.circle.fill", tone: .orange,
+                    value: campaign.rampStart ?? 10, range: 1...min(max(campaign.rampCeiling ?? 50, 1), 5000),
                     body: { CampaignUpdateBody(rampStart: $0) }, mutate: { $0.rampStart = $1 }
                 )
                 stepperRow(
                     "Ceiling", subtitle: "the most it ramps to", icon: "arrow.up.to.line", tone: .orange,
-                    value: campaign.rampCeiling ?? 50, range: max(campaign.rampStart ?? 1, 1)...100,
+                    value: campaign.rampCeiling ?? 50, range: min(max(campaign.rampStart ?? 1, 1), 5000)...5000,
                     body: { CampaignUpdateBody(rampCeiling: $0) }, mutate: { $0.rampCeiling = $1 }
                 )
                 stepperRow(
@@ -193,7 +199,7 @@ struct CampaignSettingsPage: View {
         } header: {
             Text("Ramp-up")
         } footer: {
-            Text("Ramp only ever lowers volume against the daily limit, never raises it above your cap.")
+            Text("Wait for replies raises a mailbox leaving warmup by one a day for each lead who replied this week. Turn both off to send at each mailbox's daily limit. Ramp only ever lowers volume, never above your cap.")
         }
     }
 

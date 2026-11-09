@@ -29,6 +29,7 @@ export interface CreateCampaignInput {
     start_date?: string | null;
     end_date?: string | null;
     timezone?: string;
+    timezone_mode?: 'campaign' | 'recipient';
     days?: number;
     start_time?: string;
     end_time?: string;
@@ -45,6 +46,7 @@ export interface CreateCampaignInput {
     ramp_start?: number;
     ramp_increment?: number;
     ramp_ceiling?: number;
+    warmup_graduation?: boolean;
     esp_match_mode?: 'off' | 'prefer' | 'strict';
     max_new_leads_per_day?: number;
     prioritize_new_leads?: boolean;
