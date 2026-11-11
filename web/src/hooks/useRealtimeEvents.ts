@@ -541,6 +541,10 @@ export function useRealtimeEvents() {
           suppression: [['suppressions'], ['contacts'], ['analytics']],
           segment: [['segments'], ['contacts', 'list']],
           form: [['forms']],
+          // A client report, its share link or its schedule changed.
+          client_report: [['reports']],
+          // An agency's clients, staff, caps, plan or brand changed; a client joining or leaving moves the workspace list too.
+          agency: [['agency'], ['organizations'], ['brand']],
           campaign: [['campaigns'], ['analytics']],
           // One lead paused or resumed inside one campaign: the Leads list and
           // its scope-chip counts move, and so does the contact drawer.
@@ -555,11 +559,16 @@ export function useRealtimeEvents() {
           email_account: [['emails'], ['analytics', 'accounts'], ['sending-domains'], ['mailbox-grants', 'migration'], ['pool-link'], ['placement', 'seeds'], ['placement', 'overview'], ['mailbox-signin']],
           // A mailbox import created, retried or cancelled by a teammate; it may move mailboxes onto a grant.
           mailbox_import: [['emails', 'imports'], ['mailbox-grants', 'migration']],
+          // A client connect link created, revoked or used; the mailbox it connected arrives as email_account.
+          client_connect_link: [['emails', 'connect-links']],
           // An admin grant added, re-checked or removed, and an inbox vendor
           // account connected, re-keyed or removed.
           mailbox_grant: [['mailbox-grants'], ['emails', 'list'], ['mailbox-signin']],
           // A vendor reconnect moving on also moves the drawer's Sign-in section.
           mailbox_vendor: [['mailbox-vendors'], ['sending-domains'], ['mailbox-signin']],
+          // Partnership: a teammate saved or removed the workspace's own OAuth app, or made or revoked a sign-in link.
+          mailbox_oauth_app: [['mailbox-oauth-apps']],
+          mailbox_connect_link: [['mailbox-connect-links']],
           // A sending domain's root redirect or vendor forwarding changed. Its
           // tracking host is an email_account write, covered above.
           domain_redirect: [['sending-domains']],
@@ -569,6 +578,8 @@ export function useRealtimeEvents() {
           // The workspace image library the composer picks body images from.
           email_image: [['email-images']],
           organization: [['organizations']],
+          // A workspace's brand: the Branding page, and the chrome a client member sees.
+          workspace_brand: [['brand']],
           // A risk transition changes send caps and warmup pool placement, so
           // the mailbox and analytics views move with it, not just the banner.
           org_risk: [['organizations'], ['emails'], ['analytics']],

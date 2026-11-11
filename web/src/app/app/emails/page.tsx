@@ -32,7 +32,8 @@ import useCloudPool from "@/hooks/useCloudPool";
 import useAuthConfig from "@/lib/api/hooks/auth/useAuthConfig";
 import { cloudMailboxPickerOpened } from "@/lib/cloudMailboxConnect";
 import { providerSupported } from "@/app/app/settings/warmbly-cloud/providers";
-import { CloudIcon, MailCheckIcon } from "lucide-react";
+import { CloudIcon, Link2Icon, MailCheckIcon } from "lucide-react";
+import ConnectLinksDialog from "@/components/app/emails/connect-links/ConnectLinksDialog";
 import { PlacementRateBadge } from "@/components/app/placement/PlacementCharts";
 import type { CloudLinkMailboxRow } from "@/lib/api/models/app/cloudlink/CloudLink";
 import { cloudLinkScope, invalidateWarmupReports } from "@/lib/api/hooks/app/cloudlink/warmupReports";
@@ -170,6 +171,7 @@ export default function AddressesPage() {
     const [removing, setRemoving] = React.useState(false);
     const [bulkStart, setBulkStart] = React.useState<string[] | null>(null);
     const [bulkSignature, setBulkSignature] = React.useState(false);
+    const [inviteOpen, setInviteOpen] = React.useState(false);
     const [searchParams, setSearchParams] = useSearchParams();
     const queryClient = useQueryClient();
 
@@ -235,8 +237,8 @@ export default function AddressesPage() {
     );
     // One resolution per mailbox per input change; sorting and the virtualized rows read it on every scroll.
     const warmupSource = useMemo<WarmupSource>(
-        () => ({ connected: cloud.connected, loading: cloud.loading, unavailable: cloud.unavailable, reportsUnavailable: cloud.reportsUnavailable, ownershipHidden: cloud.ownershipHidden, selfExecutionGranted: cloud.selfExecutionGranted, rowFor: cloud.rowFor }),
-        [cloud.connected, cloud.loading, cloud.unavailable, cloud.reportsUnavailable, cloud.ownershipHidden, cloud.selfExecutionGranted, cloud.rowFor],
+        () => ({ connected: cloud.connected, loading: cloud.loading, unavailable: cloud.unavailable, reportsUnavailable: cloud.reportsUnavailable, ownershipHidden: cloud.ownershipHidden, rowFor: cloud.rowFor }),
+        [cloud.connected, cloud.loading, cloud.unavailable, cloud.reportsUnavailable, cloud.ownershipHidden, cloud.rowFor],
     );
     const warmupById = useMemo(() => {
         const m = new Map<string, MailboxWarmup>();
@@ -592,6 +594,9 @@ export default function AddressesPage() {
                 <TopbarAction variant="ghost" href="/app/emails/domains" icon={<GlobeIcon className="w-3 h-3" />}>
                     <span className="sr-only sm:not-sr-only">Sending domains</span>
                 </TopbarAction>
+                <TopbarAction variant="ghost" onClick={() => setInviteOpen(true)} icon={<Link2Icon className="w-3 h-3" />}>
+                    <span className="sr-only sm:not-sr-only">Invite client to connect</span>
+                </TopbarAction>
                 <TopbarAction
                     onClick={() => p?.setAddEmail(true)}
                     icon={<PlusIcon className="w-3 h-3" />}
@@ -845,6 +850,8 @@ export default function AddressesPage() {
 
             <InboxDetails emails={emailsData.emails} view={view} setView={setView} initialTab={viewTab} tabIntentKey={tabIntentKey} onTabIntentConsumed={consumeTabIntent} canWarmup={canWarmup} />
 
+            <ConnectLinksDialog open={inviteOpen} onClose={() => setInviteOpen(false)} />
+
             <SigninMigrationDialog
                 open={migrationOpen}
                 focusDomain={migrationFocus}
@@ -1012,7 +1019,7 @@ const MailboxRow = React.memo(function MailboxRow({
     // Local actions wait until Cloud ownership is known; a missing report is not a local mailbox.
     const localOwned = !inCloud && warmup.source === "local";
     const cloudActivity = warmup.cloudActivity ?? warmup.activity;
-    const cloudPaused = cloudActivity === "paused" || cloudActivity === "receive_only";
+    const cloudPaused = cloudActivity === "paused" || cloudActivity === "receive_only" || cloudActivity === "needs_credential";
     const cloudResume = cloudPaused || cloudActivity === "off";
     const cloudUnknown = cloudReportMissing(warmup);
     const cloudLabel = `Warmbly Cloud: ${warmupActivityLabel[warmup.activity]}`;
@@ -1027,7 +1034,9 @@ const MailboxRow = React.memo(function MailboxRow({
     };
 
     // A refused send outranks the count: it is why the count is not moving.
-    const sendFailure = inCloud ? cloudSendFailure(cloud?.cloud) : warming ? ws?.send_failure : undefined;
+    const reportedFailure = inCloud ? cloudSendFailure(cloud?.cloud) : warming ? ws?.send_failure : undefined;
+    // Provider pacing is absorbed by the scheduler; the drawer explains it.
+    const sendFailure = reportedFailure?.kind === "provider_throttle" ? undefined : reportedFailure;
     const nextWarmup = warming && ws?.next_send_at ? nextSlotLabel(ws.next_send_at, undefined, box.timezone || workspaceZone || "UTC") : undefined;
 
     // Warmup column: what's flowing today and why.
@@ -1344,7 +1353,7 @@ const MailboxRow = React.memo(function MailboxRow({
                                         onSelect={() => void cloudRun(() => actions.cloudLifecycle(box.id, cloudResume ? "resume" : "pause"), cloudResume ? "Warmup resumed" : "Warmup paused")}
                                         icon={cloudResume ? <PlayIcon className="w-3 h-3" /> : <PauseIcon className="w-3 h-3" />}
                                     >
-                                        {cloudUnknown ? "Cloud warmup status unavailable" : cloudResume ? "Resume in Warmbly Cloud" : "Pause in Warmbly Cloud"}
+                                        {cloudActivity === "needs_credential" ? "Paused until Cloud holds its credential" : cloudUnknown ? "Cloud warmup status unavailable" : cloudResume ? "Resume in Warmbly Cloud" : "Pause in Warmbly Cloud"}
                                     </PopoverMenuItem>
                                     <PopoverMenuItem
                                         danger
@@ -1690,7 +1699,7 @@ function MailboxStatusPill({ box, status, stale, historicalIssue, warmup, compac
     if (!status) return <span className="text-[10.5px] text-slate-500">{pending ? "Checking…" : "Unavailable"}</span>;
 
     // One word; the icons beside it say which activities are on. An unknown warmup state is not reported as idle.
-    const idle = !warmupUnknown(warmup) ? "Idle" : warmup.activity === "checking" ? "Checking…" : warmup.activity === "unavailable" || warmup.activity === "unconfirmed" ? "Unavailable" : "Pending";
+    const idle = !warmupUnknown(warmup) ? "Idle" : warmup.activity === "checking" ? "Checking…" : warmup.activity === "unavailable" ? "Unavailable" : "Pending";
     const label = sending && warming ? "Active" : sending ? "Sending" : resting ? (lifecycle?.state === "reserve" ? "Reserve" : "Resting") : warming ? "Warming" : idle;
     const title = [
         sending ? "Sending campaign emails" : resting ? `Held out of campaign sending${lifecycle?.reason ? `: ${lifecycle.reason}` : ""}` : "Not in a live campaign",

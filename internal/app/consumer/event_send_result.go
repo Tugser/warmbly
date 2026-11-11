@@ -98,10 +98,6 @@ func (s *JobsService) applyEmailSent(ctx context.Context, result models.SendEmai
 				log.Warn().Err(err).Str("task_id", task.ID.String()).Msg("could not record a placement probe's message id")
 			}
 		}
-	case repository.TaskTypeCloudWarmup:
-		if s.CloudExec != nil {
-			return s.CloudExec.SendResolved(ctx, task.ID, result)
-		}
 	case "warmup":
 		// Without this the recipient has nothing to match a warmup email
 		// against when the verify header did not survive delivery.
@@ -226,10 +222,6 @@ func (s *JobsService) applyEmailFailed(ctx context.Context, result models.SendEm
 	case "placement":
 		if s.PlacementRepo != nil {
 			return s.PlacementRepo.FailProbeByTask(ctx, task.ID, reason)
-		}
-	case repository.TaskTypeCloudWarmup:
-		if s.CloudExec != nil {
-			return s.CloudExec.SendResolved(ctx, task.ID, result)
 		}
 	}
 	return nil
@@ -563,6 +555,18 @@ func (s *JobsService) notifyUserSendFailed(ctx context.Context, task *repository
 		s.StreamingPublisher.PublishEmailError(ctx, account.UserID, account.ID, taskID,
 			"Email could not be sent", fmt.Sprintf("%s could not send your email: %s", account.Email, reason))
 	})
+}
+
+// notifyManualSendUnsent tells the owner of a manual send that recovery released before any worker started it.
+func (s *JobsService) notifyManualSendUnsent(ctx context.Context, taskID uuid.UUID) {
+	if s.TaskRepo == nil {
+		return
+	}
+	task, err := s.TaskRepo.GetTask(ctx, taskID)
+	if err != nil || task == nil {
+		return
+	}
+	s.notifyUserSendFailed(ctx, task, "it never reached its sending worker, so nothing was sent. Send it again.")
 }
 
 // sendFailureReason picks the most useful human-readable reason and the

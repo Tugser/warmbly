@@ -95,6 +95,14 @@ Each row shows email, role, access, and join date, with your own row tagged "you
 
 To remove someone, hover (or tap) their row and click the remove icon. **You cannot remove the owner or yourself.** To leave a workspace you own, transfer ownership first.
 
+### Transfer ownership
+
+A workspace has exactly one owner. The owner sees a key icon on every other member's row: click it, confirm, and that member becomes the owner. You are asked to sign in again first if you have not done so recently. The new owner must already be a member, so invite them and wait for them to accept before handing over.
+
+The handover takes effect at once. The new owner gets full control, including billing, deleting the workspace and transferring ownership again, and any roles or restricted access they held are cleared. You stay in the workspace as an Admin, and only the new owner can hand ownership back. Mailboxes, campaigns, contacts, warmup, API keys and a link to Warmbly Cloud are untouched: they belong to the workspace, not to its owner.
+
+A member whose account is scheduled for deletion or suspended cannot take ownership. Only the owner can transfer, and the action is not available to API keys.
+
 Removal applies to someone who is signed in right now. Their open dashboard loses the workspace on its next request and its live updates stop, and they are asked to pick another workspace they belong to. Apps they authorized in the workspace are disconnected. Nothing they created is removed with them: mailboxes, contacts, campaigns and API keys belong to the workspace, so revoke their keys under **API keys** if those should go too. Realtime channels refresh access at least every 30 seconds and before delivering with an expired authorization check, even if a change event is missed. A changed role or a new owner reaches open dashboards' live updates without a reload.
 
 </Fold>
@@ -163,6 +171,7 @@ What a restricted member sees:
 - **Workspace summary**: campaign counts cover their campaigns, contact counts cover distinct contacts in those campaigns, and mailbox counts cover their mailboxes. Today's confirmed campaign sends must belong to both a granted campaign and a granted mailbox. Member counts and AI voice fields are omitted.
 - **Inbox**: the conversations of their mailboxes, with counts and filters to match. Category lists include only categories applied to conversations with messages in accessible mailboxes. Thread labels require an accessible message; unknown and inaccessible threads both answer as not found.
 - **Live updates** for those resources only. They do not appear in the team's presence and do not see who else is online.
+- **Copy to workspace**: unavailable. Nothing shared with them can be copied to another workspace, and nothing can be copied into a workspace where they are restricted.
 
 Everything that cannot yet be narrowed to a scope is unavailable to them, and shows as locked in their sidebar with the reason: contacts, CRM, templates, forms, automations, deliverability, placement tests, settings other than their own profile and security, the AI assistant, and the Slack app. Resource ownership does not bypass access checks for live events or notifications. They are not sent workspace notifications, including queued email or push notifications, and stored workspace notifications are hidden while their membership is restricted or removed. Personal sign-in security notices remain available. An API key a restricted member already holds, and an app they authorized, are held to the same scope, the same routes and the same client role; they cannot create new keys.
 

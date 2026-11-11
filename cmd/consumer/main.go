@@ -39,7 +39,6 @@ import (
 	"github.com/warmbly/warmbly/internal/app/notification"
 	"github.com/warmbly/warmbly/internal/app/opsnotify"
 	"github.com/warmbly/warmbly/internal/app/pipedrive"
-	"github.com/warmbly/warmbly/internal/app/poollink"
 	"github.com/warmbly/warmbly/internal/app/replyclassify"
 	"github.com/warmbly/warmbly/internal/app/salesforce"
 	warmupapp "github.com/warmbly/warmbly/internal/app/warmup"
@@ -69,7 +68,6 @@ import (
 	"github.com/warmbly/warmbly/internal/pkg/nodeauth"
 	"github.com/warmbly/warmbly/internal/pkg/typesafe"
 	"github.com/warmbly/warmbly/internal/repository"
-	"github.com/warmbly/warmbly/internal/tasks"
 )
 
 func main() {
@@ -292,11 +290,7 @@ func main() {
 	var aiProviderC generation.Provider
 	// Pluggable web search (Serper/SearXNG) backs the AI switch's optional
 	// company lookup on reply-triggered automations that run in the consumer.
-	aiSearchC := generation.NewSearchClient(
-		cfg.GetStringOptional(ctx, "SEARCH_PROVIDER", "search/provider", ""),
-		cfg.GetStringOptional(ctx, "SEARCH_API_URL", "search/api_url", ""),
-		cfg.GetSecretOptional(ctx, "SEARCH_API_KEY", "search/api_key", ""),
-	)
+	aiSearchC := generation.SearchFromConfig(cfg.Lookup(ctx))
 	// Provider selection mirrors the backend: AI_PROVIDER preset + AI_* vars.
 	if cfgAI, rerr := generation.Resolve(generation.ProviderSettings{
 		Provider:   cfg.GetStringOptional(ctx, "AI_PROVIDER", "ai_provider", ""),
@@ -504,9 +498,7 @@ func main() {
 		advancedService.WireBounceJudge(typeSafeClient)
 	}
 
-	// Warmup actions for a mailbox a linked instance runs are queued for that instance instead of a worker.
-	eventsPublisher := poollink.NewSelfExecutionPublisher(events.NewPublisher(consumerBus, s3Client, consumerCodec, cipherService),
-		repository.NewPoolLinkRepository(primaryDB.Pool, primaryDB.ConnectSession), cipherService)
+	eventsPublisher := events.NewPublisher(consumerBus, s3Client, consumerCodec, cipherService)
 
 	// Every consumer loop records to scheduled_job_runs, so the admin panel
 	// lists it next to the backend's and can ask it to run now.
@@ -543,19 +535,6 @@ func main() {
 	advancedService.WireInboxTags(inboxTagRepo)
 
 	cloudLinkC := cloudlink.NewService(repository.NewCloudLinkRepository(primaryDB.Pool, credEncrypter, primaryDB.ConnectSession), emailRepo, nil)
-	// Runs Cloud's warmup for mailboxes whose only credential stays on this instance.
-	outboundAdmission, _ := taskRepo.(repository.OutboundAdmissionRepository)
-	cloudExec := cloudlink.NewExecution(cloudLinkC, cloudlink.ExecutionDeps{
-		Repo:      repository.NewCloudLinkExecRepository(primaryDB.Pool),
-		Publisher: eventsPublisher,
-		Admission: outboundAdmission,
-		Liveness:  tasks.NewWorkerLiveness(workerRepo, redisCache.Client),
-		Cipher:    cipherService,
-	})
-	var cloudExecution jobs.CloudExecution
-	if cloudExec != nil {
-		cloudExecution = cloudExec
-	}
 
 	jobsService := &jobs.JobsService{
 		CampaignIsolationEnabled:    config.CampaignSendIsolationEnabled(),
@@ -574,10 +553,10 @@ func main() {
 		WarmupRepo:                  warmupRepo,
 		PoolLinkRepo:                repository.NewPoolLinkRepository(primaryDB.Pool, primaryDB.ConnectSession),
 		CloudLink:                   cloudLinkC,
-		CloudExec:                   cloudExecution,
 		WarmupContentRepo:           repository.NewWarmupContentRepository(primaryDB.Pool),
 		WarmupEngagementRepo:        repository.NewWarmupEngagementRepository(primaryDB.Pool),
 		WarmupRecoveryRepo:          repository.NewWarmupRecoveryRepository(primaryDB.Pool),
+		ExternalWarmup:              repository.NewExternalWarmupRepository(primaryDB.Pool),
 		WarmupPlacementRepo:         repository.NewWarmupPlacementRepository(primaryDB),
 		PlacementRepo:               repository.NewPlacementRepository(primaryDB),
 		WarmupService:               warmupService,
@@ -639,6 +618,7 @@ func main() {
 	// effective dwell close to the requested value.
 	go jobsService.StartWarmupEngagementPoller(ctx, 30*time.Second)
 	go jobsService.StartWarmupInboxCleanup(ctx)
+	go jobsService.StartExternalWarmupSweep(ctx)
 	go jobsService.StartWarmupFilingRecovery(ctx)
 	// Deletes warmup mail past its retention window from the mailbox itself
 	// and prunes the per-message warmup records after theirs.
@@ -661,7 +641,6 @@ func main() {
 	go jobsService.StartCloudStandingSync(ctx, 5*time.Minute)
 	// Mirrors the warmup settings Warmbly Cloud owns, so edits made there show here.
 	go jobsService.StartCloudSettingsSync(ctx, 15*time.Minute)
-	go cloudExec.Run(ctx)
 
 	// Start dead worker detection (every 5 minutes)
 	go jobsService.StartDeadWorkerDetection(ctx, 5*time.Minute)

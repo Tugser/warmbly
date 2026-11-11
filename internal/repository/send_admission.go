@@ -124,10 +124,9 @@ func sendAuthority(ctx context.Context, tx pgx.Tx, task, mailbox, org, worker uu
 	 AND o.risk_state<>'suspended'
 	 AND (NOT ea.send_recovery_hold OR ($6 AND ea.send_recovery_reason='unknown' AND ea.send_recovery_task_id=t.id))
 	 AND (ea.send_cooldown_until IS NULL OR ea.send_cooldown_until<=NOW())
-	 AND (($4<>`+nilUUIDSQL+` AND ea.worker_id=$4 AND NOT `+instanceExecutedSQL("ea.id")+`
-	  AND EXISTS(SELECT 1 FROM fleet_nodes n WHERE n.id=$4 AND n.warmup_send_protocol>=2 AND n.active AND n.last_seen_at>NOW()-INTERVAL '10 minutes'))
-	  OR ($4=`+nilUUIDSQL+` AND t.task_type='warmup' AND `+selfExecutionLiveSQL("ea.id")+`))
-	 AND (t.task_type NOT IN ('warmup','placement','cloud_warmup') OR ea.test_mode IS NULL OR ea.test_mode='legacy' OR ea.test_mode='diagnostic' AND ea.test_send_enabled)
+	 AND ea.worker_id=$4 AND NOT `+instanceExecutedSQL("ea.id")+`
+	 AND EXISTS(SELECT 1 FROM fleet_nodes n WHERE n.id=$4 AND n.warmup_send_protocol>=2 AND n.active AND n.last_seen_at>NOW()-INTERVAL '10 minutes')
+	 AND (t.task_type NOT IN ('warmup','placement') OR ea.test_mode IS NULL OR ea.test_mode='legacy' OR ea.test_mode='diagnostic' AND ea.test_send_enabled)
 	 AND t.send_result_applied_at IS NULL AND ((NOT $6 AND t.status='active') OR ($6 AND t.status='completed'))
 	 AND t.campaign_send_isolated_at IS NULL
 	 FROM tasks t JOIN email_accounts ea ON ea.id=t.email_account_id JOIN organizations o ON o.id=ea.organization_id
@@ -135,7 +134,8 @@ func sendAuthority(ctx context.Context, tx pgx.Tx, task, mailbox, org, worker uu
 	if err != nil {
 		return "", err
 	}
-	if !allowed {
+	// A lane outside these, such as a leftover cloud_warmup task, is never sent.
+	if !allowed || lane != "warmup" && lane != "campaign" && lane != "email" && lane != "placement" {
 		return "", ErrSendAdmissionDenied
 	}
 	return lane, nil
@@ -182,14 +182,6 @@ func (r *taskRepository) ReserveOutbound(ctx context.Context, in OutboundReserva
 	lane, err := sendAuthority(ctx, tx, in.TaskID, in.MailboxID, in.OrganizationID, in.WorkerID, string(in.Provider), warmupNonce != nil)
 	if err != nil {
 		return uuid.Nil, err
-	}
-	if lane != "warmup" && lane != "campaign" && lane != "email" && lane != "placement" && lane != TaskTypeCloudWarmup {
-		return uuid.Nil, ErrSendAdmissionDenied
-	}
-	if lane == TaskTypeCloudWarmup {
-		if err = checkCloudSendCommand(ctx, tx, in.TaskID, in.MailboxID); err != nil {
-			return uuid.Nil, err
-		}
 	}
 	if err = checkSendRecipients(ctx, tx, in.TaskID, in.OrganizationID, lane, recipients); err != nil {
 		return uuid.Nil, err
@@ -248,7 +240,7 @@ func (r *taskRepository) ReserveOutbound(ctx context.Context, in OutboundReserva
 	}
 	// Manual (unibox) mail is a conversation, not outreach: it spends none of
 	// these allocations and was held to its own fair use above.
-	if lane != "email" && (max(dayTotal, attemptedToday+reservedAttemptsToday) >= sharedCap || occurrences+len(recipients) > rollingCap || lane == "campaign" && dayCold >= campaignCap || (lane == "warmup" || lane == "placement" || lane == TaskTypeCloudWarmup) && dayDiagnostic >= warmupCap) {
+	if lane != "email" && (max(dayTotal, attemptedToday+reservedAttemptsToday) >= sharedCap || occurrences+len(recipients) > rollingCap || lane == "campaign" && dayCold >= campaignCap || (lane == "warmup" || lane == "placement") && dayDiagnostic >= warmupCap) {
 		return uuid.Nil, ErrSendAdmissionDenied
 	}
 	if lane == "campaign" {
@@ -272,7 +264,7 @@ func (r *taskRepository) ReserveOutbound(ctx context.Context, in OutboundReserva
 		nonce = *warmupNonce
 	}
 	_, err = tx.Exec(ctx, `UPDATE tasks SET send_reserved_at=NOW(),send_business_day=(NOW() AT TIME ZONE $2)::date,send_recipients=$3,
-	 send_released_at=NULL,send_executor_nonce=$4,send_executor_worker=NULLIF($5::uuid,`+nilUUIDSQL+`),send_executor_started_at=NULL,send_executor_result=NULL,
+	 send_released_at=NULL,send_executor_nonce=$4,send_executor_worker=$5,send_executor_started_at=NULL,send_executor_result=NULL,
 	 send_result_state='unknown',status='completed',completed_at=CASE WHEN $6 THEN COALESCE(completed_at,NOW()) ELSE NOW() END WHERE id=$1`, in.TaskID, timezone, recipients, nonce, in.WorkerID, lane == "warmup")
 	if err != nil {
 		return uuid.Nil, err
@@ -503,9 +495,6 @@ func (r *taskRepository) BeginOutbound(ctx context.Context, task, mailbox, worke
 	if err == nil && lane == "campaign" {
 		err = checkMailboxSendingPlan(ctx, tx, task, mailbox)
 	}
-	if err == nil && lane == TaskTypeCloudWarmup {
-		err = checkCloudSendCommand(ctx, tx, task, mailbox)
-	}
 	if err != nil {
 		if !errors.Is(err, ErrSendAdmissionDenied) {
 			return nil, err
@@ -602,13 +591,19 @@ func (r *taskRepository) CancelOutbound(ctx context.Context, task, mailbox, work
 }
 
 func (r *taskRepository) cancelOutbound(ctx context.Context, task, mailbox, worker, nonce uuid.UUID, reason error) error {
+	_, err := r.releaseOutbound(ctx, task, mailbox, worker, nonce, reason)
+	return err
+}
+
+// releaseOutbound walks back a reservation that never started and returns its task type, or "" when there was none to release.
+func (r *taskRepository) releaseOutbound(ctx context.Context, task, mailbox, worker, nonce uuid.UUID, reason error) (string, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer tx.Rollback(ctx)
 	if err = lockSend(ctx, tx, task, mailbox); err != nil {
-		return err
+		return "", err
 	}
 	var lane string
 	err = tx.QueryRow(ctx, `UPDATE tasks SET send_released_at=NOW(),send_result_state='failed',send_result_applied_at=NOW(),status='cancelled'
@@ -616,45 +611,51 @@ func (r *taskRepository) cancelOutbound(ctx context.Context, task, mailbox, work
 	 AND (task_type<>'warmup' OR EXISTS(SELECT 1 FROM warmup_tasks w WHERE w.task_id=tasks.id AND w.dispatch_nonce=$4
 	 AND w.dispatch_worker_id=$3 AND w.dispatch_started_at IS NULL AND w.dispatch_result IS NULL)) RETURNING task_type`, task, mailbox, worker, nonce).Scan(&lane)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+		return "", nil
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 	if lane == "campaign" {
 		var c, contact, sequence uuid.UUID
 		var newLead bool
 		err = tx.QueryRow(ctx, `SELECT ct.campaign_id,ct.contact_id,ct.sequence_id,NOT EXISTS(SELECT 1 FROM campaign_contact_progress p WHERE p.campaign_id=ct.campaign_id AND p.contact_id=ct.contact_id AND p.sent_at IS NOT NULL) FROM campaign_tasks ct WHERE ct.task_id=$1`, task).Scan(&c, &contact, &sequence, &newLead)
 		if err != nil {
-			return err
+			return "", err
 		}
 		inner := context.WithValue(ctx, sendResultKey{}, sendResultContext{tx: tx, taskID: task})
 		if err = NewCampaignProgressRepository(r.db).ReleaseSend(inner, c, contact, sequence, newLead); err != nil {
-			return err
+			return "", err
 		}
 		if reason != nil {
 			if _, err = tx.Exec(ctx, `INSERT INTO task_failures(task_id,title,message) VALUES($1,'Send admission denied',$2)
 			 ON CONFLICT(task_id) DO UPDATE SET title=EXCLUDED.title,message=EXCLUDED.message`, task, reason.Error()); err != nil {
-				return err
+				return "", err
 			}
 			metadata := map[string]any{"level": "error", "code": SendAdmissionCode(reason), "contact_id": contact.String(), "sequence_id": sequence.String(), "account_id": mailbox.String(), "task_id": task.String(), "error": reason.Error(), "will_retry": true}
 			if _, err = tx.Exec(ctx, `INSERT INTO campaign_logs(campaign_id,event_type,message,metadata) VALUES($1,'email_failed',$2,$3)`, c, "Send admission denied before worker execution, will retry: "+reason.Error(), metadata); err != nil {
-				return err
+				return "", err
 			}
 		}
 	}
 	if lane == "warmup" {
 		if err = refundWarmupCharge(ctx, tx, task, mailbox); err != nil {
-			return err
+			return "", err
 		}
 		if _, err = tx.Exec(ctx, `DELETE FROM warmup_tokens WHERE task_id=$1`, task); err != nil {
-			return err
+			return "", err
+		}
+	}
+	if lane == "email" {
+		// The outcome is known now: nothing was sent.
+		if err = resolveSendDeadLetter(ctx, tx, task); err != nil {
+			return "", err
 		}
 	}
 	if err = refreshUnknownSendHold(ctx, tx, mailbox, task); err != nil {
-		return err
+		return "", err
 	}
-	return tx.Commit(ctx)
+	return lane, tx.Commit(ctx)
 }
 
 func checkWarmupRecipientReservation(ctx context.Context, tx pgx.Tx, task, sender uuid.UUID) error {
@@ -685,29 +686,6 @@ func checkWarmupRecipientReservation(ctx context.Context, tx pgx.Tx, task, sende
 		return err
 	}
 	if !allowed {
-		return ErrSendAdmissionDenied
-	}
-	return nil
-}
-
-// checkCloudSendCommand admits a cloud_warmup send only on the live Cloud
-// command that created it, for a mailbox this instance executes.
-func checkCloudSendCommand(ctx context.Context, tx pgx.Tx, task, mailbox uuid.UUID) error {
-	var a cloudCommandAdmission
-	var executor *string
-	err := tx.QueryRow(ctx, `SELECT c.executor,k.kind,k.state,k.admit_until FROM cloud_link_commands k
-	 LEFT JOIN cloud_link_mailboxes c ON c.email_account_id=k.email_account_id AND c.instance_id=k.instance_id
-	 WHERE k.task_id=$1 AND k.email_account_id=$2`, task, mailbox).Scan(&executor, &a.Kind, &a.State, &a.AdmitUntil)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrSendAdmissionDenied
-	}
-	if err != nil {
-		return err
-	}
-	if executor != nil {
-		a.Linked, a.Executor = true, models.PoolLinkExecutor(*executor)
-	}
-	if !cloudSendAdmitted(a, time.Now()) {
 		return ErrSendAdmissionDenied
 	}
 	return nil

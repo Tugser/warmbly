@@ -962,6 +962,10 @@ export interface AdminPlan {
     name?: string | null;
     public?: boolean | null;
     price?: number | string | null;
+    /** Set on an agency plan only: the sends its clients share each period (0 is no cap). */
+    monthly_send_pool?: number | null;
+    /** What an agency plan refills the shared AI balance to each period. */
+    agency_ai_allowance_usd?: number | null;
 }
 
 /** A private plan an operator lets one workspace buy. */
@@ -977,33 +981,6 @@ export interface PlanOffer {
     active: boolean;
 }
 
-/** An operator's permission for linked instances to warm without handing over credentials. */
-export interface SelfExecutionGrant {
-    organization_id: string;
-    granted_by?: string | null;
-    reason: string;
-    granted_at: string;
-    expires_at?: string | null;
-}
-
-export interface SelfExecutionStatus {
-    grant: SelfExecutionGrant | null;
-    active: boolean;
-}
-
-export type ReporterTrustState = "trusted" | "probation" | "untrusted";
-
-/** How far Cloud trusts one credential-free mailbox's placement reports. */
-export interface SelfExecutedMailbox {
-    email_account_id: string;
-    email: string;
-    trust_state: ReporterTrustState;
-    reported_samples: number;
-    divergence?: number | null;
-    evaluated_at?: string | null;
-    last_leased_at?: string | null;
-}
-
 /** An account excused from the emailed login code. */
 export interface LoginCodeExemption {
     user_id: string;
@@ -1015,6 +992,8 @@ export interface LoginCodeExemption {
     password_expires_at?: string | null;
     test_workspace_id?: string | null;
     sample_data_seeded_at?: string | null;
+    /** The backend's seeding check: an active tester whose Test workspace grant is unexpired. */
+    sample_data_eligible?: boolean;
     /** Created through the tester flow, so it can be issued a new password. */
     created_as_tester?: boolean;
 }

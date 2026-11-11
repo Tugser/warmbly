@@ -39,6 +39,10 @@ const (
 var ErrForeignRows = errors.New("this archive holds records that already belong to another workspace on this instance, so nothing was imported. " +
 	"Import it into the workspace it was exported from, or into a workspace on another instance")
 
+// ErrOAuthAppConflict refuses an archive whose own OAuth app collides with one the destination already uses for that provider.
+var ErrOAuthAppConflict = errors.New("this workspace already has its own OAuth app for a provider the archive brings one for, and mailboxes can only be refreshed by the app that signed them in, so nothing was imported. " +
+	"Remove that app under Settings > Mailbox sign-in, or import into a workspace without one")
+
 // ImportFrom applies an archive to a destination workspace.
 //
 // The whole thing runs in one transaction. An import is a rare, deliberate,
@@ -195,6 +199,16 @@ func (s *service) ImportFrom(
 			"%d mailbox(es) have no usable credentials and are marked for reconnection.", reconnect))
 	}
 
+	if selected[models.OrgDataGroupAutomations] {
+		stale, err := s.repo.MarkIntegrationsNeedingReconnect(ctx, tx, orgID, integrationReconnectDetail, inboundReconnectDetail)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range stale {
+			result.Warnings = append(result.Warnings, integrationReconnectWarning(c))
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit import: %w", err)
 	}
@@ -215,6 +229,8 @@ type importContext struct {
 	selected map[models.OrgDataGroup]bool
 	// rules re-apply write rules to the tables in importRules.
 	rules *ruleEnv
+	// bytea names the current table's bytea columns on this instance.
+	bytea map[string]bool
 }
 
 // importTable streams one table's rows out of the archive and into the
@@ -303,6 +319,19 @@ func (s *service) importTable(
 			unknown++
 		}
 	}
+	// Columns rebuilt from a sealed one are written whenever that one arrives.
+	for _, sc := range t.Secrets {
+		if !slices.Contains(insertCols, sc.Column) {
+			// Without its sealed column only a clear value may travel (a previous-release archive), never a digest.
+			insertCols = slices.DeleteFunc(insertCols, func(c string) bool { return sc.Digest != "" && c == sc.Digest })
+			continue
+		}
+		for _, c := range []string{sc.Plaintext, sc.Digest} {
+			if c != "" && writable[c] && !slices.Contains(insertCols, c) {
+				insertCols = append(insertCols, c)
+			}
+		}
+	}
 	if len(insertCols) == 0 {
 		return 0, []string{fmt.Sprintf("No column of %s matched this instance, so it was skipped.", t.Name)}, nil
 	}
@@ -321,6 +350,8 @@ func (s *service) importTable(
 		warnings = append(warnings, fmt.Sprintf(
 			"%s has no primary key, so existing rows there were kept rather than overwritten.", t.Name))
 	}
+
+	ic.bytea = byteaColumns(destCols)
 
 	refs, err := s.referencePlan(ctx, t, destCols, ic.selected)
 	if err != nil {
@@ -358,9 +389,32 @@ func (s *service) importTable(
 		if foreign > 0 {
 			return fmt.Errorf("%s: %w", t.Name, ErrForeignRows)
 		}
+		var keptSecrets map[uuid.UUID]string
+		if t.Name == oauthAppsTable {
+			if err := s.refuseChangedOAuthApps(ctx, tx, orgID, batch); err != nil {
+				return err
+			}
+			if keptSecrets, err = s.repo.OAuthAppSecrets(ctx, tx, orgID, blankSecretApps(batch)); err != nil {
+				return err
+			}
+		}
 		n, err := s.repo.InsertBatch(ctx, tx, t.Name, insertCols, batch, ic.conflict, pk, t.OwnerScope(), orgID, resetOnOverwrite, invalidations)
 		if err != nil {
+			if t.Name == oauthAppsTable && repository.IsUniqueViolation(err) {
+				return ErrOAuthAppConflict
+			}
 			return err
+		}
+		if t.Name == oauthAppsTable {
+			if err := s.requireImportedOAuthApps(ctx, tx, orgID, batch); err != nil {
+				return err
+			}
+			// An archive without credentials never blanks the secret of an app the destination already holds.
+			for id, secret := range keptSecrets {
+				if err := s.repo.RestoreOAuthAppSecret(ctx, tx, orgID, id, secret); err != nil {
+					return err
+				}
+			}
 		}
 		total += n
 		batch = batch[:0]
@@ -474,6 +528,10 @@ func (s *service) importRow(
 
 	for _, sc := range t.Secrets {
 		raw, ok := obj[sc.Column]
+		if sc.Plaintext != "" && !IsSealed(jsonString(raw)) {
+			importUnsealedSecret(obj, sc, raw)
+			continue
+		}
 		if !ok {
 			continue
 		}
@@ -490,6 +548,7 @@ func (s *service) importRow(
 			// Sealed, but no passphrase. Blank it rather than storing a value
 			// this instance's keys can never open.
 			blankSecret(obj, sc)
+			setDerived(obj, sc, "")
 			continue
 		}
 		plain, oerr := OpenValue(ic.archiveKey, stored)
@@ -500,14 +559,77 @@ func (s *service) importRow(
 		if rerr != nil {
 			return nil, fmt.Errorf("%s.%s: %w", t.Name, sc.Column, rerr)
 		}
+		if ic.bytea[sc.Column] {
+			resealed = encodeBytea(resealed)
+		}
 		enc, merr := json.Marshal(resealed)
 		if merr != nil {
 			return nil, merr
 		}
 		obj[sc.Column] = enc
+		setDerived(obj, sc, plain)
 	}
 
 	return json.Marshal(obj)
+}
+
+// integrationReconnectDetail is the health detail an integration without its credentials carries.
+const integrationReconnectDetail = "Credentials did not come across with the workspace import: reconnect this integration."
+
+// inboundReconnectDetail is the health detail of a connection whose inbound URL alone did not travel.
+const inboundReconnectDetail = "The inbound URL did not come across with the workspace import: reconnect this integration for a new one."
+
+// integrationReconnectWarning is the one warning per connection, naming its provider and label, never a credential.
+func integrationReconnectWarning(c repository.IntegrationReconnect) string {
+	name := c.Provider
+	if c.Label != "" {
+		name = fmt.Sprintf("%s (%s)", c.Provider, c.Label)
+	}
+	missing := "its credentials"
+	switch {
+	case c.CredentialsMissing && c.InboundClosed:
+		missing = "its credentials or inbound URL"
+	case !c.CredentialsMissing:
+		missing = "its inbound URL"
+	}
+	return fmt.Sprintf("The %s integration arrived without %s and is marked for reconnection.", name, missing)
+}
+
+// importUnsealedSecret keeps only a clear value the archive carried (the sweep seals it here), never foreign ciphertext or a digest;
+// with no clear value it blanks the secret so the reconnect step closes the URL and names the connection.
+func importUnsealedSecret(obj map[string]json.RawMessage, sc SecretColumn, raw json.RawMessage) {
+	clear := jsonString(obj[sc.Plaintext])
+	hadSecret := jsonString(raw) != "" || string(bytes.TrimSpace(raw)) == `""` || (sc.Digest != "" && jsonString(obj[sc.Digest]) != "")
+	obj[sc.Column] = json.RawMessage(`null`)
+	setDerived(obj, sc, "")
+	switch {
+	case clear != "":
+		enc, _ := json.Marshal(clear)
+		obj[sc.Plaintext] = enc
+	case hadSecret:
+		obj[sc.Column] = json.RawMessage(`""`)
+	}
+}
+
+// setDerived rebuilds the clear and digest columns of a sealed one from its plaintext; "" clears them.
+func setDerived(obj map[string]json.RawMessage, sc SecretColumn, plain string) {
+	set := func(column, value string) {
+		if column == "" {
+			return
+		}
+		if value == "" {
+			obj[column] = json.RawMessage(`null`)
+			return
+		}
+		enc, _ := json.Marshal(value)
+		obj[column] = enc
+	}
+	set(sc.Plaintext, plain)
+	digest := ""
+	if plain != "" {
+		digest = repository.InboundSecretDigest(plain)
+	}
+	set(sc.Digest, digest)
 }
 
 // sealSecret re-encrypts a plaintext under this instance's key for that domain.
@@ -982,4 +1104,67 @@ func trimNewline(b []byte) []byte {
 		b = b[:len(b)-1]
 	}
 	return b
+}
+
+const oauthAppsTable = "organization_oauth_apps"
+
+// requireImportedOAuthApps refuses a batch the destination skipped: its mailboxes' grants would point at no client.
+func (s *service) requireImportedOAuthApps(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, batch []json.RawMessage) error {
+	ids := make([]uuid.UUID, 0, len(batch))
+	for _, raw := range batch {
+		var row struct {
+			ID uuid.UUID `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &row); err != nil {
+			return err
+		}
+		ids = append(ids, row.ID)
+	}
+	missing, err := s.repo.MissingOAuthApps(ctx, tx, orgID, ids)
+	if err != nil {
+		return err
+	}
+	if missing > 0 {
+		return ErrOAuthAppConflict
+	}
+	return nil
+}
+
+// refuseChangedOAuthApps refuses an app id the destination holds under another client, in either conflict mode.
+func (s *service) refuseChangedOAuthApps(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, batch []json.RawMessage) error {
+	ids := make([]uuid.UUID, 0, len(batch))
+	clients := make([]string, 0, len(batch))
+	for _, raw := range batch {
+		var row struct {
+			ID       uuid.UUID `json:"id"`
+			ClientID string    `json:"client_id"`
+		}
+		if err := json.Unmarshal(raw, &row); err != nil {
+			return err
+		}
+		ids, clients = append(ids, row.ID), append(clients, row.ClientID)
+	}
+	changed, err := s.repo.ChangedOAuthAppClients(ctx, tx, orgID, ids, clients)
+	if err != nil {
+		return err
+	}
+	if changed > 0 {
+		return ErrOAuthAppConflict
+	}
+	return nil
+}
+
+// blankSecretApps lists the archived OAuth apps that carry no client secret.
+func blankSecretApps(batch []json.RawMessage) []uuid.UUID {
+	var ids []uuid.UUID
+	for _, raw := range batch {
+		var row struct {
+			ID           uuid.UUID `json:"id"`
+			ClientSecret string    `json:"client_secret"`
+		}
+		if json.Unmarshal(raw, &row) == nil && row.ClientSecret == "" {
+			ids = append(ids, row.ID)
+		}
+	}
+	return ids
 }

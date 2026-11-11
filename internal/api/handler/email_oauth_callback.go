@@ -8,8 +8,10 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/warmbly/warmbly/internal/app/connectlink"
 	"github.com/warmbly/warmbly/internal/app/delegation"
 	"github.com/warmbly/warmbly/internal/app/email"
+	"github.com/warmbly/warmbly/internal/app/mailboxconnect"
 	"github.com/warmbly/warmbly/internal/app/poollink"
 	"github.com/warmbly/warmbly/internal/config"
 	"github.com/warmbly/warmbly/internal/errx"
@@ -146,6 +148,18 @@ func (h *Handler) renderOAuthCallback(c *gin.Context, provider string) {
 		return
 	}
 
+	// A sign-in link completes only in the browser its landing page bound.
+	if h.MailboxConnectService != nil && mailboxconnect.IsState(state) {
+		h.finishConnectLink(c, code, state, providerErr)
+		return
+	}
+
+	// A client signing in from a connect link has no session; the single-use state binds the link.
+	if connectlink.IsOAuthState(state) {
+		h.finishConnectLinkOAuth(c, provider, code, state, providerErr)
+		return
+	}
+
 	// An inbox vendor signing in for an import row has no session; the state alone carries the binding.
 	if email.IsVendorConsentState(state) {
 		h.finishVendorConsent(c, provider, code, state, providerErr)
@@ -185,7 +199,7 @@ func (h *Handler) renderOAuthCallback(c *gin.Context, provider string) {
 		} else if h.DelegationService != nil {
 			origin = h.DelegationService.OAuthReturnOrigin(c.Request.Context(), state)
 		}
-		data.AppOrigin = config.DashboardOrigin(origin)
+		data.AppOrigin = config.TrustedOrigin(origin)
 		data.Relay = ""
 		if data.AppOrigin != "" {
 			data.Relay = data.AppOrigin + "/oauth-return"

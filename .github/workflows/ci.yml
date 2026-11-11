@@ -35,6 +35,7 @@ jobs:
       admin: ${{ steps.filter.outputs.admin }}
       site: ${{ steps.filter.outputs.site }}
       forms: ${{ steps.filter.outputs.forms }}
+      portal: ${{ steps.filter.outputs.portal }}
       qa: ${{ steps.filter.outputs.qa }}
       make: ${{ steps.filter.outputs.make }}
       ios: ${{ steps.filter.outputs.ios }}
@@ -94,6 +95,11 @@ jobs:
               - 'web/src/components/app/forms/designCore.ts'
               - 'web/src/components/app/forms/form-theme.css'
               - 'scripts/check-forms-mirror.sh'
+            portal:
+              - 'portal/**'
+              - 'deploy/cloudflare/portal/**'
+              - 'deploy/docker/portal.Dockerfile'
+              - 'deploy/docker/portal/**'
             qa:
               - 'qa/**'
             make:
@@ -135,7 +141,7 @@ jobs:
         with:
           node-version: "22"
       - name: Check production configuration import
-        run: node --test .github/scripts/pages-*.test.mjs deploy/cloudflare/static-edge.test.mjs
+        run: node --test .github/scripts/pages-*.test.mjs deploy/cloudflare/*.test.mjs
 
   migrations-ci:
     name: Migrations
@@ -304,6 +310,15 @@ jobs:
           go test -race -v ./internal/repository -run '^TestLiveContactCampaignStateEmptySteps$' -count=1 | tee contact-campaign-steps.log
           grep -q -- '--- PASS: TestLiveContactCampaignStateEmptySteps ' contact-campaign-steps.log
 
+      - name: Form submission paging across equal timestamps (PostgreSQL)
+        if: matrix.suite == 'live-1'
+        env:
+          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
+        run: |
+          set -o pipefail
+          go test -race -v ./internal/repository -run '^TestLiveFormSubmissionsPageAcrossEqualAndCloseTimestamps$' -count=1 | tee form-submission-paging.log
+          grep -q -- '--- PASS: TestLiveFormSubmissionsPageAcrossEqualAndCloseTimestamps ' form-submission-paging.log
+
       - name: Campaign send admission regressions (PostgreSQL)
         if: matrix.suite == 'live-2'
         env:
@@ -320,6 +335,19 @@ jobs:
         run: |
           go test -race -p 1 ./internal/repository ./internal/scheduler ./internal/tasks -run '^TestLive(MailboxSendClaim(AdmitsOnePerGap|WaitsOutAReservedSend)|BookedSendsLeaveOutCampaignWakeups|ParkedCampaignDoesNotThrottleItsPoolMate|BookedSendsStillSpaceTheCampaign|ClaimedMailboxIsPassedOver|CampaignsSharingAMailboxSendOncePerGap|LostMailboxClaimReschedulesWithoutSending)$' -count=1
 
+      # A real pg_dump and psql against the same major the self-host compose ships.
+      - name: Instance backup and restore round trip (PostgreSQL)
+        if: matrix.suite == 'live-3'
+        env:
+          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
+        run: |
+          set -o pipefail
+          if [ ! -x /usr/lib/postgresql/16/bin/pg_dump ]; then
+            sudo apt-get update -q && sudo apt-get install -y -q postgresql-client-16
+          fi
+          go test -race -v ./cmd/warmblyctl -run '^TestLiveBackupRestoreRoundTrip$' -count=1 | tee backup-restore.log
+          grep -q -- '--- PASS: TestLiveBackupRestoreRoundTrip ' backup-restore.log
+
       - name: Postgres queue claim regressions (PostgreSQL)
         if: matrix.suite == 'live-3'
         env:
@@ -327,11 +355,43 @@ jobs:
         run: |
           go test -race -p 1 ./internal/repository -run '^TestLive(ConcurrentDispatchersNeverClaimTheSameTask|SendResultEffectsBatchClaimsDeliverEachEffectOnce|CRMClaimTakesDueAndLapsedJobsOnce)$' -count=1
 
+      - name: Scheduled email cancel and claim regressions (PostgreSQL)
+        if: matrix.suite == 'live-1'
+        env:
+          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
+        run: |
+          set -o pipefail
+          go test -race -v -p 1 ./internal/tasks -run '^TestLive(CancelledScheduledEmailIsNeverAdmitted|ClaimedScheduledEmailRefusesCancel|ScheduledEmailCancelAndExecutionNeverBothWin|UniboxSendRefusalIsRecordedNotDeadLettered|UnrecordedUniboxRefusalIsRetried)$' -count=1 | tee scheduled-cancel.log
+          for t in CancelledScheduledEmailIsNeverAdmitted ClaimedScheduledEmailRefusesCancel ScheduledEmailCancelAndExecutionNeverBothWin UniboxSendRefusalIsRecordedNotDeadLettered UnrecordedUniboxRefusalIsRetried; do
+            grep -q -- "--- PASS: TestLive$t " scheduled-cancel.log
+          done
+
       - name: Invited signup atomic provisioning regressions (PostgreSQL)
         if: matrix.suite == 'live-1'
         env:
           WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
         run: go test -race ./internal/repository -run '^TestLiveInvitedSignup$' -count=1
+
+      - name: Notification preference save regressions (PostgreSQL)
+        if: matrix.suite == 'live-1'
+        env:
+          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
+        run: |
+          set -o pipefail
+          go test -race -v ./internal/repository -run '^TestLiveNotificationPreferencesKeepKeysASaveOmits$' -count=1 | tee notification-preferences.log
+          grep -q '^--- PASS: TestLiveNotificationPreferencesKeepKeysASaveOmits ' notification-preferences.log
+
+      - name: Tester initial password and sample data regressions (PostgreSQL)
+        if: matrix.suite == 'live-1'
+        env:
+          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
+        run: |
+          set -o pipefail
+          go test -race -v -p 1 ./internal/repository -run '^TestLive(InitialPasswordLifecycle|ResetPasswordClearsAnIssuedExpiry|ReissueTesterPassword|TesterSampleData(IsSafeAndPreservesEdits|RollsBackAndSerializesRetries|RejectsNonTestAndInactiveWorkspaces|SurvivesInitialPasswordReplacement|ListsTheSeedableWorkspace))$' -count=1 | tee tester-lifecycle.log
+          for test in TestLiveInitialPasswordLifecycle TestLiveResetPasswordClearsAnIssuedExpiry TestLiveReissueTesterPassword TestLiveTesterSampleDataIsSafeAndPreservesEdits TestLiveTesterSampleDataRollsBackAndSerializesRetries TestLiveTesterSampleDataRejectsNonTestAndInactiveWorkspaces TestLiveTesterSampleDataSurvivesInitialPasswordReplacement TestLiveTesterSampleDataListsTheSeedableWorkspace; do
+            grep -q -- "--- PASS: $test " tester-lifecycle.log
+          done
+          if grep -q -- '--- SKIP:' tester-lifecycle.log; then exit 1; fi
 
       - name: Mailbox batch and folder identity regressions (PostgreSQL)
         if: matrix.suite == 'live-1'
@@ -383,6 +443,17 @@ jobs:
           go test -race -p 1 ./internal/repository -run '^TestLiveJobRun' -count=1
           go test -race -p 1 ./internal/infrastructure/db -run '^TestLiveScheduledJobRetirementUpgradePreservesExecutionHistory$' -count=1
 
+      - name: Idempotency-Key identity and completion regressions (PostgreSQL)
+        if: matrix.suite == 'live-3'
+        env:
+          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
+        run: |
+          set -o pipefail
+          go test -race -v -p 1 ./internal/app/idempotency ./internal/api/middleware -run '^TestLiveIdempotency' -count=1 | tee idempotency.log
+          for test in TestLiveIdempotencyConcurrentBeginsClaimOnce TestLiveIdempotencyOutcomes TestLiveIdempotencyPreviousReleaseRecordsNeverMatch TestLiveIdempotencyKeepsIdentityAndCompletion; do
+            grep -q -- "--- PASS: $test " idempotency.log
+          done
+
       - name: Warmup dispatch, upgrade and admin-send regressions (PostgreSQL)
         if: matrix.suite == 'live-3'
         env:
@@ -425,7 +496,7 @@ jobs:
           WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
         run: |
           set -euo pipefail
-          go test -race -v -p 1 ./internal/api/handler ./internal/app/email ./internal/app/contact ./internal/app/contactimport ./internal/app/orgtransfer ./internal/app/form ./internal/app/websitetracking ./internal/repository ./internal/scheduler -run '^TestLive(SharedCampaignAccess|ContactTimelineAccess|TrackingDomain(WriteIsOrgScoped|VerifyRoundTrip|Sweep|BelongsToOneOrganization)|ImportLeavesAnotherWorkspaceAlone|ContactImportIsScopedToItsWorkspace|ImportRefuses(RowsOwnedByAnotherWorkspace|ReferencesIntoAnotherWorkspace)|TenantFamiliesRefuseAnotherOrganization|CampaignChildrenRefuseAnotherWorkspace|CRMSyncIntegrationsRefuseAnotherOrganization|FormLinkTokenIsBoundToItsForm|IdentifyTicketStaysInItsWorkspace|TenantMatrixRefusesAnotherOrganization|SenderResolutionStaysInsideTheCampaignOrg|SenderSchedulerNeverPicksAnotherOrgMailbox|SenderScopeWithoutAnOrganizationReachesNothing|ActiveCampaignLookupIsOrgScoped|OwnConversationDoesNotCrossWorkspaces|UniboxGetBySenderIsScopedToTheOrganization|UniboxMoveFolderIsOrgScoped|UniboxScopeMoveThreadsIsOrgScoped|ScheduledSendsAreScopedToTheMailboxOrganization|NoLabelIsReferencedAcrossWorkspaces|CampaignAudienceIsScoped)$' -count=1 | tee workspace-isolation.log
+          go test -race -v -p 1 ./internal/api/handler ./internal/app/email ./internal/app/contact ./internal/app/contactimport ./internal/app/orgtransfer ./internal/app/form ./internal/app/websitetracking ./internal/repository ./internal/scheduler -run '^TestLive(SharedCampaignAccess|ContactTimelineAccess|TrackingDomain(WriteIsOrgScoped|VerifyRoundTrip|Sweep|BelongsToOneOrganization)|ImportLeavesAnotherWorkspaceAlone|ContactImportIsScopedToItsWorkspace|ImportRefuses(RowsOwnedByAnotherWorkspace|ReferencesIntoAnotherWorkspace)|ArchiveCarriesIntegrationCredentialsAndDirectMailLinks|TenantFamiliesRefuseAnotherOrganization|CampaignChildrenRefuseAnotherWorkspace|CRMSyncIntegrationsRefuseAnotherOrganization|FormLinkTokenIsBoundToItsForm|IdentifyTicketStaysInItsWorkspace|TenantMatrixRefusesAnotherOrganization|SenderResolutionStaysInsideTheCampaignOrg|SenderSchedulerNeverPicksAnotherOrgMailbox|SenderScopeWithoutAnOrganizationReachesNothing|ActiveCampaignLookupIsOrgScoped|OwnConversationDoesNotCrossWorkspaces|UniboxGetBySenderIsScopedToTheOrganization|UniboxMoveFolderIsOrgScoped|UniboxScopeMoveThreadsIsOrgScoped|ScheduledSendsAreScopedToTheMailboxOrganization|NoLabelIsReferencedAcrossWorkspaces|CampaignAudienceIsScoped)$' -count=1 | tee workspace-isolation.log
           if grep -q -- '--- SKIP:' workspace-isolation.log; then
             echo "Workspace isolation regressions must execute without skips"
             exit 1
@@ -438,9 +509,22 @@ jobs:
             TestLiveIdentifyTicketStaysInItsWorkspace \
             TestLiveTenantMatrixRefusesAnotherOrganization \
             TestLiveImportRefusesReferencesIntoAnotherWorkspace \
+            TestLiveArchiveCarriesIntegrationCredentialsAndDirectMailLinks \
             TestLiveSenderSchedulerNeverPicksAnotherOrgMailbox \
             TestLiveTrackingDomainWriteIsOrgScoped; do
             grep -q "^--- PASS: $test " workspace-isolation.log
+          done
+
+      - name: Integration inbound secret sealing (PostgreSQL)
+        if: matrix.suite == 'live-3'
+        env:
+          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
+        run: |
+          set -o pipefail
+          go test -race -v -p 1 ./internal/app/integration ./internal/app/orgtransfer -run '^TestLive(InboundSecretSealedAcrossWriteBackfillAndRead|InboundSecretUnsealedRowStillResolves|ArchiveCarriesInboundSecretsOnlySealed|ImportFlagsEachIntegrationOnceAndClosesItsInboundURL|ReconnectFlagClearsSealedInboundSecret|PreviousReleaseArchiveKeepsInboundURLs|OverwriteImportFlagsUncarriedInboundURL)$' -count=1 | tee inbound-secret.log
+          if grep -q -- '--- SKIP:' inbound-secret.log; then exit 1; fi
+          for test in TestLiveInboundSecretSealedAcrossWriteBackfillAndRead TestLiveInboundSecretUnsealedRowStillResolves TestLiveArchiveCarriesInboundSecretsOnlySealed TestLiveImportFlagsEachIntegrationOnceAndClosesItsInboundURL TestLiveReconnectFlagClearsSealedInboundSecret TestLivePreviousReleaseArchiveKeepsInboundURLs TestLiveOverwriteImportFlagsUncarriedInboundURL; do
+            grep -q "^--- PASS: $test " inbound-secret.log
           done
 
       - name: Monitoring database observation regressions (PostgreSQL)
@@ -513,6 +597,18 @@ jobs:
         run: |
           go test -race -v -p 1 ./internal/repository ./internal/app/consumer ./internal/tasks ./internal/app/orgtransfer -run '^TestLive(Warmup(ReservationPreservesOriginalChargeDay|RefundCASProtectsConcurrentAndRestampedTasks|RefundAndResultRollbackTogether|ReplyRefundUsesChargedShapeAfterParentDeletion|ChargeAndRefundUseUTCInNonUTCSession|ChargeProofRollsBackWhenCounterWriteFails|CancellationPathsRefundOnlyProvenCharge|GenericCompletionDoesNotProveChargedAccounting|SendFailureGivesTheDayBack|SendGiveBackIsIdempotent|SafetyHoldReschedulesInsteadOfBlockingTheDispatcher|Recovery(RetiresExistingUnstartedDispatchOnce|HandlesPartialReservations|PreservesExecutionAndReceiptEvidence|KeepsOtherUnknownAndRestrictiveHolds|AndBeginCannotBothWin))|AppliedWarmupFailureRepairsOnlyRefundedChargeDeadLetters|GiveBackDailySend(ReversesADispatchedWarmupSend|LeavesOtherDaysAlone)|AccountDailyUsage(CountsWarmupTasksNotTheStatisticsRow|ScopesWarmupToTypeAndDay)|ImportWarmupStatisticsCannotGrantChargeRefundAuthority|Legacy(FailedStatusCannotProveNonExecution|JSONAndAvroFailurePersistConservativeAdmission)|AuthoritativeDeadLetterResultsReconcileWithoutReplay|DeadLetterResultEffectsAndSettlementRollBackTogether|Campaign(DeadLetterWorkerResultReleasesReservationOnce|ForeignKeyCleanupDoesNotProveWakeupOnly)|UserEmailDeadLetterUsesUnderlyingSendTaskType|UnknownSendOperatorResolutionReconcilesAndAudits|RecordedWorkerOutcomeSurvivesLostEvent|UnreservedLegacyFailedTaskRetainsUnknownHold|UnknownResolutionRejectsMissingEvidenceAndLiveExecution|SendRecoveryResolutionRequiresEvidenceAndRetainsUnknown|UnstartedDispatchRetainsDeferredOutcomeConflict)$' -count=1
           go test -race -v -p 1 ./internal/infrastructure/db -run '^TestLiveWarmupChargeUpgradeKeepsLegacyUnverifiedAndPreservesEvidence$' -count=1
+
+      - name: Manual send recovery regressions (PostgreSQL)
+        if: matrix.suite == 'live-1'
+        env:
+          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
+        run: |
+          set -o pipefail
+          go test -race -v -p 1 ./internal/tasks ./internal/repository -run '^TestLive(ManualSendWithUnknownHandOffIsReleasedUnsent|UnansweredManualSendIsReleasedUnsent|ManualSendInterruptedBeforeReservationRunsOnce|StaleOrUnrunnableInterruptedManualSendFails|UnstartedCampaignSendReleasesMailboxAndCannotStartLater|StartedManualSendLiftsHoldWithoutRunningAgain|HoldOnMissingTaskIsCleared)$' -count=1 | tee manual-send-recovery.log
+          for test in TestLiveManualSendWithUnknownHandOffIsReleasedUnsent TestLiveUnansweredManualSendIsReleasedUnsent TestLiveManualSendInterruptedBeforeReservationRunsOnce TestLiveStaleOrUnrunnableInterruptedManualSendFails TestLiveUnstartedCampaignSendReleasesMailboxAndCannotStartLater TestLiveStartedManualSendLiftsHoldWithoutRunningAgain TestLiveHoldOnMissingTaskIsCleared; do
+            grep -q -- "--- PASS: $test " manual-send-recovery.log
+          done
+          if grep -q -- '--- SKIP:' manual-send-recovery.log; then exit 1; fi
 
       - name: Mailbox placement health recovery (PostgreSQL)
         if: matrix.suite == 'live-2'
@@ -812,6 +908,68 @@ jobs:
       - name: Build
         run: pnpm build
 
+  # The portal service: the client page app, the service that serves it (portal/worker) and its Cloudflare config.
+  portal-ci:
+    name: Portal CI
+    needs: changes
+    if: needs.changes.outputs.portal == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: portal
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          working-directory: portal
+          node-version: "22"
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Service tests
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Cloudflare Worker configuration
+        working-directory: .
+        run: pnpm dlx wrangler@4.45.0 deploy --dry-run --config deploy/cloudflare/portal/wrangler.jsonc --outdir "$RUNNER_TEMP/portal-worker"
+
+      # The self-host image runs the same modules on workerd; release.yml is the only other place it builds.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the self-host image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/portal.Dockerfile
+          push: false
+          load: true
+          tags: warmbly-portal:ci
+          platforms: linux/amd64
+          cache-from: type=gha,scope=ci-portal
+          cache-to: type=gha,mode=max,scope=ci-portal
+
+      - name: Self-host image answers
+        working-directory: .
+        run: |
+          set -euo pipefail
+          docker run -d --name portal-ci -p 127.0.0.1:8095:8095 -e API_ORIGIN=http://127.0.0.1:9 \
+            -e PORTAL_DOMAIN=portal.ci.test -e PORTAL_EDGE_TOKEN=ci-portal-edge-token-0123456789abcdef warmbly-portal:ci
+          for _ in $(seq 30); do docker exec portal-ci wget -q -O /dev/null http://127.0.0.1:8096/ && break; sleep 1; done
+          curl -fsS -o /dev/null -H 'Host: portal.ci.test' http://127.0.0.1:8095/embed.js
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: portal.ci.test' http://127.0.0.1:8095/)" = 404
+          # An unknown host needs a backend lookup, which fails here, so it is a 503 rather than a 404.
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: other.ci.test' http://127.0.0.1:8095/)" = 503
+          docker rm -f portal-ci
+
   # The installer is served verbatim from site/public, so what CI checks is
   # exactly what a `curl | sh` executes. The checksum is published next to it
   # for anyone who would rather download, verify and read before running, and
@@ -1056,7 +1214,7 @@ jobs:
   ci-status:
     name: CI Status
     runs-on: ubuntu-latest
-    needs: [changes, migrations-ci, go-ci, web-ci, qa-ci, admin-ci, site-ci, forms-ci, installer-ci, cli-installer-ci, make-ci, rust-ci, elixir-ci, ios-ci, frontend-images, pages-ci, aws-deployment-ci]
+    needs: [changes, migrations-ci, go-ci, web-ci, qa-ci, admin-ci, site-ci, forms-ci, portal-ci, installer-ci, cli-installer-ci, make-ci, rust-ci, elixir-ci, ios-ci, frontend-images, pages-ci, aws-deployment-ci]
     if: always()
     steps:
       - name: Check CI status

@@ -30,6 +30,8 @@ An [install from `install.sh`](/development/install/) points all six under one d
 
 Only the first two carry anything you cannot rebuild. The other four are state a fresh container reconstructs, which is why a backup does not include them.
 
+The [portal service](/development/configuration/#portal-service), which serves client connect pages and shared reports, has no variable here because it stores nothing: no volume, no database and no file. Every link and report is read from the backend when it is opened. It keeps whether a host is a portal domain for a minute, a report's answer for a minute and per-visitor request counts for a minute, all in its own memory, and a restart clears them. Nothing about it needs backing up or moving.
+
 ### Encryption
 
 Two keys, and they are not interchangeable.
@@ -80,7 +82,7 @@ Mail over a daily budget is deferred, never dropped: the provider cursor is held
 |---|---|---|---|
 | Automatic inbox tagging | `INBOX_TAGGING_ENABLED=true` | The inbound subject and bounded plain-text body (for a notification recognised offline by its sender, only while the workspace asks notifications whether they need action, or asks one of its own questions of them), plus the previous outbound message in the thread and the name of the campaign it belongs to when one exists, the workspace's own tagging questions, and the names of its tagging languages when any are chosen | `inbox_tag_results`, with the raw probabilities and the actions taken. Completed results travel with the Inbox group in a workspace export; processing claims do not |
 | Reply classification | The key alone | The subject and body of a reply to a campaign, only when no tagging verdict exists for it and the offline layers could not decide | `campaign_contact_progress.reply_class` and `reply_intent` |
-| Copy judgment | The key alone | The subject and body of a campaign step, at Advisor evaluation and on the editor's re-check | `copy_judgments`, keyed by a hash of the copy and never exported |
+| Copy judgment | The key alone | The subject and body of a campaign step, on the editor's re-check | Nothing stored |
 | Warmup content lint | The key alone | A generated warmup thread before it enters the bank | Review state is stored with the generated thread; rejected threads stay archived and are counted on the generation job |
 | Bounce classification | The key alone | The bounce reason text (the status code and the receiving server's reply), only when its status code and wording do not already say whether the address is at fault | `deliverability_events.metadata` |
 | Import column mapping | The key alone | For an import or Google Sheets preview with columns no header matched: every column header, the kind of value each column holds (email addresses, dates, short text and so on, worked out on the instance), and the workspace's custom field names. Never a cell value, and nothing at all unless the first row is clearly headers: none of its cells may be an address, a date or a number, and the Email column must have a header of its own. A contact's row fails that, since its Email cell is the address or blank | Nothing is stored; the answer only fills in the suggested mapping |
@@ -100,7 +102,7 @@ See [Automatic inbox tagging](/guides/inbox-tagging/), [Advisor](/guides/advisor
 | `retention.form_event_days` | 180 | Form funnel events: views, starts, field-level drop-off |
 | `retention.audit_log_days` | 90 | The audit trail: actor, IP address, user agent, change payload |
 | `retention.warmup_mail_days` | 30 | Warmup mail in the mailboxes themselves, and the stored copy of each message's body. Deleted by the platform once older than this, wherever the mailbox files it; a mailbox can set its own window |
-| `retention.warmup_event_days` | 365 | Per-message warmup records: tokens, receipts, tampering events, spam moves and their attribution, spam reports, and which messages belong to a warmup thread, and for a linked instance that runs its own mailboxes, the commands Cloud queued for it once they are closed and the warmup mail it reported once retired. The daily sent and received counts behind the analytics are kept. When each mailbox's owner last acted in it (five-minute marks, no message content) is kept 30 days whatever this is set to |
+| `retention.warmup_event_days` | 365 | Per-message warmup records: tokens, receipts, tampering events, spam moves and their attribution, spam reports, which messages belong to a warmup thread, and linked instances' retired warmup commands and reports. The daily sent and received counts behind the analytics are kept. When each mailbox's owner last acted in it (five-minute marks, no message content) is kept 30 days whatever this is set to |
 | `retention.campaign_log_days` | 0 (kept) | Each campaign's activity feed: failed and deferred sends, pauses and their reasons |
 | `retention.notification_days` | 0 (kept) | In-app notifications, read or unread. One still waiting to be emailed is kept until it is sent or skipped |
 | `retention.webhook_delivery_days` | 0 (kept) | Each webhook endpoint's delivery log of settled deliveries, with the payload and the response excerpt. A delivery still being retried is kept until it settles |
@@ -158,6 +160,12 @@ Failed deferral writes remain unacknowledged. The worker retains the scoped dead
 A [mailbox import](/guides/mailbox-import/) keeps each row's credentials in `mailbox_import_rows`, sealed with the workspace's own data key, until the row is connected. The credentials of rows that did not connect are kept for 7 days after the import finishes, so a failed row can be fixed and retried, and are then deleted. A finished import and its rows (address, status, cause, and the uploaded cells that are not passwords, which feed the failed-rows download) are deleted 30 days after it finished. Both windows are fixed rather than settings, and the sweep that applies them runs every minute. A connected mailbox's credentials are stored like any other mailbox's.
 
 The column mappings an import saves (`mailbox_import_mappings`: which field each header of a file means, no values) are kept until the workspace is deleted, and travel in a [workspace export](/guides/workspace-export-import/). Imports themselves do not.
+
+### Partnership sign-in links and OAuth apps
+
+A [sign-in link](/guides/partnership/#google-and-microsoft-mailboxes-sign-in-links) is a row in `mailbox_connect_links` holding the SHA-256 of its secret, never the secret, with its provider, the address it names, its warmup settings, its return page and its outcome. Links are kept until the workspace is deleted, and do not travel in a workspace export. The provider round trip a link starts lives in Redis for 15 minutes.
+
+A workspace's own Google and Microsoft OAuth apps (`organization_oauth_apps`) keep their client secret sealed with the workspace's own data key until the app is removed. They travel in a workspace export, the secret only when the export includes credentials. Each OAuth mailbox records which app issued its grant (`email_accounts_oauth.oauth_app_id`), so a removed app cannot strand a mailbox: removal is refused while one still uses it.
 
 ### Contact import files
 
@@ -235,7 +243,13 @@ docker compose -p warmbly exec backend warmblyctl restore --file /data/blobs/war
 docker compose -p warmbly restart
 ```
 
-The restore empties the schema and replays the dump, so it replaces everything currently on that instance and asks you to type `restore` first. It then runs `ANALYZE`, since a dump carries no planner statistics; a failure there only warns.
+The restore replaces the schema with the dump's, so it replaces everything currently on that instance and asks you to type `restore` first. It runs as one transaction: a load that fails at any point rolls back and leaves the instance exactly as it was. It then runs `ANALYZE`, since a dump carries no planner statistics; a failure there only warns.
+
+Both commands use the PostgreSQL client matching the server's major version. The backend image ships the 16, 17 and 18 clients, so the bundled PostgreSQL 16 and an external 17 or 18 all work. For any other version the nearest newer client is used, and when there is none the command stops and names the package to install. The manifest records which server was dumped and with which `pg_dump`.
+
+A bundle written by a newer `pg_dump` still restores onto an older server. Settings the destination does not have, such as the `transaction_timeout` that PostgreSQL 17 added, are skipped from the dump's header, and the restore lists what it skipped.
+
+Holding the whole replacement in one transaction takes a lock on every table and index it drops and creates. The bundled PostgreSQL in the installer and Compose files runs with `max_locks_per_transaction=256` for this. A server you run yourself with the default lock table usually has room, but one with a smaller lock table (`max_connections` well below the default 100) can refuse with `out of shared memory`. The restore then changes nothing and says to raise `max_locks_per_transaction` (for example to 1024).
 
 Before it does anything it compares the bundle's `CREDENTIALS_ENCRYPTION_KEY` and `KMS_LOCAL_MASTER_KEY` against the destination's and refuses to continue when they differ, printing the two lines to put in `.env`. That check is the point of the command: without it a restore looks like it worked and every mailbox fails to authenticate days later, with no error that names the cause.
 
@@ -354,6 +368,8 @@ These are made only when a workspace uses the feature behind them, so an instanc
 | Lead finder sources (Overpass servers or `LEAD_FINDER_OVERPASS_URL`; `places.googleapis.com`, `places-api.foursquare.com`, `api.app.outscraper.com`) | A workspace searches the lead finder: the area's bounding box, the category and the typed words go to the chosen source, with the key of the workspace or the instance |
 | Location search (`photon.komoot.io`, or `LEAD_FINDER_GEOCODER_URL`) | Someone types in the lead finder's **Where** box: the typed text and the map's center, a few times while they type |
 | Business websites | Someone runs **Find people and emails**: the backend reads the selected businesses' own home pages, their `robots.txt` and up to six contact, team, about or legal pages each, as `WarmblyBot/1.0`. For a business listed without a website it first looks up a few domains built from the business's name and reads up to three of their home pages. Only public addresses on ports 80 and 443 are opened. Unless the request turns verification off (it is on by default), up to three addresses per lead are then checked like a contact's; any beyond the third are not checked |
+| Reader services (`WEB_READER`: a Crawl4AI or DDGS server, `r.jina.ai` or another reader; or `r.jina.ai` with a workspace's own Jina AI key) | A business website, or a page the assistant's `fetch_url` asks for, answers `401`, `403`, `406`, `429` or `503`: the page's address goes to the reader, which fetches it from its own network. At most four reader requests per business, whether or not they succeed. Nothing else about the lead or the workspace is sent |
+| Web search for the lead finder (`SEARCH_PROVIDER`, a workspace's MCP search tool, or `s.jina.ai` with its Jina AI key) | A run looks for a missing website, or for addresses when a site could not be read or published none and the lead has none: the business's name with its town or street, or `"@"` and its domain. A run started with `web_search: false` sends none |
 | Business mail servers | The lead finder works out a person's address: each candidate is checked with the business domain's mail server the same way a contact's address is, a few per person and at most fifteen per business in a run, and nothing is sent |
 
 Everything else is you: mail through the mailboxes you connect, DNS lookups for the domains you check, and whatever integrations you configure. There is no telemetry, no phone-home, and no license check.
@@ -385,7 +401,7 @@ What a reported error carries is the exception, its stack trace, the service, th
 
 Server-side reports that belong to no request, a scheduled job or a worker, are attributed to the process that raised them and to nobody.
 
-The `warmbly` CLI runs on your own machine and reports nowhere, ever. It has nothing to set.
+The `warmbly` CLI runs on your own machine and reports nowhere, ever. It has nothing to set. Neither has the portal service, nor the connect and report pages it serves: they report no error to anybody and load no reporting code.
 
 ### Usage analytics
 

@@ -20,6 +20,7 @@ const (
 	APIKeyAllowedEmailAccountsKey = "api_key_allowed_email_accounts"
 	APIKeyUserIDKey               = "api_key_user_id"
 	OAuthApplicationIDKey         = "oauth_application_id"
+	OAuthGrantIDKey               = "oauth_grant_id"
 	AuthTypeKey                   = "auth_type"
 	AuthTypeJWT                   = "jwt"
 	AuthTypeAPIKey                = "api_key"
@@ -31,6 +32,19 @@ const (
 // app-registered webhook endpoints (and enforce their domain allowlist).
 func GetOAuthApplicationID(c *gin.Context) *uuid.UUID {
 	v, ok := c.Get(OAuthApplicationIDKey)
+	if !ok {
+		return nil
+	}
+	id, ok := v.(uuid.UUID)
+	if !ok || id == uuid.Nil {
+		return nil
+	}
+	return &id
+}
+
+// GetOAuthGrantID returns the grant behind an OAuth access token, or nil otherwise.
+func GetOAuthGrantID(c *gin.Context) *uuid.UUID {
+	v, ok := c.Get(OAuthGrantIDKey)
 	if !ok {
 		return nil
 	}
@@ -73,6 +87,8 @@ func (h *Handler) CombinedAuthMiddleware() gin.HandlerFunc {
 		authHeader := c.GetHeader("Authorization")
 
 		switch {
+		case strings.HasPrefix(authHeader, "Bearer "+apikey.AgencyKeyPrefix):
+			h.validateAgencyKeyForWorkspace(c, strings.TrimPrefix(authHeader, "Bearer "))
 		case strings.HasPrefix(authHeader, "Bearer "+apikey.KeyPrefix):
 			key := strings.TrimPrefix(authHeader, "Bearer ")
 			h.validateAPIKey(c, key)
@@ -87,6 +103,28 @@ func (h *Handler) CombinedAuthMiddleware() gin.HandlerFunc {
 			c.Abort()
 		}
 	}
+}
+
+// applyKeyRateLimit writes the per-key rate-limit headers and answers 429 when the window is spent.
+func applyKeyRateLimit(c *gin.Context, limit, remaining, retryAfter int, allowed bool) bool {
+	if limit <= 0 {
+		limit = 60
+	}
+	c.Header("X-RateLimit-Limit", fmt.Sprintf("%d", limit))
+	c.Header("X-RateLimit-Remaining", fmt.Sprintf("%d", remaining))
+	c.Header("X-RateLimit-Policy", fmt.Sprintf("%d;w=60", limit))
+	if allowed {
+		return true
+	}
+	c.Header("Retry-After", fmt.Sprintf("%d", retryAfter))
+	c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+		"error":       "rate_limit_exceeded",
+		"message":     fmt.Sprintf("API key exceeded %d requests per minute", limit),
+		"code":        "rate_limit_exceeded",
+		"request_id":  c.GetString(RequestIDContextKey),
+		"retry_after": retryAfter,
+	})
+	return false
 }
 
 func (h *Handler) validateAPIKey(c *gin.Context, rawKey string) {
@@ -113,22 +151,7 @@ func (h *Handler) validateAPIKey(c *gin.Context, rawKey string) {
 	// every API-key request so well-behaved clients can self-throttle
 	// before hitting 429. Fails open on cache errors.
 	remaining, retryAfter, allowed := h.APIKeyService.CheckAndIncrementRateLimit(c.Request.Context(), key)
-	limit := key.RateLimitPerMinute
-	if limit <= 0 {
-		limit = 60
-	}
-	c.Header("X-RateLimit-Limit", fmt.Sprintf("%d", limit))
-	c.Header("X-RateLimit-Remaining", fmt.Sprintf("%d", remaining))
-	c.Header("X-RateLimit-Policy", fmt.Sprintf("%d;w=60", limit))
-	if !allowed {
-		c.Header("Retry-After", fmt.Sprintf("%d", retryAfter))
-		c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-			"error":       "rate_limit_exceeded",
-			"message":     fmt.Sprintf("API key exceeded %d requests per minute", limit),
-			"code":        "rate_limit_exceeded",
-			"request_id":  c.GetString(RequestIDContextKey),
-			"retry_after": retryAfter,
-		})
+	if !applyKeyRateLimit(c, key.RateLimitPerMinute, remaining, retryAfter, allowed) {
 		return
 	}
 
@@ -192,6 +215,7 @@ func setOAuthCaller(c *gin.Context, claims *oauth.AccessClaims) {
 	c.Set(UserIDKey, claims.UserID.String())
 	c.Set(OrganizationIDKey, claims.OrganizationID)
 	c.Set(OAuthApplicationIDKey, claims.ApplicationID)
+	c.Set(OAuthGrantIDKey, claims.GrantID)
 	if claims.Member != nil {
 		c.Set(SessionMemberKey, claims.Member)
 	}
@@ -274,6 +298,9 @@ func (h *Handler) validateJWT(c *gin.Context, token string) {
 	c.Set(UserIDKey, session.UserID.String())
 	c.Set(SessionKey, session)
 	c.Set(AccessTokenKey, token)
+	if !h.enforcePortalSession(c, session) {
+		return
+	}
 	if xerr := h.setSessionOrganization(c, session); xerr != nil {
 		errx.JSON(c, xerr)
 		c.Abort()
