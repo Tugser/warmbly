@@ -41,6 +41,21 @@ export interface Agency {
     has_billing: boolean;
     /** A plan the agency holds without a subscription, while it is in force; `plan` is then that plan. */
     granted?: { plan_id: string; until?: string };
+    /** The agency's own billing period while its subscription is in force. */
+    billing_interval?: "month" | "year";
+}
+
+/** What switching the agency's subscription to another plan or billing period would bill, in the currency's minor unit. */
+export interface AgencyPlanChangePreview {
+    plan_id: string;
+    interval: "month" | "year";
+    proration_cents: number;
+    amount_due_cents: number;
+    currency: string;
+    /** When the amounts were calculated; sent back with the switch so it bills exactly them. */
+    proration_date: number;
+    /** The price the subscription was on; sent back so a switch priced from another plan is refused. */
+    from_price_id: string;
 }
 
 export interface AgenciesResult {
@@ -151,4 +166,39 @@ export interface AgencyClientPatch {
 export interface AgencyRef {
     id: string;
     name: string;
+}
+
+/** An agency's automatic top-up: a send pack bought on its saved card when the pool runs low. */
+export interface AgencyAutoTopup {
+    enabled: boolean;
+    /** A pack is bought once this many sends or fewer are left in the period. */
+    threshold_sends: number;
+    max_packs: number;
+    bought_this_period: number;
+    /** Why it turned itself off. */
+    failure?: "no_payment_method" | "card_declined";
+    pack_sends: number;
+    pack_price_cents: number;
+    card?: { brand: string; last4: string };
+    /** The saved card was looked up and there is none; absent when the lookup itself failed. */
+    card_missing?: boolean;
+    /** False when the agency has no pool to top up. */
+    available: boolean;
+}
+
+/** The automatic top-up of an agency's shared AI balance. */
+export interface AgencyAIAutoTopup {
+    enabled: boolean;
+    /** Under this much left, `amount_usd` is added, never more than `limit_usd` in one period. */
+    threshold_usd: number;
+    amount_usd: number;
+    limit_usd: number;
+    added_this_period_usd: number;
+    failure?: "no_payment_method" | "card_declined";
+    card?: { brand: string; last4: string };
+    /** The saved card was looked up and there is none; absent when the lookup itself failed. */
+    card_missing?: boolean;
+    available: boolean;
+    min_usd: number;
+    max_usd: number;
 }

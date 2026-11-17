@@ -168,6 +168,17 @@ Run `QA_FLEET_FIXTURES=1 pnpm proof fleet-telemetry` in `qa/`. Stop the addition
 admin server as well as the stack afterward. This proof does not validate real
 worker sampling, network egress, mail delivery or inbox placement.
 
+## Billing plans proof
+
+`flows/billing-agency-plans.flow.ts` records the agency plans on a workspace's Plans tab. The default stack
+runs with billing off, where the billing page has no Plans tab, so the flow is opt-in: start the stack with
+`QA_STRIPE_SECRET_KEY` set to a Stripe test-mode key (nothing is charged; the flow only reads plans). The
+seeded account must be staff of no agency and its workspace attached to none, which a fresh seed is: the link
+the flow looks for reads "Set up an agency" only then. Run `QA_BILLING=1 pnpm proof billing-agency-plans`.
+
+`flows/plans-popup.flow.ts` records the plan chooser popup, opened from **Settings > Billing**, and the Plans
+tab's cards, on the same stack: `QA_BILLING=1 pnpm proof plans-popup`.
+
 ## Admin agency proof fixtures
 
 `flows/admin-agencies.flow.ts` records an operator giving an agency a plan, a pool of its own and extra sends
@@ -182,6 +193,31 @@ Run `QA_ADMIN_AGENCY_FIXTURES=1 pnpm proof admin-agencies` in `qa/`. The flow as
 client workspace receives the plan and that the pool totals are what the page shows. Then, without `QA_WEB_URL`,
 `QA_ADMIN_AGENCY_FIXTURES=1 pnpm proof agency-arranged-plan` records the agency's own billing page for the plan
 just given. Stop the admin server and the stack afterward.
+
+`flows/agency-branding-look.flow.ts` uses the same fixture, which leaves the agency without a brand: it records
+**Agency > Branding** from nothing set to a finished look, picking a colour, font, corners and a sign-in layout
+and watching the preview follow. Run it against the dashboard, without `QA_WEB_URL`:
+`QA_ADMIN_AGENCY_FIXTURES=1 pnpm proof agency-branding-look`.
+
+`flows/agency-extra-sends.flow.ts` records **Agency > Billing**: the pack price, the automatic top-ups of sends
+and of the AI balance with what each charges, and what happens when sends run out. It needs the same fixture with Agency Pro in force on the
+agency (set `plan_id` to the Agency Pro plan, `status = 'active'` and a current period on its row; the flow expects
+that plan's $60 pack). No step charges a card:
+`QA_ADMIN_AGENCY_FIXTURES=1 pnpm proof agency-extra-sends`.
+
+`flows/agency-mailboxes.flow.ts` records **Agency > Mailboxes**: every client's mailboxes, a vendor account the agency
+connects once, and that account opened in a client's import. It needs the same fixture (apply it again before each
+recording: it removes the vendor account the flow connects) and the mock inbox vendors, which the `lite` stack runs
+beside itself when started with `QA_VENDOR_MOCK=1 pnpm stack up lite`. Then:
+`QA_ADMIN_AGENCY_FIXTURES=1 pnpm proof agency-mailboxes`.
+
+`flows/client-connect-vendor.flow.ts` records a client connecting many mailboxes from its own vendor account through
+a connect link: the link is made in the dashboard, opened on the portal, and the mock vendor's mailboxes are picked
+and imported. It needs the same fixture (it marks the product tour as seen), the mock inbox vendors
+(`QA_VENDOR_MOCK=1 pnpm stack up lite`) and the portal service in front of this stack, started as described under
+[agency clients and the portal domain](#agency-clients-and-the-portal-domain); the dashboard build and preview there
+are not needed for this flow. Then: `QA_PORTAL_URL=http://localhost:8095 pnpm proof client-connect-vendor`. Stop the
+portal process afterwards along with the stack.
 
 ## Member access proof fixtures
 
@@ -441,3 +477,12 @@ client, what every agency plan includes, the agencies page). Run `pnpm dev --hos
 QA_WEB_URL=http://127.0.0.1:<port> QA_API_URL=http://localhost:<API> QA_MAILPIT_URL=http://localhost:<MAILPIT> \
   QA_SITE=1 pnpm proof site-agencies
 ```
+
+## Agency client view proof fixtures
+
+`flows/agency-client-view.flow.ts` and `flows/agency-branding-tour.flow.ts` record an agency opening a client's
+workspace as that client's members see it, and branding the portal before opening the real dashboard in it.
+Apply `fixtures/agency.sql`, then `fixtures/agency-client-view.sql` (two roles in the client workspace, so the
+view has roles to be drawn for), to this worktree's isolated rich-seed database. Run
+`QA_AGENCY_FIXTURES=1 pnpm proof agency-client-view` and `QA_AGENCY_FIXTURES=1 pnpm proof agency-branding-tour`.
+The branding tour saves a look on the seeded agency, so the client view flow records in that brand afterwards.

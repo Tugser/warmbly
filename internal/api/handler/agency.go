@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/warmbly/warmbly/internal/api/middleware"
+	"github.com/warmbly/warmbly/internal/app/agency"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 )
@@ -493,6 +494,161 @@ func (h *Handler) AgencyCheckout(c *gin.Context) {
 	}
 	h.auditAgency(c, agencyID, models.AuditActionCreate, map[string]string{"action": "checkout", "plan_id": req.PlanID.String()})
 	c.JSON(http.StatusOK, gin.H{"checkout_url": url})
+}
+
+// agencyPlanChange reads the plan and billing period a switch names.
+func agencyPlanChange(c *gin.Context, planID, interval string) (uuid.UUID, bool, bool) {
+	id, err := uuid.Parse(strings.TrimSpace(planID))
+	if err != nil || id == uuid.Nil {
+		errx.JSON(c, errx.New(errx.BadRequest, "plan_id is required"))
+		return uuid.Nil, false, false
+	}
+	if interval != "" && interval != "month" && interval != "year" {
+		errx.JSON(c, errx.New(errx.BadRequest, "interval must be month or year"))
+		return uuid.Nil, false, false
+	}
+	return id, interval == "year", true
+}
+
+// PreviewAgencyPlanChange is GET /agency/:agencyId/billing/change/preview: what switching plan or billing period would bill.
+func (h *Handler) PreviewAgencyPlanChange(c *gin.Context) {
+	userID, agencyID, ok := h.agencyCaller(c)
+	if !ok {
+		return
+	}
+	planID, yearly, ok := agencyPlanChange(c, c.Query("plan_id"), c.Query("interval"))
+	if !ok {
+		return
+	}
+	preview, xerr := h.AgencyService.PreviewPlanChange(c.Request.Context(), agencyID, userID, planID, yearly)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, preview)
+}
+
+// ChangeAgencyPlan is POST /agency/:agencyId/billing/change: move the agency's subscription to another plan or billing period.
+func (h *Handler) ChangeAgencyPlan(c *gin.Context) {
+	userID, agencyID, ok := h.agencyCaller(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		PlanID   string `json:"plan_id"`
+		Interval string `json:"interval"`
+		// ProrationDate and FromPriceID are the preview's, so the switch bills what was shown.
+		ProrationDate int64  `json:"proration_date"`
+		FromPriceID   string `json:"from_price_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		errx.JSON(c, errx.InvalidBody(err))
+		return
+	}
+	planID, yearly, ok := agencyPlanChange(c, req.PlanID, req.Interval)
+	if !ok {
+		return
+	}
+	if req.ProrationDate < 0 {
+		errx.JSON(c, errx.New(errx.BadRequest, "proration_date must be the value a preview returned"))
+		return
+	}
+	a, xerr := h.AgencyService.ChangePlan(c.Request.Context(), agencyID, userID, planID, yearly,
+		agency.PlanChangeQuote{ProrationDate: req.ProrationDate, FromPriceID: strings.TrimSpace(req.FromPriceID)})
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	interval := "month"
+	if yearly {
+		interval = "year"
+	}
+	h.auditAgency(c, agencyID, models.AuditActionUpdate, map[string]string{"action": "plan_change", "plan_id": planID.String(), "interval": interval})
+	c.JSON(http.StatusOK, a)
+}
+
+// GetAgencyAutoTopup is GET /agency/:agencyId/billing/auto-topup: the automatic top-up settings and the card a pack is charged to.
+func (h *Handler) GetAgencyAutoTopup(c *gin.Context) {
+	userID, agencyID, ok := h.agencyCaller(c)
+	if !ok {
+		return
+	}
+	view, xerr := h.AgencyService.AutoTopup(c.Request.Context(), agencyID, userID)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, view)
+}
+
+// SetAgencyAutoTopup is PUT /agency/:agencyId/billing/auto-topup: turn the automatic top-up on or off and set its limits.
+func (h *Handler) SetAgencyAutoTopup(c *gin.Context) {
+	userID, agencyID, ok := h.agencyCaller(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Enabled        bool `json:"enabled"`
+		ThresholdSends int  `json:"threshold_sends"`
+		MaxPacks       int  `json:"max_packs"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		errx.JSON(c, errx.InvalidBody(err))
+		return
+	}
+	view, xerr := h.AgencyService.SetAutoTopup(c.Request.Context(), agencyID, userID, req.Enabled, req.ThresholdSends, req.MaxPacks)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	h.auditAgency(c, agencyID, models.AuditActionUpdate, map[string]string{
+		"action": "auto_topup", "enabled": strconv.FormatBool(req.Enabled),
+		"threshold_sends": strconv.Itoa(req.ThresholdSends), "max_packs": strconv.Itoa(req.MaxPacks),
+	})
+	c.JSON(http.StatusOK, view)
+}
+
+// GetAgencyAIAutoTopup is GET /agency/:agencyId/billing/ai-auto-topup: the shared AI balance's automatic top-up.
+func (h *Handler) GetAgencyAIAutoTopup(c *gin.Context) {
+	userID, agencyID, ok := h.agencyCaller(c)
+	if !ok {
+		return
+	}
+	view, xerr := h.AgencyService.AIAutoTopup(c.Request.Context(), agencyID, userID)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, view)
+}
+
+// SetAgencyAIAutoTopup is PUT /agency/:agencyId/billing/ai-auto-topup: turn it on or off and set its amounts.
+func (h *Handler) SetAgencyAIAutoTopup(c *gin.Context) {
+	userID, agencyID, ok := h.agencyCaller(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Enabled      bool    `json:"enabled"`
+		ThresholdUSD float64 `json:"threshold_usd"`
+		AmountUSD    float64 `json:"amount_usd"`
+		LimitUSD     float64 `json:"limit_usd"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		errx.JSON(c, errx.InvalidBody(err))
+		return
+	}
+	micro := func(usd float64) models.Micro { return models.MicroFromCents(int64(math.Round(usd * 100))) }
+	view, xerr := h.AgencyService.SetAIAutoTopup(c.Request.Context(), agencyID, userID, req.Enabled, micro(req.ThresholdUSD), micro(req.AmountUSD), micro(req.LimitUSD))
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	h.auditAgency(c, agencyID, models.AuditActionUpdate, map[string]string{
+		"action": "ai_auto_topup", "enabled": strconv.FormatBool(req.Enabled),
+		"amount_usd": strconv.FormatFloat(req.AmountUSD, 'f', 2, 64), "limit_usd": strconv.FormatFloat(req.LimitUSD, 'f', 2, 64),
+	})
+	c.JSON(http.StatusOK, view)
 }
 
 type agencyReturnRequest struct {

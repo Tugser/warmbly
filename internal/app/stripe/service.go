@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/warmbly/warmbly/internal/observability/errs"
+	"github.com/warmbly/warmbly/internal/pkg/businesscheckout"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -133,6 +134,12 @@ type ProductAnalytics interface {
 	Capture(name string, req analytics.Request, properties map[string]any)
 }
 
+// PartnerAttribution tags a subscription checkout so the partner program's
+// Stripe app can attribute its payments. Satisfied by *partners.Service.
+type PartnerAttribution interface {
+	CheckoutMetadata(ctx context.Context, orgID uuid.UUID) map[string]string
+}
+
 type stripeService struct {
 	cfg              *config.StripeConfig
 	subRepo          repository.SubscriptionRepository
@@ -147,12 +154,16 @@ type stripeService struct {
 	balanceCharges   repository.SavedCardChargeRepository
 	balance          BalanceSettler
 	agency           AgencyWebhooks
+	partners         PartnerAttribution
 }
 
 // AgencyWebhooks applies the Stripe events that bill an agency rather than a workspace.
 type AgencyWebhooks interface {
 	HandleStripeEvent(ctx context.Context, event *stripe.Event) (bool, *errx.Error)
 }
+
+// WirePartners tags checkouts of partner-referred workspaces (nil = no program).
+func (s *stripeService) WirePartners(p PartnerAttribution) { s.partners = p }
 
 // WireAgency routes agency billing events away from the workspace path.
 func (s *stripeService) WireAgency(a AgencyWebhooks) { s.agency = a }
@@ -253,12 +264,7 @@ func (s *stripeService) CreateCheckoutSessionUntil(ctx context.Context, userID u
 	}
 
 	params := &stripe.CheckoutSessionParams{
-		Mode:                     stripe.String(string(stripe.CheckoutSessionModeSubscription)),
-		AutomaticTax:             &stripe.CheckoutSessionAutomaticTaxParams{Enabled: stripe.Bool(false)},
-		BillingAddressCollection: stripe.String(string(stripe.CheckoutSessionBillingAddressCollectionRequired)),
-		TaxIDCollection:          &stripe.CheckoutSessionTaxIDCollectionParams{Enabled: stripe.Bool(true)},
-		NameCollection:           businessNameCollection(),
-		CustomText:               businessOnlyNotice(),
+		Mode: stripe.String(string(stripe.CheckoutSessionModeSubscription)),
 		LineItems: []*stripe.CheckoutSessionLineItemParams{
 			{
 				Price:    stripe.String(priceID),
@@ -277,6 +283,14 @@ func (s *stripeService) CreateCheckoutSessionUntil(ctx context.Context, userID u
 				"org_id":  orgID.String(),
 			},
 		},
+	}
+
+	businesscheckout.Apply(params)
+
+	if s.partners != nil {
+		for k, v := range s.partners.CheckoutMetadata(ctx, orgID) {
+			params.Metadata[k] = v
+		}
 	}
 
 	if customerID != "" {
@@ -1493,21 +1507,5 @@ func mapStripeStatus(status stripe.SubscriptionStatus) models.SubscriptionStatus
 		return models.SubscriptionStatusPaused
 	default:
 		return models.SubscriptionStatusIncomplete
-	}
-}
-
-// businessOnlyCheckoutNotice sits beside the pay button; it states the terms' business-only and tax clauses.
-const businessOnlyCheckoutNotice = "Warmbly is sold to businesses for business use only. Prices exclude taxes: where we do not charge tax, your business accounts for any tax due in its own country, for example under the reverse charge."
-
-// businessNameCollection requires the buying company's legal name on every checkout.
-func businessNameCollection() *stripe.CheckoutSessionNameCollectionParams {
-	return &stripe.CheckoutSessionNameCollectionParams{
-		Business: &stripe.CheckoutSessionNameCollectionBusinessParams{Enabled: stripe.Bool(true), Optional: stripe.Bool(false)},
-	}
-}
-
-func businessOnlyNotice() *stripe.CheckoutSessionCustomTextParams {
-	return &stripe.CheckoutSessionCustomTextParams{
-		Submit: &stripe.CheckoutSessionCustomTextSubmitParams{Message: stripe.String(businessOnlyCheckoutNotice)},
 	}
 }

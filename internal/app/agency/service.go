@@ -71,6 +71,13 @@ type Service struct {
 	billing bool
 	now     func() time.Time
 
+	// charger charges send packs to a saved card; nil uses Stripe.
+	charger packCharger
+	// aiChecks holds one *aiCheck per agency whose AI balance is being checked.
+	aiChecks sync.Map
+	// switches are the locks plan switches take, picked by agency id.
+	switches [64]sync.Mutex
+
 	mu        sync.Mutex
 	pools     map[uuid.UUID]poolEntry
 	orgAgency map[uuid.UUID]orgEntry
@@ -134,6 +141,7 @@ func (s *Service) access(ctx context.Context, agencyID, userID uuid.UUID, manage
 // hydrate joins the plan in force, the operator's while it stands in for the subscription's.
 func (s *Service) hydrate(ctx context.Context, a *models.Agency) {
 	now := s.now()
+	a.BillingInterval = a.SubscriptionInterval()
 	if a.Granted(now) {
 		a.Grant = &models.AgencyGrant{PlanID: *a.ManagedPlanID, Until: a.ManagedUntil}
 	}
