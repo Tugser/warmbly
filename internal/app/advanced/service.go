@@ -41,6 +41,8 @@ import (
 )
 
 type Service interface {
+	// ProcessSocialReply runs an inbound social message through the reply path.
+	ProcessSocialReply(ctx context.Context, in models.SocialReply) *errx.Error
 	GetOrganizationSettings(ctx context.Context, organizationID uuid.UUID) (*models.AdvancedOutreachSettings, *errx.Error)
 	UpdateOrganizationSettings(ctx context.Context, organizationID, updatedBy uuid.UUID, settings *models.AdvancedOutreachSettings) *errx.Error
 
@@ -970,6 +972,16 @@ func pickVariantDeterministic(variants []models.CampaignABVariant, seed string) 
 }
 
 func (s *service) SelectVariant(ctx context.Context, organizationID, campaignID, contactID, sequenceID uuid.UUID, subject, bodyHTML, bodyPlain string) (*models.VariantSelection, *errx.Error) {
+	return s.selectVariant(ctx, organizationID, campaignID, contactID, sequenceID, subject, bodyHTML, bodyPlain, true)
+}
+
+// PeekVariant is SelectVariant without recording a campaign-level assignment,
+// for a preview: a contact with none yet is shown the step's own copy.
+func (s *service) PeekVariant(ctx context.Context, organizationID, campaignID, contactID, sequenceID uuid.UUID, subject, bodyHTML, bodyPlain string) (*models.VariantSelection, *errx.Error) {
+	return s.selectVariant(ctx, organizationID, campaignID, contactID, sequenceID, subject, bodyHTML, bodyPlain, false)
+}
+
+func (s *service) selectVariant(ctx context.Context, organizationID, campaignID, contactID, sequenceID uuid.UUID, subject, bodyHTML, bodyPlain string, assign bool) (*models.VariantSelection, *errx.Error) {
 	settings, xerr := s.effectiveSettings(ctx, organizationID, campaignID)
 	if xerr != nil {
 		return nil, xerr
@@ -1025,7 +1037,7 @@ func (s *service) SelectVariant(ctx context.Context, organizationID, campaignID,
 		}
 		if assigned != nil && assigned.IsActive && assigned.SequenceID == nil {
 			selected = assigned
-		} else {
+		} else if assign {
 			selected = pickVariantWeightedRandom(campaignVariants)
 			if selected != nil {
 				_ = s.repo.AssignVariant(ctx, campaignID, contactID, selected.ID)

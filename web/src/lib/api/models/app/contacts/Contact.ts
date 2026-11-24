@@ -1,3 +1,4 @@
+import type { ContactSocial } from "@/lib/api/models/app/social/Social";
 import type MiniCampaign from "../campaigns/MiniCampaign";
 import type MiniCategory from "./MiniCategory";
 import type { MailHost } from "../emails/MailboxImport";
@@ -24,13 +25,14 @@ export type LeadStatus =
 // when an auto-reply parked it, "manual" when a member did, "crm" when the
 // connected CRM says the contact moved on (a HubSpot deal or lifecycle stage, a
 // Salesforce rule), and "cc" while the contact is copied on another lead's
-// emails (reason is that lead's address);
+// emails (reason is that lead's address), and "review" while a review campaign
+// waits for someone to approve the lead's first email;
 // `until` absent means the hold has no end and only a resume lifts it.
 export interface LeadHold {
     since: Date;
     until?: Date | null;
     reason?: string;
-    source: "manual" | "out_of_office" | "inbox_tagging" | "cc" | "crm" | string;
+    source: "manual" | "out_of_office" | "inbox_tagging" | "cc" | "crm" | "review" | string;
 }
 
 // Why a copied contact is or is not on the next email to the lead.
@@ -58,6 +60,7 @@ export function leadCCName(cc: Pick<LeadCC, "first_name" | "last_name" | "email"
 // the flow is parked and when it lifts. One function so the Leads row and the
 // contact drawer cannot word the same hold two different ways.
 export function holdSummary(hold: LeadHold): string {
+    if (hold.source === "review") return "Waiting for review · their first email goes out once someone approves it";
     if (hold.source === "cc") {
         return hold.reason
             ? `Copied on the emails to ${hold.reason} · none of their own are sent`
@@ -141,6 +144,8 @@ export default interface Contact {
     email: string;
     company: string;
     phone: string;
+    // The contact's handles by channel, each with the consent basis recorded for outreach there.
+    social?: ContactSocial | null;
 
     custom_fields: Record<string, string>;
 

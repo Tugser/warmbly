@@ -116,7 +116,7 @@ func (r *campaignRepository) Duplicate(ctx context.Context, in DuplicateCampaign
 			cc_addr, bcc_addr,
 			start_date, end_date, timezone, timezone_mode, days, start_time, end_time, schedule_windows,
 			contact_order_by, contact_order_dir, contact_order_field,
-			sender_strategy, rotation_mode, follow_up_sender, warmup_graduation,
+			sender_strategy, rotation_mode, follow_up_sender, warmup_graduation, review_leads,
 			ramp_enabled, ramp_start, ramp_increment, ramp_ceiling, ramp_level, ramp_level_date,
 			esp_match_mode, max_new_leads_per_day, prioritize_new_leads, continuous, entry_delay_minutes,
 			tracking_domain, tracking_domain_verified, tracking_domain_verified_at,
@@ -135,7 +135,7 @@ func (r *campaignRepository) Duplicate(ctx context.Context, in DuplicateCampaign
 			CASE WHEN end_date > NOW() THEN end_date END,
 			timezone, timezone_mode, days, start_time, end_time, schedule_windows,
 			contact_order_by, contact_order_dir, contact_order_field,
-			sender_strategy, rotation_mode, follow_up_sender, warmup_graduation,
+			sender_strategy, rotation_mode, follow_up_sender, warmup_graduation, review_leads,
 			ramp_enabled, ramp_start, ramp_increment, ramp_ceiling, 0, NULL,
 			esp_match_mode, max_new_leads_per_day, prioritize_new_leads, continuous, entry_delay_minutes,
 			tracking_domain, tracking_domain_verified, tracking_domain_verified_at,
@@ -168,6 +168,8 @@ func (r *campaignRepository) Duplicate(ctx context.Context, in DuplicateCampaign
 		 SELECT $2, folder_id FROM campaign_folders WHERE campaign_id = $1`,
 		`INSERT INTO campaign_senders (campaign_id, email_account_id, weight, enabled)
 		 SELECT $2, email_account_id, weight, enabled FROM campaign_senders WHERE campaign_id = $1`,
+		`INSERT INTO campaign_social_accounts (campaign_id, social_account_id)
+		 SELECT $2, social_account_id FROM campaign_social_accounts WHERE campaign_id = $1`,
 		`INSERT INTO campaign_advanced_settings (campaign_id, settings, updated_at)
 		 SELECT $2, settings, NOW() FROM campaign_advanced_settings WHERE campaign_id = $1`,
 	} {

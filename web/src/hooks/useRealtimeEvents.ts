@@ -141,6 +141,70 @@ export function useRealtimeEvents() {
       const includes = (...needles: string[]) =>
         needles.some((needle) => event.includes(needle))
 
+      // Social accounts, connect sessions, the GraphKit link and messages on every channel; each event carries
+      // `channel`, which the cache keys do not split on. Checked before the ACCOUNT/EMAIL branches below, whose
+      // names these would match. Lead search results sit outside ['social'] and are never refreshed.
+      if (event.startsWith('SOCIAL_')) {
+        if (event === 'SOCIAL_CONNECTION_UPDATED') {
+          const sessionId = getString('session_id') ?? getString('id')
+          invalidate(sessionId ? [['social', 'connections', sessionId]] : [['social', 'connections']])
+          if (getString('status') === 'succeeded') invalidate([['social', 'accounts'], ['social', 'status']])
+          return
+        }
+        if (event === 'SOCIAL_LINK_UPDATED') {
+          invalidate([['social']])
+          return
+        }
+        if (event === 'SOCIAL_MESSAGE') {
+          const conversationId = getString('conversation_id')
+          invalidate([['social', 'conversations', 'list'], ['social', 'contacts'], ['unibox', 'overview']])
+          if (conversationId) invalidate([['social', 'conversations', conversationId]])
+          return
+        }
+        // A background LinkedIn import moved (progress, then its summary). A finished one refreshes contacts through useLinkedInImport.
+        if (event === 'SOCIAL_IMPORT_UPDATED') {
+          const importId = getString('import_id') ?? getString('id')
+          invalidate(importId ? [['social', 'imports', importId]] : [['social', 'imports']])
+          return
+        }
+        // A campaign's social step was queued, done, skipped or failed, or an invite was accepted.
+        if (event === 'SOCIAL_ACTION_UPDATED') {
+          const campaignId = getString('campaign_id')
+          invalidate([['social', 'contacts']])
+          if (campaignId) campaignRefresh.add([['analytics', 'campaigns', campaignId]])
+          return
+        }
+        const accountId = getString('account_id') ?? getString('id')
+        invalidate([['social', 'accounts', 'list'], ['social', 'status']])
+        if (accountId) invalidate([['social', 'accounts', accountId]])
+        return
+      }
+
+      // A purchased domain or mailbox moved (an order step, a renewal, a mailbox connecting).
+      // Checked before the EMAIL and ACCOUNT branches, whose names these would otherwise match.
+      // Each carries org_id, id (of the order, domain or mailbox) and status; a mailbox also its
+      // domain_id, email_account_id and connect_state. None names its order, so an open order re-reads.
+      if (event.startsWith('STORE_')) {
+        const id = getString('id')
+        if (event === 'STORE_ORDER_UPDATED') {
+          invalidate([['store', 'orders', 'list'], ['store', 'status']])
+          if (id) invalidate([['store', 'orders', id]])
+          return
+        }
+        if (event === 'STORE_DOMAIN_UPDATED') {
+          invalidate([['store', 'domains', 'list'], ['store', 'orders'], ['sending-domains']])
+          if (id) invalidate([['store', 'domains', id]])
+          return
+        }
+        // A mailbox that connected shows up in the mailbox list, and its order's track moves.
+        const domainId = getString('domain_id')
+        const accountId = getString('email_account_id')
+        invalidate([['store', 'mailboxes'], ['store', 'orders'], ['emails', 'list']])
+        if (domainId) invalidate([['store', 'domains', domainId]])
+        if (accountId) invalidate([['emails', accountId]])
+        return
+      }
+
       const campaignId = getString('campaign_id')
       const contactId = getString('contact_id')
       const dealId = getString('deal_id')
@@ -578,6 +642,14 @@ export function useRealtimeEvents() {
           // A sending domain's root redirect or vendor forwarding changed. Its
           // tracking host is an email_account write, covered above.
           domain_redirect: [['sending-domains']],
+          // Purchased domains and mailboxes: an order placed, auto-renew or forwarding changed, a renewal, a cancellation.
+          store_order: [['store', 'orders'], ['store', 'status']],
+          store_domain: [['store', 'domains'], ['sending-domains']],
+          store_mailbox: [['store', 'mailboxes'], ['emails']],
+          // Social accounts connected, changed or removed, the GraphKit link, and saved LinkedIn lead searches.
+          social_account: [['social', 'accounts'], ['social', 'status']],
+          social_link: [['social']],
+          linkedin_saved_search: [['social', 'saved-searches']],
           api_key: [['api-keys']],
           webhook: [['webhooks'], ['integrations', 'connections']],
           template: [['templates']],

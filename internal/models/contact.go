@@ -26,6 +26,8 @@ type Contact struct {
 	Phone     string `json:"phone"`
 
 	CustomFields map[string]string `json:"custom_fields"`
+	// Social is the contact's handle on each social channel; absent channels are omitted.
+	Social ContactSocial `json:"social"`
 
 	Subscribed bool           `json:"subscribed"`
 	Campaigns  []MiniCampaign `json:"campaigns"`
@@ -147,6 +149,9 @@ const (
 	// LeadHoldSourceCRM is a hold a CRM rule wrote: a lead status, a
 	// conversion or an open opportunity in Salesforce.
 	LeadHoldSourceCRM = "crm"
+	// LeadHoldSourceReview is a lead in a review campaign that a member has
+	// not approved yet. Only an approval or turning review off lifts it.
+	LeadHoldSourceReview = "review"
 )
 
 // Lead status constants for ContactCampaignProgress.Status.
@@ -774,10 +779,12 @@ type UpdateContact struct {
 	// Email replaces the contact's address. It is the contact's identity, so
 	// changing it drops the verification verdict and the delivery evidence
 	// that belonged to the old mailbox.
-	Email            *string            `json:"email"`
-	Company          *string            `json:"company"`
-	Phone            *string            `json:"phone"`
-	CustomFields     *map[string]string `json:"custom_fields"`
+	Email        *string            `json:"email"`
+	Company      *string            `json:"company"`
+	Phone        *string            `json:"phone"`
+	CustomFields *map[string]string `json:"custom_fields"`
+	// Social sets handles by channel; null clears one, absent ones are left as they are.
+	Social           ContactSocialPatch `json:"social"`
 	Subscribed       *bool              `json:"subscribed"`
 	Campaigns        []string           `json:"campaigns"`         // List of campaign IDs to set (nil = leave as-is)
 	Categories       []string           `json:"categories"`        // List of category IDs to set (nil = leave as-is)
@@ -800,6 +807,8 @@ type AddContact struct {
 	Segments []string `json:"segments,omitempty"`
 
 	CustomFields map[string]string `json:"custom_fields"`
+	// Social is the contact's handle on each social channel.
+	Social ContactSocialPatch `json:"social,omitempty"`
 
 	// VerificationStatus is a verdict the caller already holds for this
 	// address, in Warmbly's vocabulary or any provider's the platform knows

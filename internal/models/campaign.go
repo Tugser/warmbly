@@ -159,6 +159,10 @@ type Campaign struct {
 	// and the campaign ramp as its only volume limits.
 	WarmupGraduation bool `json:"warmup_graduation"`
 
+	// ReviewLeads holds each new lead until a member approves its first email.
+	// Changed through PUT /campaigns/:id/review, which holds or releases leads.
+	ReviewLeads bool `json:"review_leads"`
+
 	// ESP/provider matching: off | prefer | strict.
 	ESPMatchMode string `json:"esp_match_mode"`
 
@@ -607,6 +611,9 @@ type CreateSequenceInput struct {
 	// ThreadReply defaults to true: a step written here is a follow-up and
 	// belongs in the conversation the first email started.
 	ThreadReply *bool `json:"thread_reply,omitempty"`
+	// Kind and Action make the step an action or wait node (a social step is an action); empty is an email.
+	Kind   string        `json:"kind,omitempty"`
+	Action *ActionConfig `json:"action,omitempty"`
 }
 
 // ThreadReplyDefaults decides, for a sequence written in one shot, which steps

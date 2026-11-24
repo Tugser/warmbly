@@ -23,6 +23,7 @@ const (
 	AuditActionStop       AuditAction = "stop"
 	AuditActionPause      AuditAction = "pause"
 	AuditActionResume     AuditAction = "resume"
+	AuditActionApprove    AuditAction = "approve"
 	AuditActionSend       AuditAction = "send"
 	AuditActionDuplicate  AuditAction = "duplicate"
 	AuditActionDisconnect AuditAction = "disconnect"
@@ -61,10 +62,18 @@ const (
 	AuditEntityMailboxGrant   AuditEntityType = "mailbox_grant"
 	AuditEntityMailboxVendor  AuditEntityType = "mailbox_vendor"
 	AuditEntityDomainRedirect AuditEntityType = "domain_redirect"
-	AuditEntityAPIKey         AuditEntityType = "api_key"
-	AuditEntitySequence       AuditEntityType = "step"
-	AuditEntityUser           AuditEntityType = "user"
-	AuditEntityOrganization   AuditEntityType = "organization"
+	// Store purchases: an order, a domain and a mailbox bought through GraphKit.
+	AuditEntityStoreOrder   AuditEntityType = "store_order"
+	AuditEntityStoreDomain  AuditEntityType = "store_domain"
+	AuditEntityStoreMailbox AuditEntityType = "store_mailbox"
+	// Social add-on: a connected account, the link to a GraphKit workspace, a saved LinkedIn lead search.
+	AuditEntitySocialAccount       AuditEntityType = "social_account"
+	AuditEntitySocialLink          AuditEntityType = "social_link"
+	AuditEntityLinkedInSavedSearch AuditEntityType = "linkedin_saved_search"
+	AuditEntityAPIKey              AuditEntityType = "api_key"
+	AuditEntitySequence            AuditEntityType = "step"
+	AuditEntityUser                AuditEntityType = "user"
+	AuditEntityOrganization        AuditEntityType = "organization"
 	// AuditEntityOrgRisk carries a risk-posture transition. It rides the audit
 	// spine like every other entity, so a change reaches every teammate's
 	// dashboard without a bespoke emit site.

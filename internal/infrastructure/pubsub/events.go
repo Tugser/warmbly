@@ -145,6 +145,19 @@ const (
 	// A user's sessions were revoked (sign out, password change, ban). The
 	// realtime service closes every socket the user holds; not forwarded.
 	EventSessionsRevoked EventType = "SESSIONS_REVOKED"
+
+	// Store purchases changed state (org-scoped; the "STORE" family is gated on
+	// manage_emails in the realtime OrgChannel). They carry ids and status only.
+	EventStoreOrderUpdated   EventType = "STORE_ORDER_UPDATED"
+	EventStoreDomainUpdated  EventType = "STORE_DOMAIN_UPDATED"
+	EventStoreMailboxUpdated EventType = "STORE_MAILBOX_UPDATED"
+	// Social add-on.
+	EventSocialAccountUpdated    EventType = "SOCIAL_ACCOUNT_UPDATED"
+	EventSocialConnectionUpdated EventType = "SOCIAL_CONNECTION_UPDATED"
+	EventSocialMessage           EventType = "SOCIAL_MESSAGE"
+	EventSocialLinkUpdated       EventType = "SOCIAL_LINK_UPDATED"
+	EventSocialImportUpdated     EventType = "SOCIAL_IMPORT_UPDATED"
+	EventSocialActionUpdated     EventType = "SOCIAL_ACTION_UPDATED"
 )
 
 // BaseEvent contains common fields for all events
@@ -1267,4 +1280,66 @@ func GetSubscriptionInfo(userID uuid.UUID, wsHost string) *RealtimeSubscriptionI
 			"account:*",
 		},
 	}
+}
+
+// StoreEvent says a purchased order, domain or mailbox changed. It carries ids
+// and status only; the dashboard refetches what it shows.
+type StoreEvent struct {
+	BaseEvent
+	OrgID          string `json:"org_id"`
+	ID             string `json:"id"`
+	Status         string `json:"status"`
+	OrderID        string `json:"order_id,omitempty"`
+	DomainID       string `json:"domain_id,omitempty"`
+	EmailAccountID string `json:"email_account_id,omitempty"`
+	ConnectState   string `json:"connect_state,omitempty"`
+}
+
+// PublishStoreEvent emits one STORE_* event to the workspace. Best-effort.
+func (p *StreamingPublisher) PublishStoreEvent(ctx context.Context, orgID uuid.UUID, ev StoreEvent) {
+	if p == nil || p.client == nil || orgID == uuid.Nil {
+		return
+	}
+	ev.BaseEvent.UserID = uuid.Nil.String()
+	ev.BaseEvent.Timestamp = time.Now()
+	ev.OrgID = orgID.String()
+	attrs := map[string]string{
+		"user_id":    uuid.Nil.String(),
+		"org_id":     orgID.String(),
+		"event_type": string(ev.EventType),
+	}
+	_ = p.publish(ctx, TopicUserEvents, &ev, attrs)
+}
+
+// SocialEvent says a social account, connect session, link, conversation or
+// step changed. Ids and status only; the dashboard refetches what it shows.
+type SocialEvent struct {
+	BaseEvent
+	OrgID          string `json:"org_id"`
+	Channel        string `json:"channel,omitempty"`
+	AccountID      string `json:"account_id,omitempty"`
+	SessionID      string `json:"session_id,omitempty"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	Status         string `json:"status,omitempty"`
+	Direction      string `json:"direction,omitempty"`
+	ImportID       string `json:"import_id,omitempty"`
+	CampaignID     string `json:"campaign_id,omitempty"`
+	ContactID      string `json:"contact_id,omitempty"`
+	ActionType     string `json:"action_type,omitempty"`
+}
+
+// PublishSocialEvent emits one SOCIAL_* event to the workspace. Best-effort.
+func (p *StreamingPublisher) PublishSocialEvent(ctx context.Context, orgID uuid.UUID, ev SocialEvent) {
+	if p == nil || p.client == nil || orgID == uuid.Nil {
+		return
+	}
+	ev.BaseEvent.UserID = uuid.Nil.String()
+	ev.BaseEvent.Timestamp = time.Now()
+	ev.OrgID = orgID.String()
+	attrs := map[string]string{
+		"user_id":    uuid.Nil.String(),
+		"org_id":     orgID.String(),
+		"event_type": string(ev.EventType),
+	}
+	_ = p.publish(ctx, TopicUserEvents, &ev, attrs)
 }

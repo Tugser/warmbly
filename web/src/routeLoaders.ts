@@ -31,12 +31,15 @@ import {
 import { agencyInboxQuery, agencyOverviewQuery, emptyInboxFilters } from "./lib/api/hooks/app/agency/useAgencyHome";
 import { agencyMailboxesQuery, agencyVendorsQuery, emptyMailboxFilters } from "./lib/api/hooks/app/agency/useAgencyMailboxes";
 import { agencyAPIKeysQuery } from "./lib/api/hooks/app/agency/useAgencyAPIKeys";
+import { agencyStoreQuery } from "./lib/api/hooks/app/agency/useAgencyStore";
 import { authConfigQuery } from "./lib/api/hooks/auth/useAuthConfig";
 import { emailsListQuery } from "./lib/api/hooks/app/emails/useEmails";
 import { sendingDomainsQuery } from "./lib/api/hooks/app/emails/useSendingDomains";
 import { signinMigrationQuery } from "./lib/api/hooks/app/emails/useMailboxGrants";
 import { featureStatusQuery } from "./lib/api/hooks/app/subscription/useFeatureStatus";
-import { balanceQuery } from "./lib/api/hooks/app/subscription/useBalance";
+import { balanceBurnQuery, balanceQuery } from "./lib/api/hooks/app/subscription/useBalance";
+import { orderQuery, storeDomainsQuery, storeOrdersQuery, storeStatusQuery } from "./lib/api/hooks/app/store/useStore";
+import { socialAccountsQuery, socialChannelsQuery, socialConversationsQuery, socialStatusQuery } from "./lib/api/hooks/app/social/useSocial";
 import { creditUsageQuery } from "./lib/api/hooks/app/subscription/useCreditUsage";
 import { creditSettingsQuery } from "./lib/api/hooks/app/subscription/useCreditSettings";
 import { advisorFindingsQuery, advisorSurfaceQuery } from "./lib/api/hooks/app/advisor/useAdvisor";
@@ -170,6 +173,7 @@ export const emailsLoader = pageLoader((qc) => {
     return [
         can("MANAGE_EMAILS") && qc.prefetchInfiniteQuery(emailsListQuery({ query: "", tag: "" })),
         can("MANAGE_EMAILS") && qc.prefetchQuery(signinMigrationQuery),
+        can("MANAGE_EMAILS") && qc.prefetchQuery(storeStatusQuery),
         qc.prefetchQuery(advisorSurfaceQuery("emails")),
         qc.prefetchQuery(featureStatusQuery),
         can("VIEW_ANALYTICS") && qc.prefetchQuery(dashboardQuery("30d")),
@@ -177,7 +181,23 @@ export const emailsLoader = pageLoader((qc) => {
     ];
 });
 
-export const domainsLoader = pageLoader((qc) => [can("MANAGE_EMAILS") && qc.prefetchQuery(sendingDomainsQuery)]);
+export const domainsLoader = pageLoader((qc) => [
+    can("MANAGE_EMAILS") && qc.prefetchQuery(sendingDomainsQuery),
+    can("MANAGE_EMAILS") && qc.prefetchQuery(storeStatusQuery),
+    can("MANAGE_EMAILS") && qc.prefetchQuery(storeDomainsQuery),
+]);
+
+export const socialAccountsLoader = pageLoader((qc) => [
+    can("MANAGE_EMAILS") && qc.prefetchQuery(socialStatusQuery),
+    can("MANAGE_EMAILS") && qc.prefetchQuery(socialAccountsQuery),
+    can("MANAGE_EMAILS") && qc.prefetchQuery(socialChannelsQuery),
+]);
+
+export const buyLoader = pageLoader((qc) => [can("MANAGE_EMAILS") && qc.prefetchQuery(storeStatusQuery)]);
+
+export const buyOrderLoader = pageLoader((qc, { params }) => [can("MANAGE_EMAILS") && !!params.id && qc.prefetchQuery(orderQuery(params.id))]);
+
+export const buyOrdersLoader = pageLoader((qc) => [can("MANAGE_EMAILS") && qc.prefetchInfiniteQuery(storeOrdersQuery)]);
 
 export const contactsLoader = pageLoader((qc, { search }) =>
     can("VIEW_CONTACTS")
@@ -362,6 +382,7 @@ export const clayLoader = pageLoader((qc, { params }) => [!!params.id && qc.pref
 export const leadsLoader = pageLoader((qc) => [
     can("VIEW_CONTACTS") && qc.prefetchQuery(leadFinderConfigQuery),
     can("VIEW_CONTACTS") && qc.prefetchQuery(leadSearchesQuery),
+    can("VIEW_CONTACTS") && qc.prefetchQuery(socialStatusQuery),
 ]);
 
 export const auditLoader = pageLoader((qc) => [canManageTeam() && qc.prefetchQuery(auditLogsQuery({ limit: 50 }))]);
@@ -407,10 +428,12 @@ function allMail(base: UniboxSearchParams): [UniboxSearchParams, string] {
 // Cold cache only: opening a thread is a new match, and a stale refetch here would reload every loaded page (#396).
 export const uniboxLoader = pageLoader((qc, { params, search }) => {
     if (!can("ACCESS_UNIBOX")) return [];
-    const first = uniboxFirstSearch(params.scope ?? "inbox", search.ref || undefined);
+    const social = params.scope === "social";
+    const first = social ? null : uniboxFirstSearch(params.scope ?? "inbox", search.ref || undefined);
     const list = first ? uniboxSearchQuery(...first) : null;
     return [
         qc.getQueryData(uniboxOverviewQuery.queryKey) === undefined && qc.prefetchQuery(uniboxOverviewQuery),
+        social && qc.getQueryData(socialConversationsQuery().queryKey) === undefined && qc.prefetchInfiniteQuery(socialConversationsQuery()),
         !!list && qc.getQueryData(list.queryKey) === undefined && qc.prefetchInfiniteQuery(list),
     ];
 });
@@ -449,6 +472,7 @@ export const billingLoader = pageLoader((qc, { params }) => {
         if (!can("MANAGE_BILLING")) return [];
         return [
             qc.prefetchQuery(balanceQuery),
+            qc.prefetchQuery(balanceBurnQuery),
             qc.prefetchQuery(creditUsageQuery(30)),
             qc.prefetchQuery(creditSettingsQuery),
         ];
@@ -493,6 +517,7 @@ export const agencyMailboxesLoader = agencyPage((qc, id) => [
     qc.prefetchQuery(agencyVendorsQuery(id)),
     qc.prefetchQuery(agencyOverviewQuery(id)),
 ]);
+export const agencyStoreLoader = agencyPage((qc, id) => [qc.prefetchQuery(agencyStoreQuery(id))]);
 export const agencyStaffLoader = agencyPage((qc, id) => [qc.prefetchQuery(agencyStaffQuery(id))]);
 export const agencyUsageLoader = agencyPage((qc, id) => [qc.prefetchQuery(agencyUsageQuery(id)), qc.prefetchQuery(agencyAIBalanceQuery(id))]);
 export const agencyBrandingLoader = agencyPage((qc, id) => [qc.prefetchQuery(agencyBrandQuery(id))]);
